@@ -16,3 +16,5 @@ __pycache__/
 /tests/fixtures/ref/
 /tests/fixtures/media/*.mp4
 .DS_Store
+# accuracy-benchmark datasets (in-repo, never committed)
+/data/
