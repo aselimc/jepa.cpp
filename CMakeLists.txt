@@ -18,6 +18,9 @@ option(JEPA_NATIVE      "Optimize for the host CPU (-march=native)" ON)
 set(GGML_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE ${JEPA_NATIVE} CACHE BOOL "" FORCE)
+# 1.3-3.2x faster mul_mat on AVX-512 with identical f16/q8_0 numerics (F32 differs at round-off only);
+# measured in docs/ggml-notes.md §5. flash_attn_ext is unaffected by this flag.
+set(GGML_LLAMAFILE ON CACHE BOOL "" FORCE)
 add_subdirectory(ggml EXCLUDE_FROM_ALL)
 
 # --- core library ------------------------------------------------------------

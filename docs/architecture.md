@@ -32,7 +32,12 @@ tokens = patch_embed(rearranged pixels) [+ pos_embed] [+ cls/reg] [+ modality ve
 for each block: x += attn(ln1(x)) ; x += ffn(ln2(x))         # pre-LN, GELU(erf), qkv bias, optional layer-scale
 x = norm(x)
 ```
-Attention always goes through `ggml_flash_attn_ext` (F16 K/V) — sequences reach 18k tokens.
+Attention always goes through `ggml_flash_attn_ext`; K/V dtype is **auto** — F32 K/V for f32 model files
+(the F16 cast alone costs ~3 digits of worst-token cosine on I-JEPA ViT-H, whose activations reach ~2e4),
+F16 K/V for f16/quantized files (pure storage rounding, cosine ≥ 0.9999995). Sequences reach 18k tokens;
+naive `mul_mat + soft_max_ext` would need a 15.3 GB score matrix there vs ~0.2 GB for flash. For tiny
+sequences (N_q < 64, e.g. the LeWM predictor) the CPU one_chunk kernel rounds q to F16 — use F32 K/V there
+(see `docs/ggml-notes.md`).
 Patch "conv" is a host-side rearrangement into `[N, C*T*P*P]` followed by one `ggml_mul_mat`.
 
 ## Family deltas

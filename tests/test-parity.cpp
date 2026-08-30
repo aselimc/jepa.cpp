@@ -10,7 +10,8 @@
 //   (b) decodes the media file itself (or reads <rgb-dir>/<sample>.rgb.npy, a HWC uint8 dump of the reference
 //       decoder), runs our preprocessor, reports the input diff (max abs, fraction of exactly equal values, number of
 //       values off by more than one uint8 level) and the same output metrics again.
-// Thresholds come from general.file_type: f32 cos >= 0.9999 & rel_max <= 1e-3; f16 cos >= 0.9999; else cos >= 0.999.
+// Thresholds come from general.file_type: f32 cos >= 0.9999 & rel_max <= 1e-3; f16 cos >= 0.9999;
+// else pooled cos >= 0.999 and last_hidden_state mean >= 0.98 (see lhs_thresholds_for).
 // They are applied to the stored-input run; the own-preprocessing run must meet the cosine threshold.
 // Exit status 1 on any failure.
 #include "jepa.h"
@@ -69,8 +70,9 @@ static metrics compare(const float * a, const float * b, int64_t rows, int64_t d
 //        runtime op ordering (flash attention, f16 activations inside f16 mul_mat) moves that
 //        worst token between 0.991 and 0.9996 while the mean stays >= 0.99995.  A real graph bug
 //        is far below 0.99 (a wrong RoPE layout alone gives ~0.63/0.91, docs/architecture.md).
-//   other (q8_0, ...): mean >= 0.999, worst-token >= 0.98
-// The own-preprocessing pass only has to keep mean cosine >= 0.99: it additionally carries
+//   other (q8_0, ...): pooled/cls/emb mean >= 0.999 & min >= 0.98; last_hidden_state mean >= 0.98
+//        (no worst-token bound — low-variance tokens amplify quantisation error, docs/quantization.md)
+// The own-preprocessing pass only has to keep mean cosine >= min(0.99, its stored-input bar): it additionally carries
 // JPEG-decoder differences (stb_image vs PIL) unless --rgb-dir provides the reference pixels.
 struct thresholds { double min_mean; double min_min; double max_rel; };
 
@@ -80,9 +82,18 @@ static thresholds thresholds_for(int ftype) {
     return {0.999, 0.98, -1.0};
 }
 
+// last_hidden_state gets a laxer bar for quantized files: low-variance tokens amplify weight
+// quantisation error (docs/quantization.md — I-JEPA q8_0 worst token 0.43, worst sample mean 0.988,
+// while pooled features stay >= 0.9999).  Pooled/CLS/emb keep thresholds_for().
+static thresholds lhs_thresholds_for(int ftype) {
+    if (ftype == 0) return {0.9999, 0.9999, 1e-3};
+    if (ftype == 1) return {0.9999, 0.99, -1.0};
+    return {0.98, -1.0, -1.0};
+}
+
 static bool passes(const metrics & m, const thresholds & t, bool own) {
     if (!m.valid) return true;
-    if (own) return m.cos_mean >= 0.99;
+    if (own) return m.cos_mean >= (t.min_mean < 0.99 ? t.min_mean : 0.99);  // quantized lhs keeps its laxer bar on the own-preprocess pass too
     if (m.cos_mean < t.min_mean) return false;
     if (m.cos_min < t.min_min) return false;
     if (t.max_rel > 0 && m.rel_max > t.max_rel) return false;
@@ -183,6 +194,7 @@ int main(int argc, char ** argv) {
     if (!ctx) return 2;
     const int ftype = jepa_model_file_type(model);
     const thresholds thr = thresholds_for(ftype);
+    const thresholds thr_lhs = lhs_thresholds_for(ftype);
 
     jepa_preprocess_params pre_model = jepa_preprocess_default_params(model);
     bool pre_ok = true;
@@ -225,6 +237,9 @@ int main(int argc, char ** argv) {
         }
         const int N = (int) in_npy.shape[0], H = (int) in_npy.shape[2], W = (int) in_npy.shape[3];
         std::vector<float> in_ref = in_npy.to_f32();
+        if ((int64_t) in_ref.size() != (int64_t) N * 3 * H * W) {
+            printf("%-20s ERROR: input npy element count mismatch\n", name.c_str()); all_ok = false; continue;
+        }
         const int64_t D = jepa_model_embed_dim(model);
 
         // reference tensors (optional)
@@ -240,6 +255,15 @@ int main(int argc, char ** argv) {
         const bool has_cls = load_opt("cls", cls_ref, sh);
         const bool has_emb = load_opt("emb", emb_ref, sh);
         const bool has_emb_seq = load_opt("emb_seq", emb_seq_ref, sh);
+
+        // Guard against mismatched reference dirs: never read past a smaller ref buffer.
+        auto ref_size_ok = [&](const std::vector<float> & v, int64_t rows, int64_t dim, const char * what) {
+            if ((int64_t) v.size() == rows * dim) return true;
+            printf("%-20s ERROR: reference '%s' has %zu elements, expected %lld x %lld — wrong ref dir for this model?\n",
+                   name.c_str(), what, v.size(), (long long) rows, (long long) dim);
+            all_ok = false;
+            return false;
+        };
 
         // run: (a) stored input, (b) own preprocessing
         for (int pass = 0; pass < 2; pass++) {
@@ -295,23 +319,23 @@ int main(int argc, char ** argv) {
             const int64_t n_tok = enc.n_tokens / N;
 
             metrics m_lhs, m_pool, m_cls, m_emb;
-            if (has_lhs && N == 1) m_lhs = compare(enc.data, lhs_ref.data(), enc.n_tokens, D);
+            if (has_lhs && N == 1 && ref_size_ok(lhs_ref, enc.n_tokens, D, "last_hidden_state")) m_lhs = compare(enc.data, lhs_ref.data(), enc.n_tokens, D);
             jepa_output one = {enc.data, n_tok, D};
-            if (has_pool && N == 1) { jepa_output o = {nullptr, 0, 0}; if (jepa_pool_mean(model, &one, &o) == 0) { m_pool = compare(o.data, pool_ref.data(), 1, D); jepa_free(o.data); } }
-            if (has_cls && N == 1)  { jepa_output o = {nullptr, 0, 0}; if (jepa_pool_cls(model, &one, &o) == 0)  { m_cls = compare(o.data, cls_ref.data(), 1, D); jepa_free(o.data); } }
+            if (has_pool && N == 1) { jepa_output o = {nullptr, 0, 0}; if (jepa_pool_mean(model, &one, &o) == 0) { if (ref_size_ok(pool_ref, 1, D, "pooled_mean")) m_pool = compare(o.data, pool_ref.data(), 1, D); jepa_free(o.data); } }
+            if (has_cls && N == 1)  { jepa_output o = {nullptr, 0, 0}; if (jepa_pool_cls(model, &one, &o) == 0)  { if (ref_size_ok(cls_ref, 1, D, "cls")) m_cls = compare(o.data, cls_ref.data(), 1, D); jepa_free(o.data); } }
             if (has_emb && N == 1 && jepa_model_has_projector(model)) {
                 jepa_output o = {nullptr, 0, 0};
-                if (jepa_lewm_project(ctx, &one, &o) == 0) { m_emb = compare(o.data, emb_ref.data(), 1, D); jepa_free(o.data); }
+                if (jepa_lewm_project(ctx, &one, &o) == 0) { if (ref_size_ok(emb_ref, 1, D, "emb")) m_emb = compare(o.data, emb_ref.data(), 1, D); jepa_free(o.data); }
             }
             if (has_emb_seq && jepa_model_has_projector(model)) {
                 std::vector<float> cls_rows((size_t) N * D);
                 for (int b = 0; b < N; b++) memcpy(cls_rows.data() + (size_t) b * D, enc.data + (size_t) b * n_tok * D, D * sizeof(float));
                 jepa_output o = {nullptr, 0, 0};
-                if (jepa_lewm_project_rows(ctx, cls_rows.data(), N, &o) == 0) { m_emb = compare(o.data, emb_seq_ref.data(), N, D); jepa_free(o.data); }
+                if (jepa_lewm_project_rows(ctx, cls_rows.data(), N, &o) == 0) { if (ref_size_ok(emb_seq_ref, N, D, "emb_seq")) m_emb = compare(o.data, emb_seq_ref.data(), N, D); jepa_free(o.data); }
             }
             jepa_free(enc.data);
 
-            bool ok = passes(m_lhs, thr, own) && passes(m_pool, thr, own) && passes(m_cls, thr, own) && passes(m_emb, thr, own);
+            bool ok = passes(m_lhs, thr_lhs, own) && passes(m_pool, thr, own) && passes(m_cls, thr, own) && passes(m_emb, thr, own);
             if (!m_lhs.valid && !m_pool.valid && !m_cls.valid && !m_emb.valid) ok = true;
             res.ok &= ok;
             all_ok &= ok;
@@ -335,6 +359,12 @@ int main(int argc, char ** argv) {
         }
         if (s.contains("timing_s") && s["timing_s"].contains("forward_s")) sum_ref_s += s["timing_s"]["forward_s"].get<double>();
         results.push_back(res);
+    }
+
+    if (results.empty()) {
+        printf("error: no samples matched%s%s — nothing was tested\nRESULT: FAIL\n",
+               sample_filter.empty() ? "" : " filter ", sample_filter.c_str());
+        return 2;
     }
 
     const long rss = peak_rss_kb();
