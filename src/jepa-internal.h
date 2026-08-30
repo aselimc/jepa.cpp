@@ -319,8 +319,9 @@ struct jepa_video_shape {
     int64_t patch_dim = 0;        // C * tubelet * patch * patch (row width fed to the patch embed)
 };
 
-// Resolve the shape for `n_frames` x `height` x `width`; logs and returns false if it is not encodable.
-bool jepa_video_shape_for(const jepa_model * m, int n_frames, int height, int width, jepa_video_shape & vs, bool verbose);
+// Resolve the shape for `n_frames` x `height` x `width`; returns false if it is not encodable, and
+// explains why on stderr when `log` is set (probes such as jepa_token_grid pass false).
+bool jepa_video_shape_for(const jepa_model * m, int n_frames, int height, int width, jepa_video_shape & vs, bool log);
 
 // 3-D RoPE parameters of the encoder at this token grid (variant / interpolation from the hparams).
 jepa_rope3d_params jepa_encoder_rope_params(const jepa_model * m, int gt, int gh, int gw);

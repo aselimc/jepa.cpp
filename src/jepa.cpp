@@ -372,12 +372,12 @@ static int jepa_encode_image(jepa_context * ctx, const jepa_input * in, jepa_out
 // final enc.norm.  V-JEPA 2.1 adds the 1-frame image tokenizer (enc.patch_embed_img) and the
 // img/video modality vector added to every token.  Exact conventions:
 // scripts/jepa_convert/VJEPA_NOTES.md S3-S4 and its numpy twin vjepa2_numpy_ref.py.
-bool jepa_video_shape_for(const jepa_model * m, int n_frames, int height, int width, jepa_video_shape & vs, bool verbose) {
+bool jepa_video_shape_for(const jepa_model * m, int n_frames, int height, int width, jepa_video_shape & vs, bool log) {
     const jepa_enc_hparams & e = m->hp.enc;
     const int P = e.patch_size;
     if (P <= 0 || n_frames <= 0 || height <= 0 || width <= 0) return false;
     if (height % P != 0 || width % P != 0) {
-        jepa_log("jepa: input %dx%d is not a multiple of the patch size %d\n", height, width, P);
+        if (log) jepa_log("jepa: input %dx%d is not a multiple of the patch size %d\n", height, width, P);
         return false;
     }
     vs.image_path = false;
@@ -388,8 +388,8 @@ bool jepa_video_shape_for(const jepa_model * m, int n_frames, int height, int wi
         vs.tubelet = 1;
     }
     if (n_frames % vs.tubelet != 0) {
-        jepa_log("jepa: %d frames is not a multiple of the tubelet size %d (an image has to be fed to this "
-                 "model as a %d-frame clip, i.e. repeated)\n", n_frames, vs.tubelet, vs.tubelet);
+        if (log) jepa_log("jepa: %d frames is not a multiple of the tubelet size %d (an image has to be fed to this "
+                          "model as a %d-frame clip, i.e. repeated)\n", n_frames, vs.tubelet, vs.tubelet);
         return false;
     }
     vs.gt = n_frames / vs.tubelet;
@@ -399,23 +399,18 @@ bool jepa_video_shape_for(const jepa_model * m, int n_frames, int height, int wi
     vs.patch_dim = (int64_t) e.in_chans * vs.tubelet * P * P;
     ggml_tensor * pe = vs.image_path ? m->patch_embed_img_w : m->patch_embed_w;
     if (!pe || pe->ne[0] != vs.patch_dim) {
-        jepa_log("jepa: patch embedding %s takes rows of %lld values, this shape needs %lld\n",
-                 vs.image_path ? "enc.patch_embed_img.weight" : "enc.patch_embed.weight",
-                 pe ? (long long) pe->ne[0] : 0LL, (long long) vs.patch_dim);
+        if (log) jepa_log("jepa: patch embedding %s takes rows of %lld values, this shape needs %lld\n",
+                          vs.image_path ? "enc.patch_embed_img.weight" : "enc.patch_embed.weight",
+                          pe ? (long long) pe->ne[0] : 0LL, (long long) vs.patch_dim);
         return false;
     }
     // RoPE positions are decoded from the ACTUAL patch grid (what Meta's V-JEPA 2.1 does). HF's
     // VJEPA2RopeAttention instead hard-codes grid_size = crop_size / patch_size from the config
     // (modeling_vjepa2.py:235), so the two only agree at the checkpoint's native resolution.
-    if (m->hp.family == JEPA_FAMILY_VJEPA2 && e.grid_size() > 0 && (vs.gh != e.grid_size() || vs.gw != e.grid_size())) {
+    if (log && m->hp.family == JEPA_FAMILY_VJEPA2 && e.grid_size() > 0 && (vs.gh != e.grid_size() || vs.gw != e.grid_size())) {
         jepa_log("jepa: note: %dx%d gives a %dx%d patch grid, but this checkpoint was trained at %dx%d; RoPE "
                  "positions use the actual grid here, HF uses the config one, so the outputs will differ\n",
                  width, height, vs.gw, vs.gh, e.grid_size(), e.grid_size());
-    }
-    if (verbose) {
-        jepa_log("jepa: %s path: %d frames %dx%d -> grid %dx%dx%d = %lld tokens (tubelet %d, patch %d)\n",
-                 vs.image_path ? "image" : "video", n_frames, height, width, vs.gt, vs.gh, vs.gw,
-                 (long long) vs.n_tokens, vs.tubelet, P);
     }
     return true;
 }
@@ -473,7 +468,12 @@ static int jepa_encode_video(jepa_context * ctx, const jepa_input * in, jepa_out
     const jepa_model * m = ctx->model;
     const jepa_enc_hparams & e = m->hp.enc;
     jepa_video_shape vs;
-    if (!jepa_video_shape_for(m, in->n_frames, in->height, in->width, vs, ctx->params.verbose)) return -1;
+    if (!jepa_video_shape_for(m, in->n_frames, in->height, in->width, vs, true)) return -1;
+    if (ctx->params.verbose) {
+        jepa_log("jepa: %s path: %d frames %dx%d -> grid %dx%dx%d = %lld tokens (tubelet %d, patch %d)\n",
+                 vs.image_path ? "image" : "video", in->n_frames, in->height, in->width, vs.gt, vs.gh, vs.gw,
+                 (long long) vs.n_tokens, vs.tubelet, e.patch_size);
+    }
 
     const int64_t D = e.embed_dim;
     const int64_t N = vs.n_tokens;
