@@ -53,7 +53,7 @@ LEWM_PRE = {
     "jepa.pre.resize_short": 224,
     "jepa.pre.crop": 224,
     "jepa.pre.resample": "bilinear",
-    "jepa.pre.resize_mode": "shortest_edge",
+    "jepa.pre.resize_mode": "squash",  # LeWM reference squashes non-square inputs to 224x224 (see dump_reference.py)
 }
 
 
