@@ -6,7 +6,9 @@
 //
 // Images are encoded one by one (each is a 1-frame item); with --frames-npy / --as-video — and by
 // default when several images are given to a video model — the frames form ONE clip that goes
-// through the tubelet tokenizer and 3-D RoPE in a single graph.
+// through the tubelet tokenizer and 3-D RoPE in a single graph.  Clip frames may have DIFFERENT
+// source sizes: every frame is preprocessed on its own (resize + centre crop land them all on the
+// model's crop x crop) and the CHW planes are then concatenated into the NCTHW clip.
 #include "jepa.h"
 #include "npy.h"
 
@@ -40,12 +42,52 @@ static double now_ms() {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// One item to encode: n frames of h x w RGB8 (an image is n = 1).
+// One item to encode: n RGB8 HWC frames, each with its own size (an image is n = 1).
 struct item {
     std::string name;
-    std::vector<uint8_t> pixels;   // THWC
-    int n = 0, h = 0, w = 0;
+    std::vector<std::vector<uint8_t>> frames;   // per frame: HWC RGB8
+    std::vector<int> h, w;                      // per frame source size
+    int n() const { return (int) frames.size(); }
+    void add(const uint8_t * rgb, int ih, int iw) {
+        frames.emplace_back(rgb, rgb + (size_t) ih * iw * 3);
+        h.push_back(ih);
+        w.push_back(iw);
+    }
 };
+
+// Preprocess every frame of an item on its own and concatenate the results into one NCTHW clip.
+// jepa_preprocess_frames_rgb() resizes/crops/normalises each frame independently as well, so for
+// equal-sized frames this is bit-identical to one call over the whole stack; doing it per frame is
+// what lets a clip mix differently-sized source images (`--as-video -i a.jpg -i b.jpg`).
+// Returns a malloc'd [1, 3, T, crop, crop] buffer (free with jepa_free), or nullptr.
+static float * preprocess_item(const jepa_model * model, const item & it, int * out_h, int * out_w) {
+    const int T = it.n();
+    if (T <= 0) return nullptr;
+    float * out = nullptr;
+    int crop_h = 0, crop_w = 0;
+    for (int t = 0; t < T; t++) {
+        int oh = 0, ow = 0;
+        float * f = jepa_preprocess_image_rgb(model, it.frames[t].data(), it.h[t], it.w[t], &oh, &ow);
+        if (!f) { jepa_free(out); return nullptr; }
+        if (!out) {
+            crop_h = oh; crop_w = ow;
+            out = (float *) malloc((size_t) 3 * T * crop_h * crop_w * sizeof(float));
+            if (!out) { jepa_free(f); return nullptr; }
+        } else if (oh != crop_h || ow != crop_w) {
+            fprintf(stderr, "frame %d preprocesses to %dx%d but frame 0 to %dx%d\n", t, ow, oh, crop_w, crop_h);
+            jepa_free(f); jepa_free(out);
+            return nullptr;
+        }
+        const size_t plane = (size_t) crop_h * crop_w;
+        for (int c = 0; c < 3; c++) {
+            memcpy(out + ((size_t) c * T + t) * plane, f + (size_t) c * plane, plane * sizeof(float));
+        }
+        jepa_free(f);
+    }
+    if (out_h) *out_h = crop_h;
+    if (out_w) *out_w = crop_w;
+    return out;
+}
 
 int main(int argc, char ** argv) {
     std::string model_path, out_path, pool, dump_input, frames_npy;
@@ -85,15 +127,28 @@ int main(int argc, char ** argv) {
     if (!model) return 1;
     double load_ms = now_ms() - t0;
     jepa_context * ctx = jepa_context_new(model, cp);
-    if (!ctx) return 1;
+    if (!ctx) { jepa_model_free(model); return 1; }
+
+    // every exit below goes through this: the model and context (hundreds of MiB of weights) and
+    // the per-item buffers are released on the error paths too
+    float * x = nullptr;
+    jepa_output enc = {nullptr, 0, 0}, feat = {nullptr, 0, 0};
+    auto done = [&](int rc) {
+        if (feat.data && feat.data != enc.data) jepa_free(feat.data);
+        if (enc.data) jepa_free(enc.data);
+        if (x) jepa_free(x);
+        jepa_context_free(ctx);
+        jepa_model_free(model);
+        return rc;
+    };
 
     if (pool.empty()) pool = jepa_model_has_cls(model) ? "cls" : "mean";
     if (pool != "mean" && pool != "cls" && pool != "lewm" && pool != "none") {
         fprintf(stderr, "unknown --pool %s\n", pool.c_str());
-        return 1;
+        return done(1);
     }
-    if (pool == "cls" && !jepa_model_has_cls(model)) { fprintf(stderr, "model has no CLS token; use --pool mean\n"); return 1; }
-    if (pool == "lewm" && !jepa_model_has_projector(model)) { fprintf(stderr, "model has no enc.proj projector\n"); return 1; }
+    if (pool == "cls" && !jepa_model_has_cls(model)) { fprintf(stderr, "model has no CLS token; use --pool mean\n"); return done(1); }
+    if (pool == "lewm" && !jepa_model_has_projector(model)) { fprintf(stderr, "model has no enc.proj projector\n"); return done(1); }
 
     const std::string family = jepa_model_family(model);
     const bool video_model = family == "vjepa" || family == "vjepa2" || family == "vjepa2_1";
@@ -106,12 +161,12 @@ int main(int argc, char ** argv) {
         npy::Array a = npy::load(frames_npy);
         if (a.shape.size() != 4 || a.shape[3] != 3 || a.dtype != "|u1") {
             fprintf(stderr, "%s: expected a THWC uint8 array, got %zu dims dtype %s\n", frames_npy.c_str(), a.shape.size(), a.dtype.c_str());
-            return 1;
+            return done(1);
         }
         item it;
         it.name = frames_npy;
-        it.n = (int) a.shape[0]; it.h = (int) a.shape[1]; it.w = (int) a.shape[2];
-        it.pixels.swap(a.bytes);
+        const int nf = (int) a.shape[0], fh = (int) a.shape[1], fw = (int) a.shape[2];
+        for (int t = 0; t < nf; t++) it.add(a.bytes.data() + (size_t) t * fh * fw * 3, fh, fw);
         items.push_back(std::move(it));
     }
     if (!images.empty()) {
@@ -120,20 +175,14 @@ int main(int argc, char ** argv) {
         for (size_t i = 0; i < images.size(); i++) {
             int h = 0, w = 0;
             uint8_t * rgb = jepa_load_image_rgb(images[i].c_str(), &h, &w);
-            if (!rgb) return 1;
+            if (!rgb) return done(1);
             if (clip_mode) {
-                if (clip.n == 0) { clip.h = h; clip.w = w; }
-                else if (h != clip.h || w != clip.w) {
-                    fprintf(stderr, "frame %zu is %dx%d but the first frame is %dx%d — all frames of a clip must match\n", i, w, h, clip.w, clip.h);
-                    return 1;
-                }
-                clip.pixels.insert(clip.pixels.end(), rgb, rgb + (size_t) h * w * 3);
-                clip.n++;
+                // frames of a clip may differ in size: every frame is preprocessed on its own below
+                clip.add(rgb, h, w);
             } else {
                 item it;
                 it.name = images[i];
-                it.n = 1; it.h = h; it.w = w;
-                it.pixels.assign(rgb, rgb + (size_t) h * w * 3);
+                it.add(rgb, h, w);
                 items.push_back(std::move(it));
             }
             jepa_free(rgb);
@@ -143,13 +192,13 @@ int main(int argc, char ** argv) {
 
     // A video model with tubelet t needs a multiple of t frames (the HF processor repeats frames).
     for (item & it : items) {
-        if (video_model && tubelet > 1 && it.n % tubelet != 0 && jepa_token_grid(model, it.n, jepa_model_img_size(model), jepa_model_img_size(model), nullptr, nullptr, nullptr) == 0) {
-            const int pad = tubelet - it.n % tubelet;
-            const size_t frame_bytes = (size_t) it.h * it.w * 3;
-            const std::vector<uint8_t> last(it.pixels.end() - frame_bytes, it.pixels.end());  // copy: insert may reallocate
-            for (int i = 0; i < pad; i++) it.pixels.insert(it.pixels.end(), last.begin(), last.end());
+        if (video_model && tubelet > 1 && it.n() % tubelet != 0 && jepa_token_grid(model, it.n(), jepa_model_img_size(model), jepa_model_img_size(model), nullptr, nullptr, nullptr) == 0) {
+            const int pad = tubelet - it.n() % tubelet;
+            for (int i = 0; i < pad; i++) {
+                const std::vector<uint8_t> last = it.frames.back();   // copy: add() may reallocate
+                it.add(last.data(), it.h.back(), it.w.back());
+            }
             fprintf(stderr, "note: %s: repeated the last frame %d time(s) to reach a multiple of the tubelet size %d\n", it.name.c_str(), pad, tubelet);
-            it.n += pad;
         }
     }
 
@@ -161,35 +210,31 @@ int main(int argc, char ** argv) {
     int64_t dim = 0, rows_per_item = 0;
     for (const item & it : items) {
         double tp = now_ms();
-        std::vector<const uint8_t *> ptr((size_t) it.n);
-        for (int t = 0; t < it.n; t++) ptr[t] = it.pixels.data() + (size_t) t * it.h * it.w * 3;
         int h = 0, w = 0;
-        float * x = jepa_preprocess_frames_rgb(model, ptr.data(), it.n, it.h, it.w, &h, &w);
-        if (!x) return 1;
+        x = preprocess_item(model, it, &h, &w);
+        if (!x) return done(1);
         double pre_ms = now_ms() - tp;
         if (!dump_input.empty()) {
-            npy::save_f32(dump_input, {1, 3, it.n, h, w}, x);
-            fprintf(stderr, "saved preprocessed input %s [1, 3, %d, %d, %d]\n", dump_input.c_str(), it.n, h, w);
+            npy::save_f32(dump_input, {1, 3, it.n(), h, w}, x);
+            fprintf(stderr, "saved preprocessed input %s [1, 3, %d, %d, %d]\n", dump_input.c_str(), it.n(), h, w);
         }
 
         jepa_input in;
-        in.data = x; in.n_batch = 1; in.n_chans = 3; in.n_frames = it.n; in.height = h; in.width = w;
-        jepa_output enc = {nullptr, 0, 0};
+        in.data = x; in.n_batch = 1; in.n_chans = 3; in.n_frames = it.n(); in.height = h; in.width = w;
         double enc_ms = 0, wall_ms = 0;
         for (int r = 0; r < repeat; r++) {
-            if (enc.data) jepa_free(enc.data);
+            if (enc.data) { jepa_free(enc.data); enc.data = nullptr; }
             double te = now_ms();
-            if (jepa_encode(ctx, &in, &enc) != 0) return 1;
+            if (jepa_encode(ctx, &in, &enc) != 0) return done(1);
             wall_ms += now_ms() - te;
             enc_ms += jepa_context_last_compute_ms(ctx);
         }
         enc_ms /= repeat; wall_ms /= repeat;
         const int64_t n_tokens = enc.n_tokens;
 
-        jepa_output feat = {nullptr, 0, 0};
-        if (pool == "mean")      { if (jepa_pool_mean(model, &enc, &feat) != 0) return 1; }
-        else if (pool == "cls")  { if (jepa_pool_cls(model, &enc, &feat) != 0) return 1; }
-        else if (pool == "lewm") { if (jepa_lewm_project(ctx, &enc, &feat) != 0) return 1; }
+        if (pool == "mean")      { if (jepa_pool_mean(model, &enc, &feat) != 0) return done(1); }
+        else if (pool == "cls")  { if (jepa_pool_cls(model, &enc, &feat) != 0) return done(1); }
+        else if (pool == "lewm") { if (jepa_lewm_project(ctx, &enc, &feat) != 0) return done(1); }
         else                     { feat = enc; enc.data = nullptr; }
 
         dim = feat.dim;
@@ -207,15 +252,23 @@ int main(int argc, char ** argv) {
         }
         printf("\n");
         if (timing) {
-            fprintf(stderr, "  %d frame(s) %dx%d -> %dx%d, %lld tokens | preprocess %.1f ms | encode %.1f ms "
+            char src[64];
+            bool same = true;
+            for (int t = 1; t < it.n(); t++) same &= it.h[t] == it.h[0] && it.w[t] == it.w[0];
+            if (same) snprintf(src, sizeof(src), "%dx%d", it.w[0], it.h[0]);
+            else      snprintf(src, sizeof(src), "%dx%d..(mixed)", it.w[0], it.h[0]);
+            fprintf(stderr, "  %d frame(s) %s -> %dx%d, %lld tokens | preprocess %.1f ms | encode %.1f ms "
                             "(graph compute %.1f ms, %.0f tokens/s, %d threads%s)\n",
-                    it.n, it.w, it.h, w, h, (long long) n_tokens, pre_ms, wall_ms, enc_ms,
+                    it.n(), src, w, h, (long long) n_tokens, pre_ms, wall_ms, enc_ms,
                     enc_ms > 0 ? 1000.0 * (double) n_tokens / enc_ms : 0.0,
                     jepa_context_n_threads(ctx), repeat > 1 ? ", mean of repeats" : "");
         }
-        if (feat.data) jepa_free(feat.data);
+        if (feat.data && feat.data != enc.data) jepa_free(feat.data);
+        feat.data = nullptr;
         if (enc.data) jepa_free(enc.data);
+        enc.data = nullptr;
         jepa_free(x);
+        x = nullptr;
     }
 
     if (!out_path.empty()) {
@@ -225,7 +278,5 @@ int main(int argc, char ** argv) {
         npy::save_f32(out_path, shape, all.data());
         fprintf(stderr, "saved %s [%lld x %lld]\n", out_path.c_str(), (long long) shape[0], (long long) shape[1]);
     }
-    jepa_context_free(ctx);
-    jepa_model_free(model);
-    return 0;
+    return done(0);
 }

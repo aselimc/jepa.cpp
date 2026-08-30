@@ -45,25 +45,40 @@ jepa_pos_id jepa_pos_from_string(const std::string & s) {
     return JEPA_POS_NONE;
 }
 
+// general.file_type carries a **GGML_FTYPE_*** value (enum ggml_ftype in ggml/include/ggml.h), the
+// same value tools/jepa-quantize.cpp writes from its TYPE_SPECS table -- NOT the llama.cpp
+// LLAMA_FTYPE_* numbering (whose 12 is Q3_K_M while GGML_FTYPE_MOSTLY_Q4_K is 12).  Every type the
+// quantizer can produce is listed first; the rest of the enum follows so a foreign file still names
+// itself correctly.
 const char * jepa_file_type_name(uint32_t ftype) {
-    switch (ftype) {
-        case 0:  return "f32";
-        case 1:  return "f16";
-        case 2:  return "q4_0";
-        case 3:  return "q4_1";
-        case 7:  return "q8_0";
-        case 8:  return "q5_0";
-        case 9:  return "q5_1";
-        case 10: return "q2_k";
-        case 11: return "q3_k_s";
-        case 12: return "q3_k_m";
-        case 13: return "q3_k_l";
-        case 14: return "q4_k_s";
-        case 15: return "q4_k_m";
-        case 16: return "q5_k_s";
-        case 17: return "q5_k_m";
-        case 18: return "q6_k";
-        case 30: return "bf16";
+    switch ((int32_t) ftype) {
+        case GGML_FTYPE_ALL_F32:              return "f32";     // 0   jepa-quantize f32
+        case GGML_FTYPE_MOSTLY_F16:           return "f16";     // 1   jepa-quantize f16
+        case GGML_FTYPE_MOSTLY_Q4_0:          return "q4_0";    // 2   jepa-quantize q4_0
+        case GGML_FTYPE_MOSTLY_Q4_1:          return "q4_1";    // 3   jepa-quantize q4_1
+        case GGML_FTYPE_MOSTLY_Q4_1_SOME_F16: return "q4_1_some_f16";  // 4
+        case GGML_FTYPE_MOSTLY_Q8_0:          return "q8_0";    // 7   jepa-quantize q8_0
+        case GGML_FTYPE_MOSTLY_Q5_0:          return "q5_0";    // 8   jepa-quantize q5_0
+        case GGML_FTYPE_MOSTLY_Q5_1:          return "q5_1";    // 9   jepa-quantize q5_1
+        case GGML_FTYPE_MOSTLY_Q2_K:          return "q2_k";    // 10
+        case GGML_FTYPE_MOSTLY_Q3_K:          return "q3_k";    // 11
+        case GGML_FTYPE_MOSTLY_Q4_K:          return "q4_k";    // 12  jepa-quantize q4_k
+        case GGML_FTYPE_MOSTLY_Q5_K:          return "q5_k";    // 13  jepa-quantize q5_k
+        case GGML_FTYPE_MOSTLY_Q6_K:          return "q6_k";    // 14  jepa-quantize q6_k
+        case GGML_FTYPE_MOSTLY_IQ2_XXS:       return "iq2_xxs"; // 15
+        case GGML_FTYPE_MOSTLY_IQ2_XS:        return "iq2_xs";  // 16
+        case GGML_FTYPE_MOSTLY_IQ3_XXS:       return "iq3_xxs"; // 17
+        case GGML_FTYPE_MOSTLY_IQ1_S:         return "iq1_s";   // 18
+        case GGML_FTYPE_MOSTLY_IQ4_NL:        return "iq4_nl";  // 19
+        case GGML_FTYPE_MOSTLY_IQ3_S:         return "iq3_s";   // 20
+        case GGML_FTYPE_MOSTLY_IQ2_S:         return "iq2_s";   // 21
+        case GGML_FTYPE_MOSTLY_IQ4_XS:        return "iq4_xs";  // 22
+        case GGML_FTYPE_MOSTLY_IQ1_M:         return "iq1_m";   // 23
+        case GGML_FTYPE_MOSTLY_BF16:          return "bf16";    // 24
+        case GGML_FTYPE_MOSTLY_MXFP4:         return "mxfp4";   // 25
+        case GGML_FTYPE_MOSTLY_NVFP4:         return "nvfp4";   // 26
+        case GGML_FTYPE_MOSTLY_Q1_0:          return "q1_0";    // 27
+        case GGML_FTYPE_MOSTLY_Q2_0:          return "q2_0";    // 28
         default: return "unknown";
     }
 }

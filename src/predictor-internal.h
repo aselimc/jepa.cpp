@@ -18,11 +18,13 @@
 jepa_rope3d_params jepa_predictor_rope_params(const jepa_model & m, int64_t max_id);
 
 // Build the masked-predictor graph on ctx->ctx_g.
-//   inp     : [enc_dim, n_ctx] F32 input tensor (the encoder rows at the context ids), caller-created
-//   cos/sin : [head_dim, 1, n_ctx + n_tgt] F32 input tensors (jepa_rope3d_tables_ids of ctx ids then tgt ids)
-//   returns : [out_dim, n_tgt] F32 (the target rows after pred.norm and pred.proj)
+//   inp      : [enc_dim, n_ctx] F32 input tensor (the encoder rows at the context ids), caller-created
+//   modality : JEPA_MODALITY_VIDEO / _IMAGE — picks pred.mod_embed_video vs pred.mod_embed_img for the
+//              2.1 files (already resolved: _AUTO must not reach here)
+//   cos/sin  : [head_dim, 1, n_ctx + n_tgt] F32 input tensors (jepa_rope3d_tables_ids of ctx ids then tgt ids)
+//   returns  : [out_dim, n_tgt] F32 (the target rows after pred.norm and pred.proj)
 ggml_tensor * jepa_build_predictor_masked(jepa_context * ctx, ggml_tensor * inp, int n_tgt, int mask_index,
-                                          ggml_tensor * cos_t, ggml_tensor * sin_t);
+                                          int modality, ggml_tensor * cos_t, ggml_tensor * sin_t);
 
 // ---------------------------------------------------------------------------------------------
 // LeWM world model (lewm.cpp)
