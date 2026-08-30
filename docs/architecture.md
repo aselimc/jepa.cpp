@@ -50,7 +50,15 @@ Patch "conv" is a host-side rearrangement into `[N, C*T*P*P]` followed by one `g
 - `d = 2 * ((head_dim // 3) // 2)` per axis (20/20/20 for head_dim 64; remaining 4 dims untouched).
 - token i → `t = i // (gh*gw)`, `h = (i % (gh*gw)) // gw`, `w = i % gw`.
 - per axis, frequencies `omega_k = 1 / 10000**(2k/d)`, k in [0, d/2).
-- rotation on **interleaved pairs** `(x[2k], x[2k+1])` : `x*cos + rotate90(x)*sin` where `rotate90(y1,y2) = (-y2, y1)`; cos/sin repeated per pair.
+- rotation on **interleaved pairs** `(x[2k], x[2k+1])` : `x*cos + rotate90(x)*sin` where `rotate90(y1,y2) = (-y2, y1)`.
+- **cos/sin table layout differs per family** (`jepa.enc.rope_freq_layout`): V-JEPA 2 (HF + Meta) *tiles* the
+  d/2 frequencies, `table[j] = f(pos*omega_{j mod d/2})`, so the two halves of a pair see different angles
+  (Meta's "subtle bug", kept for checkpoint compatibility); V-JEPA 2.1 uses `repeat_interleave`,
+  `table[2k] = table[2k+1] = f(pos*omega_k)` (true rotation). Using the wrong one gives cosine 0.63 / 0.91
+  against the reference. Full derivation + code excerpts: `scripts/jepa_convert/VJEPA_NOTES.md` §4;
+  numpy reference: `scripts/jepa_convert/vjepa2_numpy_ref.py`.
+- V-JEPA 2.1 encoder additionally rescales `h, w` by `(rope_ref_grid-1)/(grid-1)` (`interpolate_rope`, ref grid 16);
+  its predictor does not. Predictor head_dim is 32 → d = 10 per axis.
 - applied to q and k (not v), after the qkv projection, before scaling.
 - ggml's `ggml_rope_multi` uses half-split rotation and one theta scale — do **not** use it. Precompute cos/sin tables `[N, head_dim]` on the host (`rope3d.cpp`) and apply with `ggml_mul` + `ggml_add` on views, or with a small custom op.
 

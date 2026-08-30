@@ -13,7 +13,6 @@ __pycache__/
 *.pth.tar
 *.bin
 # reference dumps
-/tests/fixtures/ref/*.npy
-/tests/fixtures/ref/*.npz
+/tests/fixtures/ref/
 /tests/fixtures/media/*.mp4
 .DS_Store

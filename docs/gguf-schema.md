@@ -34,6 +34,8 @@ All agents (converter, loader, graph builder) implement exactly this. Change it 
 | `jepa.enc.pos_type` | str | `sincos2d` · `sincos3d` · `learned` · `rope3d` |
 | `jepa.enc.rope_theta` | f32 | 10000 |
 | `jepa.enc.rope_interpolate` | bool | V-JEPA 2.1 `interpolate_rope` |
+| `jepa.enc.rope_freq_layout` | str | `tiled` (V-JEPA 2: per-axis cos/sin table is `[f_0..f_{d/2-1}, f_0..f_{d/2-1}]`, the Meta/HF quirk) · `interleaved` (V-JEPA 2.1: `[f_0,f_0,f_1,f_1,...]`, textbook RoPE). See `scripts/jepa_convert/VJEPA_NOTES.md` |
+| `jepa.enc.rope_ref_grid` | u32 | V-JEPA 2.1 only: spatial RoPE positions are rescaled `h *= (ref_grid-1)/(gh-1)` (16 for patch 16) |
 | `jepa.enc.cls_token` | bool | true for `hfvit` (DINOv2-style), false for Meta JEPAs |
 | `jepa.enc.n_registers` | u32 | 0 |
 | `jepa.enc.qkv_fused` | bool | true → `attn_qkv.*` tensor with rows [q;k;v]; false → separate q/k/v |
@@ -77,6 +79,10 @@ Sincos tables are **precomputed at conversion** for the training grid (`enc.pos_
 | `jepa.pred.kind` | `masked` (I-JEPA / V-JEPA / V-JEPA 2 / 2.1) · `ac` (V-JEPA 2-AC) · `lewm` |
 | `jepa.pred.embed_dim`, `n_layer`, `n_head`, `ffn_dim` | |
 | `jepa.pred.n_mask_tokens` | 10 (V-JEPA 2), 8 (2.1) |
+| `jepa.pred.out_dim` | width of `pred.proj` output (enc_dim for V-JEPA 2; teacher_dim / n_hier_in = 1664 for 2.1 ViT-B) |
+| `jepa.pred.rope_freq_layout`, `jepa.pred.rope_interpolate`, `jepa.pred.rope_ref_grid`, `jepa.pred.grid_size` | predictor RoPE convention (2.1: `interleaved`, **not** interpolated, mask ids decoded on the fixed `img_size/patch` grid = `grid_size`) |
+| `jepa.pred.n_hier_in` | 2.1: number of hierarchical encoder outputs concatenated into `pred.embed` (1 for ViT-B/L, 4 for g/G) |
+| `jepa.pred.modality_embed`, `jepa.pred.context_proj` | 2.1: `pred.mod_embed_*` / `pred.proj_context.*` present |
 | `jepa.pred.action_dim`, `jepa.pred.state_dim` | 7 / 7 for V-JEPA 2-AC; 10 / 0 for LeWM |
 | `jepa.pred.frame_causal` | bool (AC) |
 | `jepa.pred.n_frames` | LeWM: 3 |
@@ -97,6 +103,9 @@ pred.norm.weight/bias
 pred.proj.weight/bias         [enc_dim (or teacher_dim), pred_dim]
 pred.action_embed.weight/bias [pred_dim, action_dim]        (AC: single linear)
 pred.action_embed.0 / .2      [4*pred_dim, action_dim] / [pred_dim, 4*pred_dim]   (lewm: 2-layer MLP, act = jepa.pred.action_act)
+pred.proj_context.weight/bias [teacher_dim, pred_dim]     (2.1 return_all_tokens: projection of the *context* tokens)
+pred.mod_embed_img / pred.mod_embed_video  [pred_dim]      (2.1: added to every predictor token)
+pred.action_embed.weight/bias [pred_dim, action_dim]
 pred.state_embed.weight/bias  [pred_dim, state_dim]
 pred.blk.{i}.adaln.weight/bias [6*pred_dim, pred_dim]      (lewm: adaLN-zero modulation, see the lewm section)
 pred.proj.0 / .2              [proj_hidden, pred_dim] / [out_dim, proj_hidden]    (lewm: 2-layer MLP, BatchNorm folded, act = jepa.pred.proj_act)
@@ -112,11 +121,13 @@ pred.proj.0 / .2              [proj_hidden, pred_dim] / [out_dim, proj_hidden]  
 | `jepa.head.labels` | [str] id2label, in order |
 
 ```
-head.query                    [1, embed_dim]
-head.xattn.ln_q / ln_kv ...   (mirror HF VJEPA2AttentivePooler naming: xattn.q, xattn.k, xattn.v, xattn.out)
-head.blk.{i}.*                self-attention blocks (same layout as enc.blk)
-head.norm.weight/bias
-head.cls.weight/bias          [n_classes, embed_dim]
+head.blk.{i}.*                self-attention blocks over all tokens, run FIRST (same layout as enc.blk)
+head.query                    [1, embed_dim]            (raw query token = residual of the cross-attn)
+head.xattn.ln_kv.weight/bias                            (HF layer_norm1: applied to keys/values only, NOT to the query)
+head.xattn.q / .k / .v        .weight [embed_dim, embed_dim] + .bias   (no output projection in HF)
+head.xattn.ln2.weight/bias                              (HF layer_norm2, on query + attn)
+head.xattn.ffn_up / ffn_down  MLP after the cross-attention (fc1/fc2)
+head.cls.weight/bias          [n_classes, embed_dim]    (no final norm: classifier acts directly on the pooled token)
 ```
 
 ## Preprocessing metadata (`jepa.pre.*`)
@@ -128,6 +139,7 @@ head.cls.weight/bias          [n_classes, embed_dim]
 | `jepa.pre.crop` | center crop size |
 | `jepa.pre.resample` | `bilinear` · `bicubic` (must match the reference processor) |
 | `jepa.pre.resize_mode` | `shortest_edge` (resize short side to `resize_short`, keep aspect, centre-crop `crop`) · `squash` (resize directly to `crop`×`crop`, aspect not preserved — HF I-JEPA `ViTImageProcessor` with `size={height,width}`) |
+| `jepa.pre.rescale` | f32, pixel scale before normalisation (1/255) |
 
 ## Token order
 
