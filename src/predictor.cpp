@@ -78,8 +78,9 @@ ggml_tensor * jepa_build_predictor_masked(jepa_context * ctx, ggml_tensor * inp,
         x = n_ctx > 0 ? ggml_concat(g, x, tgt, 1) : tgt;
     }
 
-    // 3. modality vector (2.1: added to context *and* mask tokens).  The image tokenizer path has
-    // its own vector -- adding the video one instead is a silent ~2-digit error (mean cos 0.99).
+    // 3. modality vector (2.1: added to context *and* mask tokens).  The image tokenizer path has its
+    // own vector -- adding the video one instead is a silent two-digit error (mean cos 0.862, worst
+    // row 0.655 on a 576-token image against the numpy spec, vs 1.0000000 with the right one).
     if (p.modality_embed) {
         const bool image = modality == JEPA_MODALITY_IMAGE;
         ggml_tensor * mod = m->get(image ? "pred.mod_embed_img" : "pred.mod_embed_video");
