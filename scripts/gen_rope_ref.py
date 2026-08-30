@@ -202,7 +202,11 @@ def main():
     ap = argparse.ArgumentParser()
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     ap.add_argument("--out", default=os.path.join(root, "tests", "vectors", "rope3d"))
-    ap.add_argument("--vjepa2-src", default="/home/overseer2/workdir/jepa.cpp/tmp/vjepa2-src")
+    # `git clone --depth 1 https://github.com/facebookresearch/vjepa2 tmp/vjepa2-src` (git-ignored)
+    src_default = os.path.join(root, "tmp", "vjepa2-src")
+    if not os.path.isdir(src_default):  # worktrees: fall back to the main checkout's shared clone
+        src_default = "/home/overseer2/workdir/jepa.cpp/tmp/vjepa2-src"
+    ap.add_argument("--vjepa2-src", default=src_default)
     args = ap.parse_args()
 
     sys.path.insert(0, args.vjepa2_src)
