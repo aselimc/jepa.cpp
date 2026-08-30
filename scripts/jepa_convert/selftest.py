@@ -37,16 +37,33 @@ class Model:
         self.r = gguf.GGUFReader(str(path))
         self.hp = {k: f.contents() for k, f in self.r.fields.items() if k.startswith(("jepa.", "general."))}
         self.t = {t.name: t for t in self.r.tensors}
+        self._cache: dict[str, np.ndarray] = {}  # dequantized / widened tensors (quantized files are read repeatedly)
 
     def __contains__(self, name: str) -> bool:
         return name in self.t
 
     def get(self, name: str) -> np.ndarray:
+        a = self._cache.get(name)
+        if a is not None:
+            return a
         t = self.t[name]
         a = np.asarray(t.data)
-        if a.dtype == np.float16:
+        if t.tensor_type == gguf.GGMLQuantizationType.F32:
+            return a  # numpy shape == PyTorch shape (gguf reverses ne for us)
+        if t.tensor_type == gguf.GGMLQuantizationType.F16:
             a = a.astype(np.float32)
-        return a  # numpy shape == PyTorch shape (gguf reverses ne for us)
+        else:  # q8_0 / q4_0 / q4_k / ... written by tools/jepa-quantize: dequantize, restore the PyTorch shape
+            shape = [int(x) for x in reversed(list(t.shape))]
+            a = gguf.quants.dequantize(a, t.tensor_type).astype(np.float32).reshape(shape)
+        self._cache[name] = a
+        return a
+
+    def tensor_types(self) -> dict[str, int]:
+        """{ggml type name: tensor count}, e.g. {'F32': 102, 'Q8_0': 48}."""
+        out: dict[str, int] = {}
+        for t in self.r.tensors:
+            out[t.tensor_type.name] = out.get(t.tensor_type.name, 0) + 1
+        return out
 
     def opt(self, name: str):
         return self.get(name) if name in self.t else None
@@ -347,9 +364,11 @@ def main(argv=None) -> int:
     torch.set_num_threads(args.threads)
     m = Model(args.gguf)
     fam = m.hp["jepa.family"]
-    is_f16 = any(t.tensor_type == gguf.GGMLQuantizationType.F16 for t in m.r.tensors)
-    tol = args.tol if args.tol is not None else (2e-2 if is_f16 else 1e-4)
-    print(f"{args.gguf}: family={fam} ftype={'f16' if is_f16 else 'f32'} tol(rel)={tol}")
+    types = m.tensor_types()
+    is_q = any(k not in ("F32", "F16") for k in types)  # quantized by tools/jepa-quantize
+    is_f16 = "F16" in types
+    tol = args.tol if args.tol is not None else (1e-1 if is_q else 2e-2 if is_f16 else 1e-4)
+    print(f"{args.gguf}: family={fam} tensor types={types} tol(rel)={tol}")
     src = Path(args.src)
     ok = True
 
