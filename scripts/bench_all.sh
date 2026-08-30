@@ -36,8 +36,15 @@ INFO="$ROOT/build/jepa-info"
 GGUF_DIR="$ROOT/models/gguf"
 OUT="$ROOT/tmp/bench"
 DOC="$ROOT/docs/benchmarks.md"
-PYTHON="${PYTHON:-/home/overseer2/workdir/jepa.cpp/.venv/bin/python}"
-[ -x "$PYTHON" ] || PYTHON=python3
+# Only the stdlib is needed (metadata + scripts/gen_benchmarks_md.py); the project venv is preferred
+# when it exists so the sweep uses the same interpreter as the rest of the tooling.
+PYTHON="${PYTHON:-}"
+if [ -z "$PYTHON" ]; then
+    for cand in "$ROOT/.venv/bin/python" "$(command -v python3 || true)"; do
+        if [ -x "$cand" ]; then PYTHON="$cand"; break; fi
+    done
+fi
+[ -n "$PYTHON" ] || { echo "no python3 found (set PYTHON=...)" >&2; exit 1; }
 
 THREADS="32"
 INCLUDE_QUANTS=0
@@ -68,7 +75,7 @@ while [ $# -gt 0 ]; do
         --note)      NOTE="$2"; shift ;;
         --no-doc)    GEN_DOC=0 ;;
         -n|--dry-run) DRY=1 ;;
-        -h|--help)   sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)   sed -n '2,29p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument $1" >&2; exit 1 ;;
     esac
     shift
@@ -96,28 +103,29 @@ write_meta() {  # $1 = "start" | "end"
     cores=$(nproc)
     mem=$(grep -m1 MemTotal /proc/meminfo | awk '{printf "%.0f", $2/1048576}')
     "$PYTHON" - "$OUT/meta.json" "$1" <<PY
-import json, os, sys, datetime, subprocess
+import json, os, sys, datetime
 path, phase = sys.argv[1], sys.argv[2]
 meta = json.load(open(path)) if os.path.exists(path) else {}
+meta.update({                       # the box/toolchain description, refreshed every run
+    "cpu":            """$cpu""",
+    "cores":          int("""$cores"""),
+    "mem_gb":         int("""$mem"""),
+    "kernel":         os.uname().release,
+    "compiler":       """$cxx""",
+    "ggml_commit":    """$ggml_commit""",
+    "ggml_llamafile": """$llamafile""" or "unknown",
+})
+# One entry per bench_all.sh invocation: --keep appends rather than replacing, so a document built
+# from a 32-thread sweep plus a 96-thread one shows both, with the load each of them saw.
+sessions = meta.setdefault("sessions", [])
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+load = open("/proc/loadavg").read().split()[0]
 if phase == "start":
-    meta.update({
-        "date_utc":     datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "cpu":          """$cpu""",
-        "cores":        int("""$cores"""),
-        "mem_gb":       int("""$mem"""),
-        "kernel":       os.uname().release,
-        "compiler":     """$cxx""",
-        "ggml_commit":  """$ggml_commit""",
-        "ggml_llamafile": """$llamafile""" or "unknown",
-        "threads":      """$THREADS""",
-        "repeat":       $REPEAT,
-        "warmup":       $WARMUP,
-        "note":         """$NOTE""",
-        "loadavg_start": open("/proc/loadavg").read().split()[:3],
-    })
-else:
-    meta["loadavg_end"] = open("/proc/loadavg").read().split()[:3]
-    meta["date_end_utc"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    sessions.append({"threads": """$THREADS""", "repeat": $REPEAT, "warmup": $WARMUP,
+                     "note": """$NOTE""", "start_utc": now, "loadavg_start": load})
+elif sessions:
+    sessions[-1]["end_utc"] = now
+    sessions[-1]["loadavg_end"] = load
 json.dump(meta, open(path, "w"), indent=2)
 PY
 }

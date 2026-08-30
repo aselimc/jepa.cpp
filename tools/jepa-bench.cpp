@@ -234,6 +234,10 @@ int main(int argc, char ** argv) {
     if (warmup < 0) warmup = 0;
     if (batch  < 1) batch  = 1;
     if (steps  < 1) steps  = 1;
+    if (batch > 1 && mode != "encoder") {
+        fprintf(stderr, "note: --batch only applies to --mode encoder; %s times one item\n", mode.c_str());
+        batch = 1;
+    }
 
     // --threads accepts "32" or "32,96" (one context, one reported row per entry)
     std::vector<int> thread_list;
@@ -349,10 +353,16 @@ int main(int argc, char ** argv) {
             }
             r.units = batch;
         } else if (mode == "head" || mode == "predictor") {
-            // The head and the masked predictor both consume exactly one item's tokens.
+            // The head and the masked predictor both consume exactly one item's tokens. Encode
+            // twice and keep the second: the first pass also pages the weights in, so its time is
+            // not the steady-state encoder cost this row reports next to the head/predictor one.
             const jepa_input in = { x.data(), 1, 3, T, H, W };
             jepa_output enc = {};
-            if (jepa_encode(ctx, &in, &enc) != 0) { failed = true; }   // also pages the weights in
+            for (int i = 0; i < 2 && !failed; i++) {
+                jepa_free(enc.data);
+                enc = jepa_output{};
+                if (jepa_encode(ctx, &in, &enc) != 0) failed = true;
+            }
             if (!failed) {
                 r.enc_ms = jepa_context_last_compute_ms(ctx);
                 r.tokens = enc.n_tokens;

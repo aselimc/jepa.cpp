@@ -90,7 +90,9 @@ def load_baselines(ref_dir: Path) -> dict[str, dict]:
         man = ref_dir / spec["ref"] / "manifest.json"
         if not man.exists():
             continue
-        samples = json.loads(man.read_text()).get("samples", [])
+        blob = json.loads(man.read_text())
+        samples = blob.get("samples", [])
+        fw = blob.get("framework", {})
         by_frames: dict[int, tuple[float, int]] = {}
         for s in samples:
             n = int(s.get("frames", 1))
@@ -99,7 +101,7 @@ def load_baselines(ref_dir: Path) -> dict[str, dict]:
                 continue
             tot, cnt = by_frames.get(n, (0.0, 0))
             by_frames[n] = (tot + float(fwd), cnt + 1)
-        out[label] = {"scope": spec["scope"], "fn": spec.get("fn"),
+        out[label] = {"scope": spec["scope"], "fn": spec.get("fn"), "framework": fw,
                       "by_frames": {n: (1000.0 * t / c, c) for n, (t, c) in by_frames.items()}}
     return out
 
@@ -195,17 +197,27 @@ def main() -> int:
         ["ggml", f"`{meta.get('ggml_commit', '?')}`, **`GGML_LLAMAFILE={meta.get('ggml_llamafile', '?')}`**"],
         ["Attention", "`ggml_flash_attn_ext`; K/V dtype auto (F32 for f32 files, F16 otherwise)"],
         ["Thread counts", ", ".join(str(t) for t in threads_seen)],
-        ["Runs per config", f"{meta.get('warmup', '?')} warmup + {meta.get('repeat', '?')} measured"],
-        ["Date", meta.get("date_utc", "?")],
     ]
-    la, lb = meta.get("loadavg_start"), meta.get("loadavg_end")
-    if la:
-        box.append(["Load average", f"{la[0]} at the start, {lb[0] if lb else '?'} at the end "
-                                    f"(1-minute, out of {meta.get('cores', '?')})"])
-    if meta.get("note"):
-        box.append(["Note", meta["note"]])
     A(table([[k, v] for k, v in box], ["setting", "value"], "ll"))
     A("")
+
+    sessions = meta.get("sessions", [])
+    if sessions:
+        A("Measurement sessions (one `bench_all.sh` invocation each):")
+        A("")
+        A(table([[s.get("threads", "?"),
+                  f"{s.get('warmup', '?')} + {s.get('repeat', '?')}",
+                  s.get("start_utc", "?"), s.get("end_utc", "?"),
+                  f"{s.get('loadavg_start', '?')} → {s.get('loadavg_end', '?')}",
+                  s.get("note", "") or "—"] for s in sessions],
+                ["threads", "warmup + measured", "start", "end", "1-min load avg", "note"], "rlllll"))
+        A("")
+        A(f"The box is shared with other agents, so the 1-minute load average is recorded per session "
+          f"(out of {meta.get('cores', '?')} hardware threads; a session's own run contributes its "
+          "thread count). Where a session ran against a busy box, `ms min` — the least contended of "
+          "the measured runs — is the better estimate of the uncontended cost, and the tables print "
+          "it next to the mean.")
+        A("")
 
     A("**What the milliseconds are.** `ms` is the wall time of `ggml_backend_graph_compute` for the "
       "named graph (`jepa_context_last_compute_ms`) — model load, graph build/allocation and the "
@@ -239,10 +251,17 @@ def main() -> int:
         A(table(rows, ["model", "ftype", "shape", "tokens", "threads", "ms mean", "ms min",
                        "tokens/s", "PyTorch ms", "speedup"], "lllrrrrrrr"))
         A("")
-        A("PyTorch baseline = the mean `timing_s.forward_s` of the reference samples with the same "
-          "frame count in `tests/fixtures/ref/<model>/manifest.json` (torch CPU float32, 32 threads, "
-          "same box). The speedup column is only filled where that forward is the same work as our "
-          "encoder.")
+        fw = next((b["framework"] for b in bl.values() if b.get("framework")), {})
+        env = ", ".join(x for x in [
+            f"torch {fw['torch']}" if fw.get("torch") else "",
+            f"transformers {fw['transformers']}" if fw.get("transformers") else "",
+            f"{fw['threads']} threads" if fw.get("threads") else "",
+        ] if x)
+        A("PyTorch baseline = the mean `timing_s.forward_s` over the reference samples with the same "
+          "frame count in `tests/fixtures/ref/<model>/manifest.json` — the same box, CPU float32"
+          + (f", {env}" if env else "") + ". It is the model forward alone (no decode, no "
+          "preprocessing). The speedup column is filled only where that forward is the same work as "
+          "our encoder; see the footnotes for the three models where it is not.")
         A("")
 
     # ---- tokens/s summary -----------------------------------------------------------------
@@ -275,24 +294,92 @@ def main() -> int:
                 "llr" + "r" * len(cols)))
         A("")
 
+    # ---- dtype effect ----------------------------------------------------------------------
+    if enc:
+        lo = threads_seen[0]
+        cfgs: dict[tuple, dict[str, dict]] = {}
+        for r in enc:
+            if r["threads"] != lo:
+                continue
+            cfgs.setdefault((r["model"], r["frames"], r["height"], r["width"]), {})[r["ftype"]] = r
+        rows = []
+        for k in cfgs:
+            d = cfgs[k]
+            if "f16" not in d:
+                continue
+            any_r = next(iter(d.values()))
+            f32, f16, q8 = d.get("f32"), d["f16"], d.get("q8_0")
+            rows.append([
+                any_r["model"], shape_label(any_r), f"{any_r['tokens']:,}".replace(",", " "),
+                ms_str(f32["ms_mean"]) if f32 else "–",
+                ms_str(f16["ms_mean"]),
+                ms_str(q8["ms_mean"]) if q8 else "–",
+                f"{f32['ms_mean'] / f16['ms_mean']:.2f}x" if f32 else "–",
+                f"{f16['ms_mean'] / q8['ms_mean']:.2f}x" if q8 else "–",
+            ])
+        if rows:
+            A(f"### Effect of the weight dtype (encoder, t={lo})")
+            A("")
+            A(table(rows, ["model", "shape", "tokens", "f32 ms", "f16 ms", "q8_0 ms",
+                           "f32 → f16", "f16 → q8_0"], "llrrrrrr"))
+            A("")
+            A("Quantisation buys memory, not reliably time. The matmuls do get faster "
+              "(`docs/ggml-notes.md` §5 measures 2.2 → 3.3 TFLOP/s going F32 → F16, and ~3.6-4.1 for "
+              "Q8_0 on this box), but q8_0 pays for quantising the *activations* on every matmul, "
+              "and on the long clips the flash-attention time — F32 work whatever the weights are — "
+              "dominates the layer (`docs/ggml-notes.md` §3: 158 ms per ViT-L layer at 8192 tokens "
+              "against ~62 ms of matmul). The small image models are launch- and LayerNorm-bound and "
+              "barely move at all. Pick the dtype on the accuracy tables in `docs/parity.md` and "
+              "`docs/quantization.md` and on the memory table below, not on these milliseconds.")
+            A("")
+
+    # ---- thread scaling --------------------------------------------------------------------
+    if enc and len(threads_seen) > 1:
+        lo, hi = threads_seen[0], threads_seen[-1]
+        by_cfg: dict[tuple, dict[int, dict]] = {}
+        for r in runs:
+            by_cfg.setdefault((r["model"], r["ftype"], r["mode"], r["frames"], r["height"]), {})[r["threads"]] = r
+        rows = []
+        for k in sorted(by_cfg, key=lambda k: (k[0], MODE_ORDER.get(k[2], 9), k[3])):
+            got = by_cfg[k]
+            if lo not in got or hi not in got:
+                continue
+            a_, b_ = got[lo], got[hi]
+            rows.append([a_["model"], a_["ftype"], a_["mode"], shape_label(a_),
+                         f"{a_['tokens']:,}".replace(",", " "),
+                         ms_str(a_["ms_mean"]), ms_str(b_["ms_mean"]),
+                         f"{a_['ms_mean'] / b_['ms_mean']:.2f}x" if b_["ms_mean"] else "–"])
+        if rows:
+            A(f"### Thread scaling ({lo} → {hi} threads)")
+            A("")
+            A(table(rows, ["model", "ftype", "mode", "shape", "tokens", f"ms t={lo}", f"ms t={hi}",
+                           "speedup"], "llllrrrr"))
+            A("")
+            A(f"Tripling the threads never triples the throughput: the {lo}-thread runs already "
+              "saturate a good part of the memory bandwidth, and both the LayerNorm/GELU passes and "
+              "the graph launch overhead scale poorly. The gain is largest where a single matmul or "
+              "flash-attention tile is big enough to keep 96 workers busy.")
+            A("")
+
     # ---- cross-check against docs/parity.md -----------------------------------------------
     xrows = []
     for r in enc:
         p = PARITY_MS.get((r["model"], r["ftype"], r["frames"], r["threads"]))
         if p is None:
             continue
-        d = 100.0 * (r["ms_mean"] - p) / p
+        d = 100.0 * (r["ms_min"] - p) / p
         xrows.append([r["model"], r["ftype"], shape_label(r), r["threads"],
-                      ms_str(r["ms_mean"]), ms_str(p), f"{d:+.1f} %"])
+                      ms_str(r["ms_min"]), ms_str(p), f"{d:+.1f} %"])
     if xrows:
         A("### Cross-check against `docs/parity.md`")
         A("")
-        A("`docs/parity.md` times the *same* encoder graphs on the real preprocessed fixture inputs "
-          "(and takes the second sample of a run, after the weights are paged in). The synthetic "
-          "input here has the same shape and scale, so the two must agree to within run-to-run "
-          "noise — a few percent, more on the small models where a single graph is 10 ms.")
+        A("`docs/parity.md` times the *same* encoder graphs on the real preprocessed fixture inputs, "
+          "reporting the second sample of a run (after the weights are paged in) — effectively a "
+          "best-of figure, so `ms min` is what it should be compared against. The synthetic input "
+          "used here has the same shape and scale, so the two agree to within run-to-run noise; "
+          "`docs/parity.md` itself puts that at ±10-15 % on this shared box.")
         A("")
-        A(table(xrows, ["model", "ftype", "shape", "threads", "bench ms", "parity.md ms", "delta"],
+        A(table(xrows, ["model", "ftype", "shape", "threads", "bench ms min", "parity.md ms", "delta"],
                 "lllrrrr"))
         A("")
 
@@ -308,20 +395,22 @@ def main() -> int:
         A("")
         A("`weights MiB` is `jepa_model_n_bytes()` (the tensor bytes resident after the load, i.e. the "
           "GGUF payload); `peak RSS` additionally covers the graph allocation, the host-side patch "
-          "buffer and the output rows, so it grows with the token count. Model load is a plain "
-          "`mmap`-less read of the file — it is dominated by the file size and the page cache state.")
+          "buffer and the output rows, so it grows with the token count — the same weights are "
+          "listed once per shape so that growth is visible. The loader `fread`s every tensor into "
+          "its own buffer (no `mmap`), so `model load ms` tracks the file size and the page-cache "
+          "state; these numbers are all warm-cache. Compare the weight column with the GGUF file "
+          "sizes in `docs/quantization.md`.")
         A("")
 
     # ---- other modes ----------------------------------------------------------------------
     for mode, title, note in (
         ("head", "Attentive-pool head",
          "The classifier head (3 self-attention blocks over the tokens + one cross-attention query + "
-         "MLP + linear) on top of the encoder output of the same clip; `encoder ms` is the encoder "
-         "pass that produced its input, so the end-to-end classification cost is the sum."),
+         "MLP + linear) on top of the encoder output of the same clip, so the end-to-end "
+         "classification cost is encoder + head."),
         ("predictor", "Masked predictor",
          "Worst case for the predictor: context = target = **every** token, i.e. a sequence of "
-         "2 x tokens through the 12-layer 384-d predictor. `encoder ms` is the encoder pass that "
-         "produced the context features."),
+         "2 x tokens through the 12-layer 384-d predictor."),
     ):
         sel = [r for r in runs if r["mode"] == mode]
         if not sel:
@@ -334,8 +423,35 @@ def main() -> int:
         A(table(rows, ["model", "ftype", "shape", "tokens", "threads", "ms mean", "ms min",
                        "encoder ms", "peak RSS MiB"], "lllrrrrrr"))
         A("")
-        A(note)
+        A(note + " `encoder ms` is the pass that produced this row's input — a **single** graph "
+                 "(the second of two, so the weights are warm), not an average of `repeat` runs like "
+                 "the `ms` columns, so read the Encoder table for the encoder cost proper.")
         A("")
+        if mode == "head":
+            # Encoder + head IS like-for-like with a classification manifest's forward_s, unlike the
+            # encoder row alone — spell the comparison out, since the footnote promises it.
+            crows = []
+            for r in sel:
+                b = bl.get(r["model"])
+                if not b or b["scope"] != "encoder+attentive pooler+classifier":
+                    continue
+                e = next((q for q in enc if q["model"] == r["model"] and q["ftype"] == r["ftype"]
+                          and q["frames"] == r["frames"] and q["threads"] == r["threads"]), None)
+                hit = b["by_frames"].get(r["frames"])
+                if not e or not hit:
+                    continue
+                tot = e["ms_mean"] + r["ms_mean"]
+                crows.append([r["model"], r["ftype"], shape_label(r), r["threads"],
+                              ms_str(e["ms_mean"]), ms_str(r["ms_mean"]), ms_str(tot),
+                              ms_str(hit[0]), f"{hit[0] / tot:.2f}x"])
+            if crows:
+                A("End-to-end classification against the reference — this *is* like-for-like, because "
+                  "the manifest's forward is `VJEPA2ForVideoClassification` (encoder + attentive "
+                  "pooler + classifier, predictor skipped):")
+                A("")
+                A(table(crows, ["model", "ftype", "shape", "threads", "encoder ms", "head ms",
+                                "total ms", "PyTorch ms", "speedup"], "lllrrrrrr"))
+                A("")
 
     lewm = [r for r in runs if r["mode"] in ("lewm-step", "lewm-rollout")]
     if lewm:
@@ -363,8 +479,9 @@ def main() -> int:
                    "on the encoder and no speedup is claimed against it.")
     if "ssv2" in used_fn:
         fns.append("<sup>ssv2</sup> the SSv2 manifest times `VJEPA2ForVideoClassification`, i.e. "
-                   "encoder + attentive pooler + classifier with the predictor skipped. Compare it "
-                   "against our encoder **plus** head rows, not the encoder row alone.")
+                   "encoder + attentive pooler + classifier with the predictor skipped. It is "
+                   "therefore not comparable with the encoder row alone; the end-to-end table under "
+                   "*Attentive-pool head* adds our encoder and head and makes the comparison there.")
     if "lewm" in used_fn:
         fns.append("<sup>lewm</sup> the LeWM manifest times encode + projector + one 1-frame "
                    "predictor call; the two extra graphs are ~1 ms of it (see the world-model "
