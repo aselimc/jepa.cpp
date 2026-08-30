@@ -19,10 +19,10 @@ tools/jepa-embed      image/video → features (.npy / text)
 tools/jepa-classify   video → top-k labels (attentive-pool head)
 tools/jepa-quantize   f32/f16 GGUF → q8_0 / q4_k ...
 tools/jepa-bench      timing
-tests/test-parity     load fixtures/ref/*.npz, run model, report cosine / max-abs / top-k agreement, exit non-zero on regression
+tests/test-parity     load fixtures/ref/<model>/manifest.json + .npy, run model, report cosine / max-abs / top-k agreement, exit non-zero on regression
 scripts/convert.py    HF safetensors / torch.hub .pt → GGUF (docs/gguf-schema.md)
-scripts/dump_reference.py   PyTorch golden outputs for tests/fixtures/media/* → tests/fixtures/ref/*.npz
-scripts/compare.py    optional python-side comparison of .npy outputs
+scripts/dump_reference.py   PyTorch golden outputs for tests/fixtures/media/* → tests/fixtures/ref/<model>/{manifest.json, <sample>.<tensor>.npy}
+scripts/compare.py    python-side comparison of .npy outputs / ref dirs (cosine, max-abs, rel, top-k; non-zero exit on regression)
 ```
 
 ## The shared graph
@@ -64,7 +64,7 @@ Patch "conv" is a host-side rearrangement into `[N, C*T*P*P]` followed by one `g
 - **Two layouts exist** (see `src/rope3d.h` for the exact math + source citations): HF / V-JEPA 2 *tile* the per-pair cos/sin over the axis chunk (`repeat(1,1,1,2)`: the two members of a pair get different frequencies — Meta's code calls it a bug kept for weight compatibility); V-JEPA 2.1 *interleaves* them (`repeat_interleave(2)`, a true rotation) and adds `interpolate_rope`, which rescales h/w (not t) as `h * (pretrained_grid - 1) / (grid_h - 1)` with `pretrained_grid = 256 / patch_size` hard-coded (16 for the released 384-px checkpoints — *not* `img_size / patch`). `jepa_rope3d_params::variant` selects the layout; `jepa_rope3d_apply` builds it from stock ops (`roll`/`mul`/`add`), and `jepa_rope3d_tables_ids` gives rows for masked/subsampled token ids (predictor). Unit test: `tests/test-ops.cpp` against `tests/vectors/rope3d/` (from `scripts/gen_rope_ref.py`).
 
 ## Parity protocol (every phase ends with this)
-1. `scripts/dump_reference.py --model <name>` writes `tests/fixtures/ref/<name>.npz` containing, per fixture: preprocessed input tensor, `last_hidden_state`, pooled feature, and (if a head exists) logits.
-2. `test-parity <model.gguf> <ref.npz>` feeds the **same preprocessed tensor** (bypassing our preprocessor) and reports per-sample cosine similarity, max abs error; then runs our own preprocessor and reports the same, plus top-1/top-5 agreement for heads.
+1. `scripts/dump_reference.py --model <name>` writes `tests/fixtures/ref/<name>/manifest.json` plus one float32 C-order `.npy` per tensor per sample (`<sample>.<tensor>.npy`; `frames_u8` uint8, `top5_idx` int64) containing, per fixture: preprocessed input tensor (`input`, layout stated in the manifest), `last_hidden_state`, pooled feature, and (if a head exists) logits / pooler output; video samples also carry the raw sampled frames (`frames_u8`). Schema and per-model tensor lists: `tests/fixtures/README.md`.
+2. `test-parity <model.gguf> <ref dir>` feeds the **same preprocessed tensor** (bypassing our preprocessor) and reports per-sample cosine similarity, max abs error; then runs our own preprocessor (from `frames_u8` for video) and reports the same, plus top-1/top-5 agreement for heads. `scripts/compare.py` is the Python twin (same metrics and thresholds on `.npy` outputs).
 3. Pass thresholds: F32 cosine ≥ 0.9999, max-abs ≤ 1e-3 relative; Q8_0 cosine ≥ 0.999; top-1 agreement 100 % on fixtures for F32, ≥ 90 % for Q8_0.
 4. Numbers get written to `docs/parity.md` (model, dtype, cosine, max-abs, top-k, time per sample on this box).
