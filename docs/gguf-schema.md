@@ -33,7 +33,7 @@ All agents (converter, loader, graph builder) implement exactly this. Change it 
 | `jepa.enc.act` | str | `gelu_erf` (all Meta JEPAs) · `gelu_tanh` · `silu` |
 | `jepa.enc.pos_type` | str | `sincos2d` · `sincos3d` · `learned` · `rope3d` |
 | `jepa.enc.rope_theta` | f32 | 10000 |
-| `jepa.enc.rope_interpolate` | bool | V-JEPA 2.1 `interpolate_rope` |
+| `jepa.enc.rope_interpolate` | bool | V-JEPA 2.1 `interpolate_rope`. The "pretrained grid" it rescales h/w to is **not** `img_size / patch_size`: Meta hard-codes `256 / patch_size` (16 for patch 16, 18 for patch 14) — the loader derives `train_grid_h = train_grid_w = 256 / patch_size` = `jepa.enc.rope_ref_grid` (see `src/rope3d.h`). `family == vjepa2_1` also selects the interleaved cos/sin layout (`variant = 1`); `vjepa2` uses the tiled HF layout (`variant = 0`). |
 | `jepa.enc.rope_freq_layout` | str | `tiled` (V-JEPA 2: per-axis cos/sin table is `[f_0..f_{d/2-1}, f_0..f_{d/2-1}]`, the Meta/HF quirk) · `interleaved` (V-JEPA 2.1: `[f_0,f_0,f_1,f_1,...]`, textbook RoPE). See `scripts/jepa_convert/VJEPA_NOTES.md` |
 | `jepa.enc.rope_ref_grid` | u32 | V-JEPA 2.1 only: spatial RoPE positions are rescaled `h *= (ref_grid-1)/(gh-1)` (16 for patch 16) |
 | `jepa.enc.cls_token` | bool | true for `hfvit` (DINOv2-style), false for Meta JEPAs |
