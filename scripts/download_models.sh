@@ -21,7 +21,9 @@ want="${1:-all}"
 has() { [ "$want" = all ] || [ "$want" = "$1" ] || { [ "$want" = small ] && [ "$2" = small ]; }; }
 
 has lejepa small && { echo "== LeJEPA ViT-S/16 (OK-AI, 107 MB)"
-  hf OK-AI/lejepa-vits16-pretrain-in1k config.json preprocessor_config.json model.safetensors configuration_vitv2.py modelling_vitv2.py README.md; }
+  hf OK-AI/lejepa-vits16-pretrain-in1k config.json preprocessor_config.json model.safetensors configuration_vitv2.py modelling_vitv2.py README.md
+  # modelling_vitv2.py imports hf_src/ (not listed in the model card); fetch the package so trust_remote_code works offline
+  for f in $(curl -sL "https://huggingface.co/api/models/OK-AI/lejepa-vits16-pretrain-in1k" | python3 -c "import sys,json; print(\" \".join(s[\"rfilename\"] for s in json.load(sys.stdin)[\"siblings\"] if s[\"rfilename\"].startswith(\"hf_src/\")))"); do hf OK-AI/lejepa-vits16-pretrain-in1k "$f"; done; }
 has lewm small && { echo "== LeWorldModel Push-T (72 MB)"
   hf quentinll/lewm-pusht config.json weights.pt README.md; }
 has vjepa21 small && { echo "== V-JEPA 2.1 ViT-B/16 384 (1.66 GB, torch.hub pickle)"
