@@ -104,7 +104,9 @@ int main(int argc, char ** argv) {
     const int tub = jepa_model_tubelet_size(model);
     if (tub > 1 && n_frames % tub != 0) {
         const int pad = tub - n_frames % tub;
-        for (int i = 0; i < pad; i++) pixels.insert(pixels.end(), pixels.end() - (size_t) fh * fw * 3, pixels.end());
+        const size_t frame_bytes = (size_t) fh * fw * 3;
+        const std::vector<uint8_t> last(pixels.end() - frame_bytes, pixels.end());   // copy: insert may reallocate
+        for (int i = 0; i < pad; i++) pixels.insert(pixels.end(), last.begin(), last.end());
         fprintf(stderr, "note: repeated the last frame %d time(s) to reach a multiple of the tubelet size %d\n", pad, tub);
         n_frames += pad;
     }

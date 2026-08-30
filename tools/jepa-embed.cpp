@@ -145,7 +145,9 @@ int main(int argc, char ** argv) {
     for (item & it : items) {
         if (video_model && tubelet > 1 && it.n % tubelet != 0 && jepa_token_grid(model, it.n, jepa_model_img_size(model), jepa_model_img_size(model), nullptr, nullptr, nullptr) == 0) {
             const int pad = tubelet - it.n % tubelet;
-            for (int i = 0; i < pad; i++) it.pixels.insert(it.pixels.end(), it.pixels.end() - (size_t) it.h * it.w * 3, it.pixels.end());
+            const size_t frame_bytes = (size_t) it.h * it.w * 3;
+            const std::vector<uint8_t> last(it.pixels.end() - frame_bytes, it.pixels.end());  // copy: insert may reallocate
+            for (int i = 0; i < pad; i++) it.pixels.insert(it.pixels.end(), last.begin(), last.end());
             fprintf(stderr, "note: %s: repeated the last frame %d time(s) to reach a multiple of the tubelet size %d\n", it.name.c_str(), pad, tubelet);
             it.n += pad;
         }

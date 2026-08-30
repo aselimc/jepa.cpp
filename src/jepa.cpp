@@ -404,6 +404,14 @@ bool jepa_video_shape_for(const jepa_model * m, int n_frames, int height, int wi
                  pe ? (long long) pe->ne[0] : 0LL, (long long) vs.patch_dim);
         return false;
     }
+    // RoPE positions are decoded from the ACTUAL patch grid (what Meta's V-JEPA 2.1 does). HF's
+    // VJEPA2RopeAttention instead hard-codes grid_size = crop_size / patch_size from the config
+    // (modeling_vjepa2.py:235), so the two only agree at the checkpoint's native resolution.
+    if (m->hp.family == JEPA_FAMILY_VJEPA2 && e.grid_size() > 0 && (vs.gh != e.grid_size() || vs.gw != e.grid_size())) {
+        jepa_log("jepa: note: %dx%d gives a %dx%d patch grid, but this checkpoint was trained at %dx%d; RoPE "
+                 "positions use the actual grid here, HF uses the config one, so the outputs will differ\n",
+                 width, height, vs.gw, vs.gh, e.grid_size(), e.grid_size());
+    }
     if (verbose) {
         jepa_log("jepa: %s path: %d frames %dx%d -> grid %dx%dx%d = %lld tokens (tubelet %d, patch %d)\n",
                  vs.image_path ? "image" : "video", n_frames, height, width, vs.gt, vs.gh, vs.gw,
