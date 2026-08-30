@@ -50,7 +50,19 @@ if(JEPA_BUILD_TESTS)
     add_executable(test-parity tests/test-parity.cpp)
     target_link_libraries(test-parity PRIVATE jepa)
     target_include_directories(test-parity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    add_test(NAME parity COMMAND test-parity ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures)
+    # fast parity checks on the small f32 models; registered only when the (git-ignored) GGUFs and
+    # reference dumps are present (scripts/convert.py + scripts/dump_reference.py generate them)
+    foreach(pair
+        "lejepa-vits16-pretrain-in1k-f32.gguf;lejepa-vits16"
+        "lewm-pusht-f32.gguf;lewm-pusht")
+      list(GET pair 0 _gguf)
+      list(GET pair 1 _ref)
+      if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/${_gguf} AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/${_ref}/manifest.json)
+        add_test(NAME parity-${_ref}
+                 COMMAND test-parity ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/${_gguf}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/${_ref} --threads 8 --quiet)
+      endif()
+    endforeach()
   endif()
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-ops.cpp)
     add_executable(test-ops tests/test-ops.cpp)
