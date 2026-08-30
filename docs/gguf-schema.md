@@ -41,6 +41,7 @@ All agents (converter, loader, graph builder) implement exactly this. Change it 
 | `jepa.enc.image_patch_embed` | bool | V-JEPA 2.1 separate 1×16×16 image tokenizer |
 | `jepa.enc.hier_layers` | [u32] | V-JEPA 2.1 hierarchical layer ids (per-layer norms exist for these) |
 | `jepa.enc.layer_scale` | bool | DINOv2-style `ls1/ls2` present |
+| `jepa.enc.proj_act` | str | `lewm` only: activation of the `enc.proj.*` MLP (`gelu_erf`) |
 
 Encoder tensors (ggml dim order is reversed from PyTorch; we store PyTorch row-major as-is, i.e. `ne[0]` = last PyTorch dim):
 
@@ -63,6 +64,8 @@ enc.blk.{i}.ffn_down.weight   [embed_dim, ffn_dim]      (+ .bias)
 enc.blk.{i}.ls1 / .ls2        [embed_dim]               (layer_scale only)
 enc.norm.weight / .bias                                  (final LN; for 2.1 this is norms_block[-1])
 enc.hier_norm.{k}.weight/.bias                           (2.1: one per hier layer, k = index into hier_layers)
+enc.proj.0.weight/.bias       [proj_hidden, embed_dim]  (lewm: projector MLP on the CLS token, BatchNorm folded)
+enc.proj.2.weight/.bias       [embed_dim, proj_hidden]  (lewm; act between = jepa.enc.proj_act)
 ```
 
 Sincos tables are **precomputed at conversion** for the training grid (`enc.pos_embed`); the runtime bicubic/trilinear-interpolates for other grids.
@@ -77,6 +80,13 @@ Sincos tables are **precomputed at conversion** for the training grid (`enc.pos_
 | `jepa.pred.action_dim`, `jepa.pred.state_dim` | 7 / 7 for V-JEPA 2-AC; 10 / 0 for LeWM |
 | `jepa.pred.frame_causal` | bool (AC) |
 | `jepa.pred.n_frames` | LeWM: 3 |
+| `jepa.pred.head_dim` | u32, only when `n_head * head_dim != embed_dim` (LeWM: 16 × 64 in a 192-d model) |
+| `jepa.pred.ln_eps` | f32, eps of the affine LayerNorms in the predictor (LeWM: 1e-5) |
+| `jepa.pred.adaln_eps` | f32, eps of the non-affine adaLN norms (LeWM: 1e-6) |
+| `jepa.pred.act` | str, FFN activation (`gelu_erf`) |
+| `jepa.pred.qkv_bias` | bool (LeWM: false → no `attn_qkv.bias`) |
+| `jepa.pred.action_act` | str, activation inside the 2-layer `pred.action_embed` MLP (LeWM: `silu`) |
+| `jepa.pred.proj_act` | str, activation inside the 2-layer `pred.proj` MLP (LeWM: `gelu_erf`) |
 
 ```
 pred.embed.weight/bias        [pred_dim, enc_dim]        (context projection; 2.1: over concatenated hier features → 2-layer MLP: pred.embed.0 / pred.embed.2)
@@ -85,8 +95,11 @@ pred.pos_embed                [n_tokens, pred_dim]        (sincos models only)
 pred.blk.{i}.*                same layout as enc.blk
 pred.norm.weight/bias
 pred.proj.weight/bias         [enc_dim (or teacher_dim), pred_dim]
-pred.action_embed.weight/bias [pred_dim, action_dim]
+pred.action_embed.weight/bias [pred_dim, action_dim]        (AC: single linear)
+pred.action_embed.0 / .2      [4*pred_dim, action_dim] / [pred_dim, 4*pred_dim]   (lewm: 2-layer MLP, act = jepa.pred.action_act)
 pred.state_embed.weight/bias  [pred_dim, state_dim]
+pred.blk.{i}.adaln.weight/bias [6*pred_dim, pred_dim]      (lewm: adaLN-zero modulation, see the lewm section)
+pred.proj.0 / .2              [proj_hidden, pred_dim] / [out_dim, proj_hidden]    (lewm: 2-layer MLP, BatchNorm folded, act = jepa.pred.proj_act)
 ```
 
 ## Head (`jepa.head.*`) — optional
@@ -110,10 +123,11 @@ head.cls.weight/bias          [n_classes, embed_dim]
 
 | key | notes |
 |---|---|
-| `jepa.pre.mean`, `jepa.pre.std` | [f32 ×3], ImageNet (0.485,0.456,0.406)/(0.229,0.224,0.225) for all Meta models |
-| `jepa.pre.resize_short` | short-side resize before crop (I-JEPA HF: 224 via resize to 224×224? → check `preprocessor_config.json`; V-JEPA: crop×256/224) |
+| `jepa.pre.mean`, `jepa.pre.std` | [f32 ×3], ImageNet (0.485,0.456,0.406)/(0.229,0.224,0.225) for V-JEPA, LeJEPA, LeWM. **The HF I-JEPA checkpoint ships 0.5/0.5/0.5** (`ViTImageProcessor`) and that is what the file carries — parity is against the HF processor |
+| `jepa.pre.resize_short` | short-side resize before crop (V-JEPA: crop×256/224; LeJEPA: 256; LeWM: 224). For `resize_mode=squash` it is the target square size (I-JEPA HF: 224) |
 | `jepa.pre.crop` | center crop size |
 | `jepa.pre.resample` | `bilinear` · `bicubic` (must match the reference processor) |
+| `jepa.pre.resize_mode` | `shortest_edge` (resize short side to `resize_short`, keep aspect, centre-crop `crop`) · `squash` (resize directly to `crop`×`crop`, aspect not preserved — HF I-JEPA `ViTImageProcessor` with `size={height,width}`) |
 
 ## Token order
 
@@ -121,4 +135,48 @@ Video tokens are **T-major, then H, then W** (`i = t*gh*gw + h*gw + w`). Image t
 
 ## Quantization rules
 
-Quantize only `*.attn_*`, `*.ffn_*`, `pred.proj`, `head.cls` weights. Keep patch embeddings, norms, biases, pos tables, tokens, and `pred.embed` in F32/F16.
+Quantize only `*.attn_*`, `*.ffn_*`, `pred.proj*`, `enc.proj.*`, `head.cls` weights. Keep patch embeddings, norms, biases, pos tables, tokens, `pred.embed`, `pred.blk.*.adaln`, and `pred.action_embed.*` in F32/F16.
+Converter dtype rule for `--ftype f16`: the quantizable set above is written as F16, everything else as F32.
+
+## Family notes
+
+### ijepa (facebook/ijepa_vith14_1k)
+
+* The HF checkpoint stores the position table as a parameter (`embeddings.position_embeddings`, [1,256,1280]).
+  It is a 2-D sincos table, but with the halves ordered `[emb_w | emb_h]` — bit-identical to
+  `sincos_2d(16, 16, 1280, w_first=True)` in `scripts/jepa_convert/common.py` (max abs diff 0.0), while the
+  `[emb_h | emb_w]` ordering of `vjepa2/src/models/utils/pos_embs.py` differs by up to 2.0. The converter stores the
+  checkpoint table verbatim in `enc.pos_embed`; the runtime interpolates it for other grids (as HF does).
+* No CLS token, no predictor in the HF release; pooled feature = mean over the 256 patch tokens after `enc.norm`.
+* `general.license = cc-by-nc-4.0`.
+
+### hfvit (OK-AI/lejepa-vits16-pretrain-in1k)
+
+DINOv2-style ViT-S/16 from `Open-Knowledge-AI/lite_ssl` ("ViTv2"): LN eps 1e-6, GELU(erf), qkv/proj/ffn biases,
+learned `pos_embed` with the CLS slot at row 0, no registers, no LayerScale (`init_values=null`). The checkpoint's
+`backbone.cva_module_proj.*` (loss-side DINOHead) is not converted. Pooled feature = CLS after `enc.norm`.
+
+### lewm (quentinll/lewm-pusht)
+
+Encoder = HF `ViTModel` tiny/14 written in the `hfvit` layout (**LN eps 1e-12**, ViTConfig default). The world-model
+state is `emb = enc.proj(CLS)` (2-layer MLP, BatchNorm folded, GELU). Predictor (`jepa.pred.kind = lewm`,
+192-d, 6 layers, 16 heads × 64, ffn 2048, `n_frames` 3, `action_dim` 10, causal over frames):
+
+```
+a_t = action_embed.2( silu( action_embed.0( action_t ) ) )              # (T, 192)   [Conv1d(k=1) folded into .0]
+x   = emb + pred.pos_embed[:T]
+for each block i:
+    sh_a, sc_a, g_a, sh_m, sc_m, g_m = split6( adaln( silu(a) ) )       # each (T, 192)
+    h = LN(x, no affine, eps=adaln_eps) * (1 + sc_a) + sh_a
+    h = ln1(h)                                                           # affine, eps=ln_eps
+    q,k,v = attn_qkv(h)  (no bias) ; causal softmax(q kᵀ / 8) v over the T frames, 16 heads × 64
+    x = x + g_a * attn_out(...)
+    h = LN(x, no affine, eps=adaln_eps) * (1 + sc_m) + sh_m
+    x = x + g_m * ffn_down( gelu( ffn_up( ln2(h) ) ) )
+x = pred.norm(x)
+pred_t = pred.proj.2( gelu( pred.proj.0( x_t ) ) )                     # next-state embedding in the same space as emb
+```
+Rollout: append `pred_{T-1}` as the next `emb`, slide a window of `n_frames`. Tensor names: `enc.proj.{0,2}`,
+`pred.pos_embed`, `pred.blk.{i}.{adaln,ln1,attn_qkv,attn_out,ln2,ffn_up,ffn_down}`, `pred.norm`,
+`pred.action_embed.{0,2}`, `pred.proj.{0,2}`. Preprocessing: ImageNet mean/std, bilinear resize to 224 (square renders).
+`scripts/jepa_convert/selftest.py::lewm_predictor_forward` is the executable reference of this graph.
