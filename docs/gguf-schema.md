@@ -52,7 +52,7 @@ enc.patch_embed.weight        [embed_dim, in_chans * tubelet * patch * patch]   
 enc.patch_embed.bias          [embed_dim]
 enc.patch_embed_img.weight    [embed_dim, in_chans * 1 * patch * patch]        (2.1 only)
 enc.patch_embed_img.bias
-enc.pos_embed                 [n_tokens, embed_dim]                            (sincos*/learned; includes CLS slot if cls_token)
+enc.pos_embed                 [n_tokens, embed_dim]                            (sincos*/learned; rows = [CLS?; patches] — registers are appended AFTER the pos add and have no pos rows)
 enc.cls_token                 [embed_dim]
 enc.reg_tokens                [n_registers, embed_dim]
 enc.mod_embed_img             [embed_dim]                                      (2.1)
@@ -95,7 +95,7 @@ Sincos tables are **precomputed at conversion** for the training grid (`enc.pos_
 | `jepa.pred.proj_act` | str, activation inside the 2-layer `pred.proj` MLP (LeWM: `gelu_erf`) |
 
 ```
-pred.embed.weight/bias        [pred_dim, enc_dim]        (context projection; 2.1: over concatenated hier features → 2-layer MLP: pred.embed.0 / pred.embed.2)
+pred.embed.weight/bias        [pred_dim, enc_dim]        (context projection; single Linear when jepa.pred.n_hier_in == 1 (V-JEPA 2, 2.1 ViT-B/L); 2.1 with n_hier_in > 1 (ViT-g/G): 2-layer MLP pred.embed.0 / pred.embed.2 over the concatenated hier features)
 pred.mask_tokens              [n_mask_tokens, pred_dim]
 pred.pos_embed                [n_tokens, pred_dim]        (sincos models only)
 pred.blk.{i}.*                same layout as enc.blk
@@ -138,8 +138,10 @@ head.cls.weight/bias          [n_classes, embed_dim]    (no final norm: classifi
 | `jepa.pre.resize_short` | short-side resize before crop (V-JEPA: crop×256/224; LeJEPA: 256; LeWM: 224). For `resize_mode=squash` it is the target square size (I-JEPA HF: 224) |
 | `jepa.pre.crop` | center crop size |
 | `jepa.pre.resample` | `bilinear` · `bicubic` (must match the reference processor) |
-| `jepa.pre.resize_mode` | `shortest_edge` (resize short side to `resize_short`, keep aspect, centre-crop `crop`) · `squash` (resize directly to `crop`×`crop`, aspect not preserved — HF I-JEPA `ViTImageProcessor` with `size={height,width}`) |
+| `jepa.pre.resize_mode` | optional — loader defaults to `shortest_edge` when absent (video-family files omit it). `shortest_edge` (resize short side to `resize_short`, keep aspect, centre-crop `crop`) · `squash` (resize directly to `crop`×`crop`, aspect not preserved — HF I-JEPA `ViTImageProcessor` with `size={height,width}`) |
 | `jepa.pre.rescale` | f32, pixel scale before normalisation (1/255) |
+
+**Reference resampler.** The HF 5.x processors (`ViTImageProcessor`, `BitImageProcessor`, `VJEPA2VideoProcessor`) are torchvision-backed: `torchvision.transforms.v2.functional.resize` on the **uint8** CHW tensor with `antialias=True`, rounded back to uint8, then center-crop, /255, normalize. PIL resampling differs by up to 1 uint8 LSB on ~0.1–0.3 % of pixels; the C++ preprocessor targets the torchvision result (see `tests/fixtures/README.md`).
 
 ## Token order
 
@@ -147,7 +149,7 @@ Video tokens are **T-major, then H, then W** (`i = t*gh*gw + h*gw + w`). Image t
 
 ## Quantization rules
 
-Quantize only `*.attn_*`, `*.ffn_*`, `pred.proj*`, `enc.proj.*`, `head.cls` weights. Keep patch embeddings, norms, biases, pos tables, tokens, `pred.embed`, `pred.blk.*.adaln`, and `pred.action_embed.*` in F32/F16.
+Quantize only 2-D weight matrices of `*.attn_qkv` / `attn_q` / `attn_k` / `attn_v` / `attn_out`, `*.ffn_up` / `ffn_down`, `pred.proj*` (incl. `pred.proj_context`), `pred.embed*`, `enc.proj.*`, `head.blk.*`, `head.xattn.{q,k,v}`, `head.cls`. Keep patch embeddings, norms, biases, pos tables, CLS/register/mask/modality tokens, `pred.blk.*.adaln`, and `pred.action_embed.*` in F32/F16. K-quants need `ne[0] % 256 == 0`; fall back per tensor to q8_0 (or the q4_0/q5_0 sibling) otherwise.
 Converter dtype rule for `--ftype f16`: the quantizable set above is written as F16, everything else as F32.
 
 ## Family notes

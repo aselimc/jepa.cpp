@@ -164,6 +164,8 @@ as a 5-D tensor with one frame (a 4-D image tensor would hit the video Conv3d an
 ```
 ctx = enc_out[ids_ctx] Wemb^T + bemb                       # [N_ctx, 384]
 tgt = mask_tokens[mask_index % 8] repeated for ids_tgt      # default mask_index = 1
+# NOTE (verified on both released checkpoints): only mask_tokens[0] is non-zero (norm 0.77 in V-JEPA 2 ViT-L, 1.10 in 2.1 ViT-B);
+# mask_tokens[1..] are exactly zero, so the default mask_index=1 selects an all-zero token and mask_index tests are numerically insensitive.
 x = concat(ctx, tgt) ; x += pred.mod_embed_video (or _img)   # every token
 blocks with 3-D RoPE from ids (interleaved, NOT interpolated, grid = img_size/patch = 24)
 x = pred.norm(x)

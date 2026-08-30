@@ -46,9 +46,10 @@ def _dispatch_external(family: str, src: Path, out: Path, ftype: str, name: str 
                 f"(it is written as a standalone module by the video-family converter). Nothing was written.")
         raise
     if hasattr(mod, "convert"):
-        try:
+        import inspect
+        if "name" in inspect.signature(mod.convert).parameters:
             mod.convert(src, out, ftype, name=name)
-        except TypeError:
+        else:
             mod.convert(src, out, ftype)
         return
     if hasattr(mod, "main"):

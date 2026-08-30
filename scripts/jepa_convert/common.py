@@ -162,7 +162,7 @@ class JepaWriter:
         self.w = gguf.GGUFWriter(str(self.path), ARCH)
         self.w.add_name(name)
         self.w.add_license(license)
-        self.w.add_source_url(source_url)
+        self.w.add_string("general.source_url", source_url)  # schema key; gguf-py add_source_url() would write general.source.url
         if description:
             self.w.add_description(description)
         self.w.add_file_type(FTYPES[ftype])
