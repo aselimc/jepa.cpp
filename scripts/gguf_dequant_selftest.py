@@ -145,8 +145,12 @@ def main(argv=None) -> int:
     ap.add_argument("--min-cos", type=float, default=0.999, help="fail if the worst per-token cosine is below this")
     ap.add_argument("--max-rel", type=float, default=None, help="fail if rel_max (max|a-b| / max|b|) exceeds this")
     ap.add_argument("--json", type=Path, default=None, help="write rows + summary as JSON")
+    ap.add_argument("--out", type=Path, default=None,
+                    help="also save the computed tensors as <sample>.<tensor>.npy (compare.py / analysis)")
     ap.add_argument("--quiet", action="store_true", help="print only the summary")
     args = ap.parse_args(argv)
+    if args.out:
+        args.out.mkdir(parents=True, exist_ok=True)
 
     man = json.loads((args.ref / "manifest.json").read_text())
     samples = select_samples(man["samples"], args.samples)
@@ -177,6 +181,9 @@ def main(argv=None) -> int:
         else:
             outs = run_video_family(kv, W, s, args.ref, vref)
         dt = time.time() - t1
+        if args.out:
+            for tname, arr in outs.items():
+                np.save(args.out / f"{s['name']}.{tname}.npy", np.ascontiguousarray(arr))
         for tname, ref_info in s["tensors"].items():
             if tname in ("input", "frames_u8") or tname not in outs or (want and tname not in want):
                 continue

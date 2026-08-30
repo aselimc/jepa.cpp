@@ -208,9 +208,10 @@ struct plan_item {
 
 void usage(const char * prog) {
     fprintf(stderr,
-            "usage: %s IN.gguf OUT.gguf TYPE [-t threads] [--allow-requant] [--dry-run] [-v]\n"
+            "usage: %s IN.gguf OUT.gguf TYPE [-t threads] [--keep SUBSTR]... [--allow-requant] [--dry-run] [-v]\n"
             "  TYPE: f32 | f16 | q8_0 | q4_0 | q4_1 | q5_0 | q5_1 | q4_k | q5_k | q6_k\n"
             "  -t N              quantization threads (default: min(32, hardware threads))\n"
+            "  --keep SUBSTR     tensors whose name contains SUBSTR keep their type (repeatable; e.g. --keep ffn_down)\n"
             "  --allow-requant   re-quantize tensors that are already quantized (lossy on top of lossy)\n"
             "  --dry-run         print the plan and the size summary, write nothing\n"
             "  -v                also list the tensors that keep their type\n",
@@ -237,10 +238,13 @@ int main(int argc, char ** argv) {
     bool allow_requant = false;
     bool dry_run       = false;
     bool verbose       = false;
+    std::vector<std::string> keep;
     for (int i = 4; i < argc; ++i) {
         const std::string a = argv[i];
         if ((a == "-t" || a == "--threads") && i + 1 < argc) {
             n_threads = std::max(1, atoi(argv[++i]));
+        } else if (a == "--keep" && i + 1 < argc) {
+            keep.push_back(argv[++i]);
         } else if (a == "--allow-requant") {
             allow_requant = true;
         } else if (a == "--dry-run") {
@@ -312,7 +316,7 @@ int main(int argc, char ** argv) {
     std::vector<plan_item> plan;
     plan.reserve(n_tensors);
     std::map<ggml_type, std::pair<int64_t, size_t>> before, after;  // type -> (count, bytes)
-    int n_changed = 0, n_fallback = 0, n_kept_rule = 0, n_requant = 0;
+    int n_changed = 0, n_fallback = 0, n_kept_rule = 0, n_kept_user = 0, n_requant = 0;
     size_t bytes_before = 0, bytes_after = 0;
 
     for (int64_t i = 0; i < n_tensors; ++i) {
@@ -333,6 +337,9 @@ int main(int argc, char ** argv) {
         } else if (!is_quantizable(it.name, it.n_dims)) {
             it.note = "kept (rule)";
             n_kept_rule++;
+        } else if (std::any_of(keep.begin(), keep.end(), [&](const std::string & k) { return it.name.find(k) != std::string::npos; })) {
+            it.note = "kept (--keep)";
+            n_kept_user++;
         } else {
             dst = target;
             if (ggml_is_quantized(it.src_type) && it.src_type != target && ggml_is_quantized(target)) {
@@ -357,6 +364,7 @@ int main(int argc, char ** argv) {
                 dst = it.src_type;
             }
             if (dst == it.src_type && it.note.empty()) it.note = "already " + std::string(ggml_type_name(dst));
+            if (ggml_is_quantized(it.src_type) && !ggml_is_quantized(dst) && dst != it.src_type) it.note = "dequantized";
         }
         it.dst_type  = dst;
         it.dst_bytes = ggml_row_size(dst, it.ne[0]) * (size_t) (it.ne[1] * it.ne[2] * it.ne[3]);
@@ -371,7 +379,7 @@ int main(int argc, char ** argv) {
         bytes_after  += it.dst_bytes;
         const bool changed = dst != it.src_type;
         n_changed += changed;
-        if (changed || verbose || (!it.note.empty() && it.note.rfind("kept (rule)", 0) != 0 && it.note.rfind("already", 0) != 0)) {
+        if (changed || verbose || (!it.note.empty() && it.note.rfind("kept (", 0) != 0 && it.note.rfind("already", 0) != 0)) {
             printf("  %-40s %-18s %5s -> %-5s %10s -> %-10s %s\n", it.name.c_str(), fmt_shape(it.ne, it.n_dims).c_str(),
                    ggml_type_name(it.src_type), ggml_type_name(dst), fmt_bytes((double) it.src_bytes).c_str(),
                    fmt_bytes((double) it.dst_bytes).c_str(), it.note.c_str());
@@ -379,8 +387,8 @@ int main(int argc, char ** argv) {
         plan.push_back(std::move(it));
     }
 
-    printf("plan: %d tensors re-typed, %d kept by the rule, %d K-quant fallbacks, %d re-quantized\n",
-           n_changed, n_kept_rule, n_fallback, n_requant);
+    printf("plan: %d tensors re-typed, %d kept by the rule, %d kept by --keep, %d K-quant fallbacks, %d re-quantized\n",
+           n_changed, n_kept_rule, n_kept_user, n_fallback, n_requant);
     printf("tensor bytes by type, before:\n");
     for (const auto & kv : before) {
         printf("  %-6s %4" PRId64 " tensors %12zu bytes (%s)\n", ggml_type_name(kv.first), kv.second.first, kv.second.second, fmt_bytes((double) kv.second.second).c_str());
