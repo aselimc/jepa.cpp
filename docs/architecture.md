@@ -17,10 +17,10 @@ tools/jepa-embed      image/video → features (.npy / text)
 tools/jepa-classify   video → top-k labels (attentive-pool head)
 tools/jepa-quantize   f32/f16 GGUF → q8_0 / q4_k ...
 tools/jepa-bench      timing
-tests/test-parity     load fixtures/ref/*.npz, run model, report cosine / max-abs / top-k agreement, exit non-zero on regression
+tests/test-parity     load fixtures/ref/<model>/manifest.json + .npy, run model, report cosine / max-abs / top-k agreement, exit non-zero on regression
 scripts/convert.py    HF safetensors / torch.hub .pt → GGUF (docs/gguf-schema.md)
-scripts/dump_reference.py   PyTorch golden outputs for tests/fixtures/media/* → tests/fixtures/ref/*.npz
-scripts/compare.py    optional python-side comparison of .npy outputs
+scripts/dump_reference.py   PyTorch golden outputs for tests/fixtures/media/* → tests/fixtures/ref/<model>/{manifest.json, <sample>.<tensor>.npy}
+scripts/compare.py    python-side comparison of .npy outputs / ref dirs (cosine, max-abs, rel, top-k; non-zero exit on regression)
 ```
 
 ## The shared graph
@@ -53,7 +53,7 @@ Patch "conv" is a host-side rearrangement into `[N, C*T*P*P]` followed by one `g
 - ggml's `ggml_rope_multi` uses half-split rotation and one theta scale — do **not** use it. Precompute cos/sin tables `[N, head_dim]` on the host (`rope3d.cpp`) and apply with `ggml_mul` + `ggml_add` on views, or with a small custom op.
 
 ## Parity protocol (every phase ends with this)
-1. `scripts/dump_reference.py --model <name>` writes `tests/fixtures/ref/<name>.npz` containing, per fixture: preprocessed input tensor, `last_hidden_state`, pooled feature, and (if a head exists) logits.
-2. `test-parity <model.gguf> <ref.npz>` feeds the **same preprocessed tensor** (bypassing our preprocessor) and reports per-sample cosine similarity, max abs error; then runs our own preprocessor and reports the same, plus top-1/top-5 agreement for heads.
+1. `scripts/dump_reference.py --model <name>` writes `tests/fixtures/ref/<name>/manifest.json` plus one float32 C-order `.npy` per tensor per sample (`<sample>.<tensor>.npy`; `frames_u8` uint8, `top5_idx` int64) containing, per fixture: preprocessed input tensor (`input`, layout stated in the manifest), `last_hidden_state`, pooled feature, and (if a head exists) logits / pooler output; video samples also carry the raw sampled frames (`frames_u8`). Schema and per-model tensor lists: `tests/fixtures/README.md`.
+2. `test-parity <model.gguf> <ref dir>` feeds the **same preprocessed tensor** (bypassing our preprocessor) and reports per-sample cosine similarity, max abs error; then runs our own preprocessor (from `frames_u8` for video) and reports the same, plus top-1/top-5 agreement for heads. `scripts/compare.py` is the Python twin (same metrics and thresholds on `.npy` outputs).
 3. Pass thresholds: F32 cosine ≥ 0.9999, max-abs ≤ 1e-3 relative; Q8_0 cosine ≥ 0.999; top-1 agreement 100 % on fixtures for F32, ≥ 90 % for Q8_0.
 4. Numbers get written to `docs/parity.md` (model, dtype, cosine, max-abs, top-k, time per sample on this box).
