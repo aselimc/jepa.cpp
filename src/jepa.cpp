@@ -757,10 +757,5 @@ int jepa_head(jepa_context * ctx, const jepa_output * enc, jepa_output * out) {
     return jepa_head_ex(ctx, enc, nullptr, out);
 }
 
-int jepa_predict(jepa_context * ctx, const jepa_output * enc,
-                 const int32_t * context_idx, int n_context,
-                 const int32_t * target_idx,  int n_target, jepa_output * out) {
-    (void) enc; (void) context_idx; (void) n_context; (void) target_idx; (void) n_target; (void) out;
-    jepa_log("jepa: jepa_predict is not implemented for family '%s'\n", ctx ? ctx->model->hp.family_str.c_str() : "?");
-    return -1;
-}
+// jepa_predict / jepa_predict_ex: implemented in src/predictor.cpp (masked predictor).
+// jepa_lewm_predict / jepa_lewm_rollout: implemented in src/lewm.cpp.

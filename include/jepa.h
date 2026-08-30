@@ -148,6 +148,44 @@ int  jepa_top_k(const float * logits, int n, int k, int32_t * idx);
 const char * jepa_version(void);
 void jepa_print_system_info(void);
 
+// ======================================================================================
+// APPEND-ONLY: predictors & world model (src/predictor.cpp, src/lewm.cpp) — owned by the
+// predictor agent. Keep additions inside this block.
+// ======================================================================================
+
+// Masked predictor (V-JEPA 2 / 2.1, jepa.pred.kind == "masked") with an explicit mask-token index.
+// jepa_predict() above is this call with mask_index = 1 (the HF / Meta default; note that the
+// released checkpoints have mask_tokens[1..] == 0, only index 0 carries signal).
+//   enc          : the encoder output of the whole clip, [n_tokens, enc_dim] (jepa_encode)
+//   context_idx  : token ids of the context (index both the rows of `enc` and the position grid);
+//                  NULL means 0..n_context-1
+//   target_idx   : token ids to predict (positions only, no encoder rows); NULL means 0..n_target-1
+//   out          : [n_target, jepa.pred.out_dim] (enc_dim for V-JEPA 2), caller frees out->data
+int jepa_predict_ex(jepa_context * ctx, const jepa_output * enc,
+                    const int32_t * context_idx, int n_context,
+                    const int32_t * target_idx,  int n_target,
+                    int mask_index, jepa_output * out);
+
+// --- LeWM world model (jepa.pred.kind == "lewm") ---------------------------------------
+int jepa_lewm_n_frames(const jepa_model * model);    // predictor context window (3)
+int jepa_lewm_action_dim(const jepa_model * model);  // 10
+
+// One predictor call over `n_frames` (<= jepa_lewm_n_frames) consecutive frames.
+//   embs    : [n_frames, embed_dim] projected embeddings (jepa_lewm_project)
+//   actions : [n_frames, action_dim] — one action per frame (for n_frames == 1 simply the action)
+//   out     : [n_frames, embed_dim]; the attention is causal over frames, so row t is the predicted
+//             next embedding given frames 0..t and the LAST row is the next-frame prediction.
+int jepa_lewm_predict(jepa_context * ctx, const float * embs, const float * actions,
+                      int n_frames, jepa_output * out);
+
+// Autoregressive rollout: predictions are fed back as frames, the window is clipped to n_frames.
+//   embs    : [n_seed, embed_dim] seed embeddings (n_seed >= 1)
+//   actions : [n_steps, action_dim]; action k drives step k. Frame j of the growing sequence uses
+//             actions[j - (n_seed-1)] (clamped), so with n_seed == 1 frame j uses actions[j].
+//   out     : [n_steps, embed_dim], caller-allocated.
+int jepa_lewm_rollout(jepa_context * ctx, const float * embs, int n_seed,
+                      const float * actions, int n_steps, float * out);
+
 #ifdef __cplusplus
 }
 #endif
