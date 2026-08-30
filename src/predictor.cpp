@@ -5,7 +5,7 @@
 //
 //   ctx = enc[context_idx] @ pred.embed            # [n_ctx, pred_dim]   (2.1 ViT-g/G: 2-layer MLP embed.0/.2)
 //   tgt = pred.mask_tokens[mask_index % n_mask]    # repeated for every target id
-//   x   = concat(ctx, tgt)  [+ pred.mod_embed_video|img  (2.1)]
+//   x   = concat(ctx, tgt)  [+ pred.mod_embed_video|img  (2.1, selected by `modality`)]
 //   3-D RoPE from the *token ids* on the encoder grid (predictor head_dim 32 -> d = 10 per axis),
 //   tiled cos/sin for V-JEPA 2, interleaved and NOT interpolated for 2.1 (grid = jepa.pred.grid_size)
 //   12 pre-LN blocks with full attention over ctx+tgt, then pred.norm
@@ -49,7 +49,7 @@ jepa_rope3d_params jepa_predictor_rope_params(const jepa_model & m, int64_t max_
 // graph
 // ---------------------------------------------------------------------------------------------
 ggml_tensor * jepa_build_predictor_masked(jepa_context * ctx, ggml_tensor * inp, int n_tgt, int mask_index,
-                                          ggml_tensor * cos_t, ggml_tensor * sin_t) {
+                                          int modality, ggml_tensor * cos_t, ggml_tensor * sin_t) {
     const jepa_model * m = ctx->model;
     const jepa_pred_hparams & p = m->hp.pred;
     ggml_context * g = ctx->ctx_g;
@@ -78,10 +78,18 @@ ggml_tensor * jepa_build_predictor_masked(jepa_context * ctx, ggml_tensor * inp,
         x = n_ctx > 0 ? ggml_concat(g, x, tgt, 1) : tgt;
     }
 
-    // 3. modality vector (2.1: added to context *and* mask tokens)
+    // 3. modality vector (2.1: added to context *and* mask tokens).  The image tokenizer path has its
+    // own vector -- adding the video one instead is a silent two-digit error (mean cos 0.862, worst
+    // row 0.655 on a 576-token image against the numpy spec, vs 1.0000000 with the right one).
     if (p.modality_embed) {
-        ggml_tensor * mod = m->get("pred.mod_embed_video");
-        if (mod) x = ggml_add(g, x, mod);
+        const bool image = modality == JEPA_MODALITY_IMAGE;
+        ggml_tensor * mod = m->get(image ? "pred.mod_embed_img" : "pred.mod_embed_video");
+        if (!mod) {
+            jepa_log("jepa: jepa_predict: jepa.pred.modality_embed is set but pred.mod_embed_%s is missing\n",
+                     image ? "img" : "video");
+        } else {
+            x = ggml_add(g, x, mod);
+        }
     }
 
     // 4. blocks with 3-D RoPE on q and k
@@ -119,7 +127,7 @@ ggml_tensor * jepa_build_predictor_masked(jepa_context * ctx, ggml_tensor * inp,
 static int predict_masked(jepa_context * ctx, const jepa_output * enc,
                           const int32_t * context_idx, int n_context,
                           const int32_t * target_idx, int n_target,
-                          int mask_index, jepa_output * out) {
+                          int mask_index, int modality, jepa_output * out) {
     const jepa_model * m = ctx->model;
     const jepa_pred_hparams & p = m->hp.pred;
     const int64_t enc_dim = m->hp.enc.embed_dim;
@@ -158,6 +166,11 @@ static int predict_masked(jepa_context * ctx, const jepa_output * enc,
 
     // RoPE tables for ctx+tgt ids
     const jepa_rope3d_params rp = jepa_predictor_rope_params(*m, max_id);
+    // AUTO: a single temporal slice on the predictor grid is the V-JEPA 2.1 image path
+    // (24x24 = 576 ids for the 384-px checkpoints); anything longer is a clip.
+    if (modality == JEPA_MODALITY_AUTO) {
+        modality = (rp.grid_t == 1 && m->get("pred.mod_embed_img")) ? JEPA_MODALITY_IMAGE : JEPA_MODALITY_VIDEO;
+    }
     std::vector<float> cosv, sinv;
     jepa_rope3d_tables_ids(rp, ids.data(), (int) ids.size(), cosv, sinv);
 
@@ -175,7 +188,7 @@ static int predict_masked(jepa_context * ctx, const jepa_output * enc,
     ggml_set_input(cos_t);
     ggml_set_input(sin_t);
 
-    ggml_tensor * y = jepa_build_predictor_masked(ctx, inp, n_target, mask_index, cos_t, sin_t);
+    ggml_tensor * y = jepa_build_predictor_masked(ctx, inp, n_target, mask_index, modality, cos_t, sin_t);
     ggml_build_forward_expand(ctx->gf, y);
     if (!jepa_graph_alloc(ctx)) return -1;
     if (inp) ggml_backend_tensor_set(inp, rows.data(), 0, rows.size() * sizeof(float));
@@ -191,10 +204,10 @@ static int predict_masked(jepa_context * ctx, const jepa_output * enc,
     return 0;
 }
 
-extern "C" int jepa_predict_ex(jepa_context * ctx, const jepa_output * enc,
-                               const int32_t * context_idx, int n_context,
-                               const int32_t * target_idx, int n_target,
-                               int mask_index, jepa_output * out) {
+extern "C" int jepa_predict_mod(jepa_context * ctx, const jepa_output * enc,
+                                const int32_t * context_idx, int n_context,
+                                const int32_t * target_idx, int n_target,
+                                int mask_index, int modality, jepa_output * out) {
     if (!ctx || !enc || !enc->data || !out) return -1;
     const jepa_model * m = ctx->model;
     if (!m->hp.pred.present) {
@@ -206,7 +219,20 @@ extern "C" int jepa_predict_ex(jepa_context * ctx, const jepa_output * enc,
                  m->hp.pred.kind.c_str(), m->hp.pred.kind == "lewm" ? " (use jepa_lewm_predict)" : "");
         return -1;
     }
-    return predict_masked(ctx, enc, context_idx, n_context, target_idx, n_target, mask_index, out);
+    if (modality != JEPA_MODALITY_AUTO && modality != JEPA_MODALITY_VIDEO && modality != JEPA_MODALITY_IMAGE) {
+        jepa_log("jepa: jepa_predict: unknown modality %d (JEPA_MODALITY_AUTO/VIDEO/IMAGE)\n", modality);
+        return -1;
+    }
+    return predict_masked(ctx, enc, context_idx, n_context, target_idx, n_target, mask_index, modality, out);
+}
+
+extern "C" int jepa_predict_ex(jepa_context * ctx, const jepa_output * enc,
+                               const int32_t * context_idx, int n_context,
+                               const int32_t * target_idx, int n_target,
+                               int mask_index, jepa_output * out) {
+    // video is the historical (and HF / Meta default) behaviour of this entry point
+    return jepa_predict_mod(ctx, enc, context_idx, n_context, target_idx, n_target, mask_index,
+                            JEPA_MODALITY_VIDEO, out);
 }
 
 extern "C" int jepa_predict(jepa_context * ctx, const jepa_output * enc,

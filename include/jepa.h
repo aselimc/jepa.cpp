@@ -166,6 +166,26 @@ int jepa_predict_ex(jepa_context * ctx, const jepa_output * enc,
                     const int32_t * target_idx,  int n_target,
                     int mask_index, jepa_output * out);
 
+// Modality of a V-JEPA 2.1 predictor call: which of `pred.mod_embed_video` / `pred.mod_embed_img`
+// is added to the context and mask tokens (VJEPA_NOTES.md §4.4, vjepa2_numpy_ref.py
+// predictor_forward(mode=...)).  Ignored by families without `jepa.pred.modality_embed`
+// (V-JEPA 2), where there is only one set of tokens.
+//   AUTO  : image when the token ids span a single temporal slice (grid_t == 1) and the file has
+//           an image modality vector, video otherwise;
+//   VIDEO : always pred.mod_embed_video — what jepa_predict / jepa_predict_ex use, so their
+//           behaviour is unchanged;
+//   IMAGE : always pred.mod_embed_img (the 1x16x16 image tokenizer path of V-JEPA 2.1).  Measured on
+//           the 576-token COCO image against the numpy spec's mode="image" (docs/parity.md): the
+//           image vector gives cosine 1.0000000 on every row at f32, the video vector 0.862 mean /
+//           0.655 worst -- a silent two-digit error, not noise.
+enum { JEPA_MODALITY_AUTO = 0, JEPA_MODALITY_VIDEO = 1, JEPA_MODALITY_IMAGE = 2 };
+
+// jepa_predict_ex with an explicit modality (jepa_predict_ex == modality JEPA_MODALITY_VIDEO).
+int jepa_predict_mod(jepa_context * ctx, const jepa_output * enc,
+                     const int32_t * context_idx, int n_context,
+                     const int32_t * target_idx,  int n_target,
+                     int mask_index, int modality, jepa_output * out);
+
 // --- LeWM world model (jepa.pred.kind == "lewm") ---------------------------------------
 int jepa_lewm_n_frames(const jepa_model * model);    // predictor context window (3)
 int jepa_lewm_action_dim(const jepa_model * model);  // 10

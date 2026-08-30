@@ -3,7 +3,7 @@
 //   test-predictor --lewm  MODEL.gguf --ref tests/fixtures/ref/lewm-pusht [options]
 //   test-predictor --vjepa2 MODEL.gguf --ref tests/fixtures/ref/vjepa2-vitl-fpc64-256 [--samples a,b] [options]
 //   test-predictor --vjepa2 MODEL.gguf --case DIR        (numpy cross-check: DIR/{enc,ctx_idx,tgt_idx,pred}.npy)
-//   options: [--threads N] [--no-flash] [--kv-f32|--kv-f16] [--min-cos X] [--quiet]
+//   options: [--threads N] [--no-flash] [--kv-f32|--kv-f16] [--min-cos X] [--modality auto|video|image] [--quiet]
 //
 // LeWM (f32 thresholds cos >= 0.9999):
 //   * pred_next of every image sample (T = 1) and pred_seq of the 3-frame sequence sample (T = 3),
@@ -13,6 +13,8 @@
 //   * jepa_lewm_rollout: step 0 of a rollout seeded with emb_seq[0] equals jepa_lewm_predict(T = 1).
 // V-JEPA 2: the masked predictor over the reference encoder tokens with context = target = every
 //   token (the HF default pass) against `predictor_last_hidden_state`.
+// --modality selects the V-JEPA 2.1 modality vector (pred.mod_embed_video / _img) for --case runs:
+//   the 576-token image case only reaches parity with `image` (see docs/parity.md, predictor table).
 // Exit status 1 on any failure.
 #include "jepa.h"
 #include "npy.h"
@@ -55,11 +57,22 @@ static metrics compare(const float * a, const float * b, int64_t rows, int64_t d
 static int g_fail = 0;
 static bool g_quiet = false;
 
-// thresholds mirror tests/test-parity.cpp (docs/architecture.md): f32 mean/worst cosine >= 0.9999
-// and rel_max <= 1e-3; f16 mean >= 0.9999, worst >= 0.99; quantized mean >= 0.999, worst >= 0.98.
-// The worst-token floors are dtype noise, not graph error: the numpy spec on the same GGUF bottoms
-// out at cos_min 0.99897 for q8_0 (weight quantisation alone) on archery_f16.
+// thresholds mirror the image-family rows of tests/test-parity.cpp (docs/parity.md "Thresholds"):
+// f32 mean/worst cosine >= 0.9999 and rel_max <= the length-aware bound below; f16 mean >= 0.9999,
+// worst >= 0.99; quantized mean >= 0.999, worst >= 0.98.  The worst-row floors are dtype noise, not
+// graph error: the numpy spec on the same GGUF bottoms out at cos_min 0.99897 for q8_0 (weight
+// quantisation alone) on archery_f16.
 struct thresholds { double min_mean, min_min, max_rel; };
+
+// f32 rel_max bound, widened with the number of rows: max|a-b| grows like the accumulated round-off
+// of the longest reduction in the graph (~sqrt(N) for attention over N rows).  1e-3 up to the
+// 2048-row reference point, 2e-3 at 8192 rows (the 64-frame V-JEPA 2 clip measures 1.22e-3 there at
+// cosine 1.000000, the 2.1 predictor 1.07e-3 at 4608 rows at cosine 1.0000000).  Same formula as
+// test-parity.cpp.
+static double rel_bound(double base, int64_t rows) {
+    if (base <= 0) return -1.0;
+    return std::fmax(base, base * std::sqrt((double) rows / 2048.0));
+}
 
 static thresholds thresholds_for(int ftype) {
     if (ftype == 0) return {0.9999, 0.9999, 1e-3};
@@ -71,8 +84,15 @@ static thresholds thresholds_for(int ftype) {
 // so anything beyond float32 round-off is a bug
 static const thresholds exact = {0.9999999, 0.9999999, 1e-5};
 
+// The one exception: the T = 1 prefix is not the same graph as the T = 3 run -- a single query row
+// and no causal mask take ggml's per-row flash kernel (docs/ggml-notes.md §1) -- so for an f16 /
+// quantized file its row matches only to dtype round-off (lewm-pusht-f16 measures max|d| 2.4e-4,
+// rel 2.0e-4; T >= 2 is bit-identical at every dtype).  A broken causal mask would let row 0 see the
+// later frames, which moves the cosine by ~1e-1, far below this bar.
+static const thresholds exact_dtype = {0.999999, 0.999999, 1e-3};
+
 static void check(const char * what, const metrics & m, const thresholds & t, double ms = -1) {
-    const double min_cos = t.min_min, max_rel = t.max_rel;
+    const double min_cos = t.min_min, max_rel = rel_bound(t.max_rel, m.rows);
     const bool ok = m.cos_mean >= t.min_mean && m.cos_min >= min_cos && (max_rel <= 0 || m.rel_max <= max_rel);
     if (!ok) g_fail++;
     if (!g_quiet || !ok) {
@@ -80,6 +100,11 @@ static void check(const char * what, const metrics & m, const thresholds & t, do
                (long long) m.rows, m.cos_mean, m.cos_min, m.max_abs, m.rel_max);
         if (ms >= 0) printf(" %8.2f ms", ms);
         printf("  %s\n", ok ? "OK" : "FAIL");
+        if (!ok) {
+            char rel[48] = "";
+            if (max_rel > 0) snprintf(rel, sizeof(rel), ", rel <= %.3e (%lld rows)", max_rel, (long long) m.rows);
+            printf("  %-44s bars: cos_mean >= %g, cos_min >= %g%s\n", "", t.min_mean, min_cos, rel);
+        }
     }
 }
 
@@ -96,7 +121,8 @@ static bool exists(const std::string & p) { std::ifstream f(p); return (bool) f;
 // ------------------------------------------------------------------------------------------
 // LeWM
 // ------------------------------------------------------------------------------------------
-static void run_lewm(jepa_context * ctx, jepa_model * model, const std::string & ref, const thresholds & thr) {
+static void run_lewm(jepa_context * ctx, jepa_model * model, const std::string & ref, const thresholds & thr,
+                     bool lossy) {
     const int D = jepa_model_embed_dim(model);
     const int A = jepa_lewm_action_dim(model);
     printf("LeWM predictor: D=%d action_dim=%d window=%d\n", D, A, jepa_lewm_n_frames(model));
@@ -133,15 +159,21 @@ static void run_lewm(jepa_context * ctx, jepa_model * model, const std::string &
         if (jepa_lewm_predict(ctx, emb.data(), act.data(), t + 1, &pre) != 0) { g_fail++; continue; }
         char name[64];
         snprintf(name, sizeof(name), "seq causal prefix T=%d -> row %d", t + 1, t);
-        check(name, compare(pre.data + (size_t) t * D, full.data + (size_t) t * D, 1, D), exact);
+        check(name, compare(pre.data + (size_t) t * D, full.data + (size_t) t * D, 1, D),
+              (t == 0 && lossy) ? exact_dtype : exact);
         free(pre.data);
     }
 
-    // causality (b): perturbing the LAST frame must not move the earlier output rows at all
+    // causality (b): perturbing the LAST frame must not move the earlier output rows at all.
+    // The perturbation has to be NON-UNIFORM: the adaLN path starts with a non-affine LayerNorm, so
+    // adding the same constant to every channel of a row is absorbed (mean-subtracted) and the test
+    // would be vacuous -- move two channels in opposite directions instead.
     {
         std::vector<float> emb2 = emb, act2 = act;
-        for (int i = 0; i < D; i++) emb2[(size_t) (T - 1) * D + i] += 3.0f;
-        for (int i = 0; i < A; i++) act2[(size_t) (T - 1) * A + i] += 3.0f;
+        emb2[(size_t) (T - 1) * D + 0] += 5.0f;
+        emb2[(size_t) (T - 1) * D + 1] -= 3.0f;
+        act2[(size_t) (T - 1) * A + 0] += 5.0f;
+        if (A > 1) act2[(size_t) (T - 1) * A + 1] -= 3.0f;
         jepa_output pert = {};
         if (jepa_lewm_predict(ctx, emb2.data(), act2.data(), (int) T, &pert) != 0) { g_fail++; }
         else {
@@ -151,9 +183,13 @@ static void run_lewm(jepa_context * ctx, jepa_model * model, const std::string &
             if (!ok) g_fail++;
             printf("  %-44s max|d| on rows 0..%d = %.3e  %s\n", "causality: perturb frame T-1", (int) T - 2, worst,
                    ok ? "OK (bit-identical)" : "FAIL");
+            // and the perturbed row itself has to move by a visible amount, or the check proves nothing
             double moved = 0;
             for (int64_t i = (T - 1) * D; i < T * D; i++) moved = std::fmax(moved, std::fabs(pert.data[i] - full.data[i]));
-            if (moved == 0.0) { printf("  the perturbation did not change the last row either - test is vacuous\n"); g_fail++; }
+            const bool moved_ok = moved > 1e-2;
+            if (!moved_ok) g_fail++;
+            printf("  %-44s max|d| on row %d = %.3e  %s\n", "causality: perturbation is visible", (int) T - 1, moved,
+                   moved_ok ? "OK (> 1e-2)" : "FAIL (the perturbation is absorbed - test is vacuous)");
             free(pert.data);
         }
     }
@@ -188,7 +224,7 @@ static void run_lewm(jepa_context * ctx, jepa_model * model, const std::string &
 // V-JEPA 2 masked predictor
 // ------------------------------------------------------------------------------------------
 static void run_vjepa2(jepa_context * ctx, jepa_model * model, const std::string & ref,
-                       const std::vector<std::string> & samples, const thresholds & thr) {
+                       const std::vector<std::string> & samples, const thresholds & thr, int modality) {
     for (const std::string & s : samples) {
         const std::string base = ref + "/" + s;
         if (!exists(base + ".predictor_last_hidden_state.npy")) { printf("  %s: no reference predictor dump\n", s.c_str()); continue; }
@@ -200,7 +236,7 @@ static void run_vjepa2(jepa_context * ctx, jepa_model * model, const std::string
         std::vector<int32_t> ids((size_t) n);
         for (int64_t i = 0; i < n; i++) ids[i] = (int32_t) i;
         jepa_output out = {};
-        if (jepa_predict(ctx, &enc, ids.data(), (int) n, ids.data(), (int) n, &out) != 0) {
+        if (jepa_predict_mod(ctx, &enc, ids.data(), (int) n, ids.data(), (int) n, 1, modality, &out) != 0) {
             printf("  %s: jepa_predict failed\n", s.c_str());
             g_fail++;
             continue;
@@ -211,9 +247,11 @@ static void run_vjepa2(jepa_context * ctx, jepa_model * model, const std::string
     }
 }
 
-// numpy cross-check case: DIR/{enc,ctx_idx,tgt_idx,pred}.npy (scripts written by the agent's
-// tmp/ driver around scripts/jepa_convert/vjepa2_numpy_ref.py::predictor_forward)
-static void run_case(jepa_context * ctx, const std::string & dir, const thresholds & thr) {
+// numpy cross-check case: DIR/{enc,ctx_idx,tgt_idx,pred}.npy, written by running
+// scripts/jepa_convert/vjepa2_numpy_ref.py::predictor_forward on reference encoder tokens (the
+// snippet that generates one is in docs/parity.md, "Results - predictors").  The case has to be
+// generated from the SAME GGUF that is tested: the spec runs that file's weights.
+static void run_case(jepa_context * ctx, const std::string & dir, const thresholds & thr, int modality) {
     int64_t n = 0, d = 0;
     std::vector<float> enc_rows = load_f32(dir + "/enc.npy", &n, &d);
     npy::Array ci = npy::load(dir + "/ctx_idx.npy"), ti = npy::load(dir + "/tgt_idx.npy");
@@ -223,7 +261,7 @@ static void run_case(jepa_context * ctx, const std::string & dir, const threshol
     std::vector<float> want = load_f32(dir + "/pred.npy", &nr, &dr);
     jepa_output enc = { enc_rows.data(), n, d };
     jepa_output out = {};
-    if (jepa_predict(ctx, &enc, cidx.data(), (int) cidx.size(), tidx.data(), (int) tidx.size(), &out) != 0) {
+    if (jepa_predict_mod(ctx, &enc, cidx.data(), (int) cidx.size(), tidx.data(), (int) tidx.size(), 1, modality, &out) != 0) {
         printf("  case %s: jepa_predict failed\n", dir.c_str());
         g_fail++;
         return;
@@ -235,7 +273,7 @@ static void run_case(jepa_context * ctx, const std::string & dir, const threshol
 }
 
 int main(int argc, char ** argv) {
-    std::string lewm_path, vjepa2_path, ref, case_dir, samples_arg = "archery_f16";
+    std::string lewm_path, vjepa2_path, ref, case_dir, samples_arg = "archery_f16", modality_arg = "video";
     jepa_context_params cp = jepa_context_default_params();
     double min_cos = -1, max_rel = -1;
     for (int i = 1; i < argc; i++) {
@@ -251,14 +289,20 @@ int main(int argc, char ** argv) {
         else if (a == "--kv-f32") cp.flash_kv = JEPA_KV_F32;
         else if (a == "--kv-f16") cp.flash_kv = JEPA_KV_F16;
         else if (a == "--min-cos") min_cos = atof(next());
+        else if (a == "--modality") modality_arg = next();
         else if (a == "--quiet") g_quiet = true;
         else if (a == "-h" || a == "--help") {
             printf("usage: %s --lewm MODEL.gguf --ref REFDIR | --vjepa2 MODEL.gguf {--ref REFDIR [--samples a,b] | --case DIR}\n"
-                   "       [--threads N] [--no-flash] [--kv-f32|--kv-f16] [--min-cos X] [--quiet]\n", argv[0]);
+                   "       [--threads N] [--no-flash] [--kv-f32|--kv-f16] [--min-cos X]\n"
+                   "       [--modality auto|video|image]   (V-JEPA 2.1 pred.mod_embed_*, default video)\n"
+                   "       [--quiet]\n", argv[0]);
             return 0;
         } else { fprintf(stderr, "unknown argument %s\n", argv[i]); return 2; }
     }
     if (lewm_path.empty() == vjepa2_path.empty()) { fprintf(stderr, "need exactly one of --lewm / --vjepa2\n"); return 2; }
+    const int modality = modality_arg == "auto" ? JEPA_MODALITY_AUTO : modality_arg == "image" ? JEPA_MODALITY_IMAGE
+                       : modality_arg == "video" ? JEPA_MODALITY_VIDEO : -1;
+    if (modality < 0) { fprintf(stderr, "--modality must be auto, video or image (got '%s')\n", modality_arg.c_str()); return 2; }
 
     const std::string model_path = !lewm_path.empty() ? lewm_path : vjepa2_path;
     jepa_model * model = jepa_model_load(model_path.c_str(), false);
@@ -268,14 +312,14 @@ int main(int argc, char ** argv) {
     const int ftype = jepa_model_file_type(model);
     thresholds thr = thresholds_for(ftype);
     if (min_cos > 0) { thr.min_mean = thr.min_min = min_cos; thr.max_rel = -1; }
-    printf("model: %s (%s, %s) | threads %d | flash %s | thresholds cos_mean >= %g, cos_min >= %g%s\n",
+    printf("model: %s (%s, %s) | threads %d | flash %s | modality %s | thresholds cos_mean >= %g, cos_min >= %g%s\n",
            jepa_model_name(model), jepa_model_family(model), jepa_model_file_type_name(model),
-           jepa_context_n_threads(c), cp.use_flash_attn ? "yes" : "no", thr.min_mean, thr.min_min,
-           thr.max_rel > 0 ? ", rel <= 1e-3" : "");
+           jepa_context_n_threads(c), cp.use_flash_attn ? "yes" : "no", modality_arg.c_str(), thr.min_mean, thr.min_min,
+           thr.max_rel > 0 ? ", rel <= 1e-3*max(1,sqrt(rows/2048))" : "");
 
-    if (!lewm_path.empty()) run_lewm(c, model, ref, thr);
+    if (!lewm_path.empty()) run_lewm(c, model, ref, thr, ftype != 0);
     if (!vjepa2_path.empty()) {
-        if (!case_dir.empty()) run_case(c, case_dir, thr);
+        if (!case_dir.empty()) run_case(c, case_dir, thr, modality);
         if (!ref.empty()) {
             std::vector<std::string> samples;
             size_t p = 0;
@@ -285,7 +329,7 @@ int main(int argc, char ** argv) {
                 samples.push_back(samples_arg.substr(p, q - p));
                 p = q + 1;
             }
-            run_vjepa2(c, model, ref, samples, thr);
+            run_vjepa2(c, model, ref, samples, thr, modality);
         }
     }
     jepa_context_free(c);

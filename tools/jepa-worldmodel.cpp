@@ -92,18 +92,18 @@ static bool project_images(jepa_context * ctx, jepa_model * m, const float * nch
     jepa_input in = { nchw, n_images, 3, 1, h, w };
     jepa_output enc = {};
     const double t0 = now_ms();
-    if (jepa_encode(ctx, &in, &enc) != 0) return false;
+    if (jepa_encode(ctx, &in, &enc) != 0) { jepa_free(enc.data); return false; }
     if (enc_ms) *enc_ms = now_ms() - t0;
     const int64_t per = enc.n_tokens / n_images;
     std::vector<float> cls((size_t) n_images * enc.dim);
     for (int i = 0; i < n_images; i++) {
         memcpy(cls.data() + (size_t) i * enc.dim, enc.data + (size_t) i * per * enc.dim, (size_t) enc.dim * sizeof(float));
     }
-    free(enc.data);
+    jepa_free(enc.data);
     jepa_output proj = {};
-    if (jepa_lewm_project_rows(ctx, cls.data(), n_images, &proj) != 0) return false;
+    if (jepa_lewm_project_rows(ctx, cls.data(), n_images, &proj) != 0) { jepa_free(proj.data); return false; }
     embs.assign(proj.data, proj.data + (size_t) proj.n_tokens * proj.dim);
-    free(proj.data);
+    jepa_free(proj.data);
     (void) m;
     return true;
 }
@@ -153,9 +153,9 @@ static int ref_check(jepa_context * ctx, jepa_model * model, const std::string &
             jepa_output out = {};
             // the predictor step is checked against the *reference* embedding so a graph bug in the
             // predictor cannot be masked (or caused) by the encoder
-            if (jepa_lewm_predict(ctx, emb_ref.data(), act.data(), 1, &out) != 0) return 2;
+            if (jepa_lewm_predict(ctx, emb_ref.data(), act.data(), 1, &out) != 0) { jepa_free(out.data); return 2; }
             report("pred_next", out.data, want.data(), 1, jepa_context_last_compute_ms(ctx));
-            free(out.data);
+            jepa_free(out.data);
         } else if (tensors.contains("pred_seq")) {
             std::vector<int64_t> shp;
             std::vector<float> input = load("input", &shp);
@@ -166,9 +166,9 @@ static int ref_check(jepa_context * ctx, jepa_model * model, const std::string &
             if (!project_images(ctx, model, input.data(), T, h, w, emb, &enc_ms)) { fprintf(stderr, "encode failed\n"); return 2; }
             report("emb_seq", emb.data(), emb_ref.data(), T, enc_ms);
             jepa_output out = {};
-            if (jepa_lewm_predict(ctx, emb_ref.data(), act.data(), T, &out) != 0) return 2;
+            if (jepa_lewm_predict(ctx, emb_ref.data(), act.data(), T, &out) != 0) { jepa_free(out.data); return 2; }
             report("pred_seq", out.data, want.data(), T, jepa_context_last_compute_ms(ctx));
-            free(out.data);
+            jepa_free(out.data);
         }
     }
     printf("%s (threshold cos >= %g)\n", fail == 0 ? "PASS" : "FAIL", min_cos);
@@ -205,10 +205,17 @@ int main(int argc, char ** argv) {
     if (!model) return 2;
     if (jepa_lewm_action_dim(model) <= 0 || !jepa_model_has_projector(model)) {
         fprintf(stderr, "%s is not a LeWM world model (no predictor action embed / enc.proj)\n", model_path.c_str());
+        jepa_model_free(model);
         return 2;
     }
     jepa_context * ctx = jepa_context_new(model, cp);
-    if (!ctx) return 2;
+    if (!ctx) { jepa_model_free(model); return 2; }
+    // one cleanup path for every exit below (the weights are the big allocation here)
+    auto done = [&](int rc) {
+        jepa_context_free(ctx);
+        jepa_model_free(model);
+        return rc;
+    };
     const int D = jepa_model_embed_dim(model);
     const int A = jepa_lewm_action_dim(model);
     const int ftype = jepa_model_file_type(model);
@@ -217,10 +224,7 @@ int main(int argc, char ** argv) {
         const double mc = min_cos > 0 ? min_cos : (ftype <= 1 ? 0.9999 : 0.999);
         printf("model: %s (%s, %s) | threads %d | ref: %s\n", jepa_model_name(model), jepa_model_family(model),
                jepa_model_file_type_name(model), jepa_context_n_threads(ctx), ref.c_str());
-        const int rc = ref_check(ctx, model, ref, mc);
-        jepa_context_free(ctx);
-        jepa_model_free(model);
-        return rc;
+        return done(ref_check(ctx, model, ref, mc));
     }
 
     // --- demo rollout -----------------------------------------------------------------------
@@ -231,10 +235,10 @@ int main(int argc, char ** argv) {
         actions.resize((size_t) n_random * A);
         for (auto & v : actions) v = nd(rng);
     } else if (!actions_str.empty()) {
-        if (!parse_actions(actions_str, A, actions)) return 2;
+        if (!parse_actions(actions_str, A, actions)) return done(2);
     } else {
         fprintf(stderr, "need --actions or --random-actions\n");
-        return 2;
+        return done(2);
     }
     const int K = (int) (actions.size() / A);
 
@@ -244,15 +248,15 @@ int main(int argc, char ** argv) {
     for (const std::string & p : images) {
         int ih = 0, iw = 0;
         float * x = jepa_preprocess_image_file(model, p.c_str(), &ih, &iw);
-        if (!x) { fprintf(stderr, "cannot read %s\n", p.c_str()); return 2; }
-        if (h && (ih != h || iw != w)) { fprintf(stderr, "images preprocess to different sizes\n"); return 2; }
+        if (!x) { fprintf(stderr, "cannot read %s\n", p.c_str()); return done(2); }
+        if (h && (ih != h || iw != w)) { fprintf(stderr, "images preprocess to different sizes\n"); jepa_free(x); return done(2); }
         h = ih; w = iw;
         pixels.insert(pixels.end(), x, x + (size_t) 3 * ih * iw);
         jepa_free(x);
     }
     std::vector<float> embs;
     double enc_ms = 0;
-    if (!project_images(ctx, model, pixels.data(), (int) images.size(), h, w, embs, &enc_ms)) return 2;
+    if (!project_images(ctx, model, pixels.data(), (int) images.size(), h, w, embs, &enc_ms)) return done(2);
     printf("model: %s (%s, %s) | threads %d | D=%d action_dim=%d window=%d\n", jepa_model_name(model),
            jepa_model_family(model), jepa_model_file_type_name(model), jepa_context_n_threads(ctx), D, A,
            jepa_lewm_n_frames(model));
@@ -281,17 +285,17 @@ int main(int argc, char ** argv) {
             }
             const double t0 = now_ms();
             jepa_output so = {};
-            if (jepa_lewm_predict(ctx, win_emb.data(), win_act.data(), wlen, &so) != 0) return 2;
+            if (jepa_lewm_predict(ctx, win_emb.data(), win_act.data(), wlen, &so) != 0) { jepa_free(so.data); return done(2); }
             step_ms[k] = now_ms() - t0;
             memcpy(steps.data() + (size_t) k * D, so.data + (size_t) (wlen - 1) * D, (size_t) D * sizeof(float));
-            free(so.data);
+            jepa_free(so.data);
             seq.insert(seq.end(), steps.begin() + (size_t) k * D, steps.begin() + (size_t) (k + 1) * D);
         }
     }
     // cross-check against the library rollout (same math, one call)
     {
         std::vector<float> lib((size_t) K * D);
-        if (jepa_lewm_rollout(ctx, embs.data(), n_seed, actions.data(), K, lib.data()) != 0) return 2;
+        if (jepa_lewm_rollout(ctx, embs.data(), n_seed, actions.data(), K, lib.data()) != 0) return done(2);
         double worst = 0;
         for (size_t i = 0; i < lib.size(); i++) worst = std::fmax(worst, std::fabs(lib[i] - steps[i]));
         if (worst != 0.0) printf("warning: jepa_lewm_rollout differs from the unrolled loop by %.3e\n", worst);
@@ -318,7 +322,5 @@ int main(int argc, char ** argv) {
         npy::save_f32(out_path, { K, (int64_t) D }, steps.data());
         printf("wrote %s [%d, %d]\n", out_path.c_str(), K, D);
     }
-    jepa_context_free(ctx);
-    jepa_model_free(model);
-    return 0;
+    return done(0);
 }

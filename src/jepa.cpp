@@ -600,7 +600,11 @@ int jepa_head_ex(jepa_context * ctx, const jepa_output * enc, jepa_output * pool
     if (logits) {
         logits->n_tokens = 1; logits->dim = logits_t->ne[0];
         logits->data = (float *) malloc((size_t) logits_t->ne[0] * sizeof(float));
-        if (!logits->data) return -1;
+        if (!logits->data) {
+            // nothing is returned on failure: hand back no half-filled output to leak
+            if (pooled && pooled->data) { free(pooled->data); pooled->data = nullptr; pooled->n_tokens = 0; pooled->dim = 0; }
+            return -1;
+        }
         ggml_backend_tensor_get(logits_t, logits->data, 0, (size_t) logits_t->ne[0] * sizeof(float));
     }
     return 0;
@@ -634,6 +638,10 @@ int64_t jepa_token_grid(const jepa_model * model, int n_frames, int height, int 
     if (!model) return 0;
     switch (model->hp.family) {
         case JEPA_FAMILY_VJEPA:
+            // V-JEPA v1 (sincos3d tables) has no encoder path yet — jepa_encode would refuse the
+            // clip, so do not hand out a token count that promises otherwise.
+            jepa_log("jepa: jepa_token_grid: family 'vjepa' (V-JEPA 1) is not implemented\n");
+            return 0;
         case JEPA_FAMILY_VJEPA2:
         case JEPA_FAMILY_VJEPA2_1: {
             jepa_video_shape vs;

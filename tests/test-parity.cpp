@@ -15,9 +15,10 @@
 // here and fed as ONE clip.  Their own-preprocessing pass runs on the stored `frames_u8` (THWC uint8,
 // the exact frames the reference processor saw), so no video decoder is needed.  Classifiers also get
 // `pooled` (attentive-pooler output), `logits` and top-1 / top-5 agreement against `top5_idx`.
-// Thresholds come from general.file_type: f32 cos >= 0.9999 & rel_max <= 1e-3; f16 / quantized files
-// keep tight bars on the pooled outputs and are judged on the median token cosine for the token map
-// (see thresholds_for / lhs_thresholds_for).
+// Thresholds are table-driven, per model FAMILY (image ViTs vs the V-JEPA 2 video encoders) and per
+// file-type TIER (f32 / f16 / q8 / low-bit), see POLICY below and docs/parity.md: the image families
+// keep the hard every-token bars, only the video token maps are judged on the median cosine, and
+// files below 8 bits per weight are reported but only gated on the derived tensors + top-1.
 // They are applied to the stored-input run; the own-preprocessing run must meet the cosine threshold.
 // Exit status 1 on any failure.
 #include "jepa.h"
@@ -82,46 +83,146 @@ static metrics compare(const float * a, const float * b, int64_t rows, int64_t d
     return m;
 }
 
-// Thresholds by general.file_type, applied to the stored-input pass.  Two tensor classes:
+// ==============================================================================================
+// Thresholds — one table, indexed by [model family class][file-type tier], applied to the
+// stored-input pass.  Mirrored word for word in docs/parity.md ("Thresholds").
 //
-//   * token maps (`last_hidden_state`, lhs_thresholds_for): judged on the MEDIAN per-token cosine
-//     plus a weak mean floor, with no worst-token bound for lossy files.  Two independent effects
-//     produce a long low tail there while everything downstream stays exact:
+// Why per family: the image ViTs (I-JEPA / LeJEPA-hfvit / LeWM) reproduce the reference on EVERY
+// token, so they keep the hard bars; only the V-JEPA 2 video encoders develop a long low-cosine
+// tail at f16/q8_0 while everything downstream stays exact, so their token map is gated on the
+// median instead.  Relaxing the video bars globally (as an earlier revision did) would have let a
+// real image-side regression through: I-JEPA f16 would pass at a token map mean of 0.99 when the
+// measured value is 0.999984, and LeJEPA q8_0 at 0.95 when it measures 0.999263.
+//
+// Two tensor classes per cell:
+//   * token maps (`last_hidden_state`, policy.lhs) — for the video families judged on the MEDIAN
+//     per-token cosine plus a weak mean floor, with no worst-token bound at f16/q8_0.  Two
+//     independent effects produce that low tail while everything downstream stays exact:
 //       - weight quantisation amplified by low-variance tokens (docs/quantization.md: I-JEPA q8_0
 //         worst token 0.43, worst sample mean 0.988, pooled >= 0.9999);
 //       - ggml rounding the *activations* to F16 inside every f16 mul_mat (llamafile's AVX-512 sgemm
 //         only has an F16xF16 kernel).  On V-JEPA 2 ViT-L (SSv2 bowling_f16) that is mean 0.9971 /
 //         worst token 0.51, while the f32 file of the same model is exact (1.000000, rel 7.5e-4) and
 //         the numpy spec re-run with F16 activations reproduces the C++ numbers to four digits
-//         (mean 0.99718, worst 0.5576, same token index) -- docs/parity.md.
+//         (mean 0.99718, worst 0.5576) -- docs/parity.md.
 //     The median (>= 0.999 at f16, >= 0.99 at q8_0 on every fixture) stays tight and still collapses
 //     for a real graph bug: a wrong RoPE layout alone gives ~0.63/0.91 on *every* token.
-//   * derived single-row tensors (`pooled_mean`, `pooled`, `cls`, `emb`, `logits`, thresholds_for):
+//   * derived single-row tensors (`pooled_mean`, `pooled`, `cls`, `emb`, `logits`, policy.derived):
 //     the tail averages out, so these keep tight bars -- they are what users consume.  The bars are
-//     set just under the worst fixture value: f16 0.9995 (SSv2 pooler output 0.999897), quantized
-//     0.995 (SSv2 q8_0 pooler 0.996645, its logits 0.998501 with top-1/top-5 still exact).
+//     set just under the worst fixture value: f16 0.9995 (SSv2 pooler output 0.999897), q8_0 0.995
+//     (SSv2 q8_0 pooler 0.996645, its logits 0.998501 with top-1/top-5 still exact) for video, and
+//     0.999 mean / 0.98 worst row for the image families (LeWM q8_0 emb_seq 0.999895).
 //
-//   f32:  tokens mean & worst >= 0.9999, rel_max <= 1e-3; derived >= 0.9999
-//   f16:  tokens median >= 0.999, mean >= 0.99;           derived >= 0.9995
-//   else: tokens median >= 0.99,  mean >= 0.95;           derived >= 0.995
-// Classifiers additionally have to reproduce the reference top-1 exactly and 4 of its top-5.
+//   image f32:  tokens mean & worst >= 0.9999, rel_max <= REL (see rel_bound); derived >= 0.9999
+//   image f16:  tokens mean >= 0.9999, worst >= 0.99;         derived >= 0.9995
+//   image q8:   tokens mean >= 0.98;                          derived mean >= 0.999, worst >= 0.98
+//   video f32:  tokens mean & median & worst >= 0.9999, rel_max <= REL; derived >= 0.9999
+//   video f16:  tokens median >= 0.999, mean >= 0.99;         derived >= 0.9995
+//   video q8:   tokens median >= 0.99,  mean >= 0.95;         derived >= 0.995
+//   low-bit (< 8 bits/weight: q4_*, q5_*, q6_k, iq*): advisory — the token map is reported but not
+//     gated, only the derived tensors (>= 0.99) and the classifier top-1 are (docs/quantization.md
+//     recommends q8_0 as the lowest parity-grade quantisation).
+// Classifiers additionally have to reproduce the reference top-1 exactly and 4 of its top-5 (top-1
+// only in the low-bit tier).
 // The own-preprocessing pass uses the same rules with no bar stricter than 0.99: it additionally
 // carries JPEG-decoder differences (stb_image vs PIL) unless --rgb-dir provides the reference pixels
 // (video samples run on the stored frames_u8 and come out bit-exact).
-struct thresholds { double min_mean; double min_med; double min_min; double max_rel; };
+struct thresholds { double min_mean; double min_med; double min_min; double max_rel; };  // <= 0: no gate
 
-// pooled_mean / pooled / cls / emb / logits
-static thresholds thresholds_for(int ftype) {
-    if (ftype == 0) return {0.9999, -1.0, 0.9999, 1e-3};
-    if (ftype == 1) return {0.9995, -1.0, -1.0,  -1.0};
-    return {0.995, -1.0, -1.0, -1.0};
+struct policy {
+    thresholds lhs;       // last_hidden_state (the token map)
+    thresholds derived;   // pooled_mean / pooled / cls / emb / logits
+    bool gate_top5;       // require >= 4 of the reference top-5 (top-1 is required in every tier)
+    bool advisory;        // low-bit tier: print the token map, do not gate it
+};
+
+enum fam_class { FAM_IMAGE = 0, FAM_VIDEO = 1, FAM_COUNT = 2 };
+enum dt_tier   { TIER_F32 = 0, TIER_F16 = 1, TIER_Q8 = 2, TIER_LOWBIT = 3, TIER_COUNT = 4 };
+
+static const char * const TIER_NAME[TIER_COUNT] = { "f32", "f16", "q8", "low-bit" };
+static const char * const FAM_NAME[FAM_COUNT]   = { "image", "video" };
+
+static const policy POLICY[FAM_COUNT][TIER_COUNT] = {
+    // ---- image families: ijepa / hfvit (LeJEPA) / lewm ---------------------------------------
+    { /* f32     */ { {0.9999, -1.0, 0.9999, 1e-3}, {0.9999, -1.0, 0.9999, 1e-3}, true,  false },
+      /* f16     */ { {0.9999, -1.0, 0.99,   -1.0}, {0.9995, -1.0, -1.0,   -1.0}, true,  false },
+      /* q8      */ { {0.98,   -1.0, -1.0,   -1.0}, {0.999,  -1.0, 0.98,   -1.0}, true,  false },
+      /* low-bit */ { {-1.0,   -1.0, -1.0,   -1.0}, {0.99,   -1.0, -1.0,   -1.0}, false, true  } },
+    // ---- video families: vjepa2 / vjepa2_1 (and vjepa v1) ------------------------------------
+    { /* f32     */ { {0.9999, 0.9999, 0.9999, 1e-3}, {0.9999, -1.0, 0.9999, 1e-3}, true,  false },
+      /* f16     */ { {0.99,   0.999,  -1.0,   -1.0}, {0.9995, -1.0, -1.0,   -1.0}, true,  false },
+      /* q8      */ { {0.95,   0.99,   -1.0,   -1.0}, {0.995,  -1.0, -1.0,   -1.0}, true,  false },
+      /* low-bit */ { {-1.0,   -1.0,   -1.0,   -1.0}, {0.99,   -1.0, -1.0,   -1.0}, false, true  } },
+};
+
+static fam_class fam_class_of(const char * family) {
+    if (!family) return FAM_IMAGE;
+    const std::string f = family;
+    return (f == "vjepa" || f == "vjepa2" || f == "vjepa2_1") ? FAM_VIDEO : FAM_IMAGE;
 }
 
-// last_hidden_state
-static thresholds lhs_thresholds_for(int ftype) {
-    if (ftype == 0) return {0.9999, 0.9999, 0.9999, 1e-3};
-    if (ftype == 1) return {0.99,   0.999,  -1.0,  -1.0};
-    return {0.95, 0.99, -1.0, -1.0};
+// Bits per stored weight of the majority type of `ftype`, or -1 for a value that is not a known
+// GGML_FTYPE.  The mapping is spelled out here on purpose: general.file_type comes from a file, and
+// ggml_ftype_to_ggml_type() GGML_ASSERTs (aborts) on values it does not know (UNKNOWN,
+// Q4_1_SOME_F16, anything outside the enum).  Covers every type tools/jepa-quantize.cpp can write.
+static double ftype_bits_per_weight(int ftype) {
+    ggml_type t;
+    switch (ftype) {
+        case GGML_FTYPE_ALL_F32:     t = GGML_TYPE_F32;  break;
+        case GGML_FTYPE_MOSTLY_F16:  t = GGML_TYPE_F16;  break;
+        case GGML_FTYPE_MOSTLY_BF16: t = GGML_TYPE_BF16; break;
+        case GGML_FTYPE_MOSTLY_Q4_0: t = GGML_TYPE_Q4_0; break;
+        case GGML_FTYPE_MOSTLY_Q4_1: t = GGML_TYPE_Q4_1; break;
+        case GGML_FTYPE_MOSTLY_Q5_0: t = GGML_TYPE_Q5_0; break;
+        case GGML_FTYPE_MOSTLY_Q5_1: t = GGML_TYPE_Q5_1; break;
+        case GGML_FTYPE_MOSTLY_Q8_0: t = GGML_TYPE_Q8_0; break;
+        case GGML_FTYPE_MOSTLY_Q2_K: t = GGML_TYPE_Q2_K; break;
+        case GGML_FTYPE_MOSTLY_Q3_K: t = GGML_TYPE_Q3_K; break;
+        case GGML_FTYPE_MOSTLY_Q4_K: t = GGML_TYPE_Q4_K; break;
+        case GGML_FTYPE_MOSTLY_Q5_K: t = GGML_TYPE_Q5_K; break;
+        case GGML_FTYPE_MOSTLY_Q6_K: t = GGML_TYPE_Q6_K; break;
+        default: return -1.0;
+    }
+    const int64_t blk = ggml_blck_size(t);
+    return blk > 0 ? 8.0 * (double) ggml_type_size(t) / (double) blk : -1.0;
+}
+
+// general.file_type carries a GGML_FTYPE_* value (see src/jepa-gguf.cpp jepa_file_type_name).
+// Anything below 8 bits per stored weight (q4_*, q5_*, q6_k, the iq* family) lands in the advisory
+// tier, and so does an unrecognised value -- printing results is more useful than a hard gate whose
+// meaning we cannot know.
+static dt_tier tier_of(int ftype) {
+    if (ftype == GGML_FTYPE_ALL_F32) return TIER_F32;
+    if (ftype == GGML_FTYPE_MOSTLY_F16 || ftype == GGML_FTYPE_MOSTLY_BF16) return TIER_F16;
+    return ftype_bits_per_weight(ftype) >= 8.0 ? TIER_Q8 : TIER_LOWBIT;   // q8_0 = 8.5 bits
+}
+
+// f32 rel_max bound, widened with the sequence length.  max|a-b| over a token map grows like the
+// accumulated round-off of the longest reduction in the graph (~sqrt(N) for attention over N
+// tokens): the 8192-token V-JEPA 2 clip reaches 1.22e-3 at cosine 1.000000 on every token, and the
+// V-JEPA 2.1 predictor 1.07e-3 at 4608 context rows (cosine 1.0000000, worst row 0.9999944).  The 2048-token reference point is the
+// 16-frame ViT-L clip (7.5e-4), so the bound is 1e-3 there and only loosens beyond it.
+static double rel_bound(double base, int64_t rows) {
+    if (base <= 0) return -1.0;
+    return std::max(base, base * std::sqrt((double) rows / 2048.0));
+}
+
+static std::string bars_to_string(const thresholds & t) {
+    std::string s;
+    char buf[96];
+    auto add = [&](const char * what, double v) {
+        if (v <= 0) return;
+        snprintf(buf, sizeof(buf), "%s%s >= %g", s.empty() ? "" : ", ", what, v);
+        s += buf;
+    };
+    add("mean", t.min_mean);
+    add("median", t.min_med);
+    add("worst", t.min_min);
+    if (t.max_rel > 0) {
+        snprintf(buf, sizeof(buf), "%srel <= %g*max(1,sqrt(N/2048))", s.empty() ? "" : ", ", t.max_rel);
+        s += buf;
+    }
+    return s.empty() ? std::string("not gated") : s;
 }
 
 static bool passes(const metrics & m, const thresholds & t, bool own) {
@@ -129,10 +230,10 @@ static bool passes(const metrics & m, const thresholds & t, bool own) {
     // the own-preprocessing pass carries decoder noise on top, so nothing is stricter than 0.99 there
     const double min_mean = own ? std::min(t.min_mean, 0.99) : t.min_mean;
     const double min_med  = own ? std::min(t.min_med,  0.99) : t.min_med;
-    if (m.cos_mean < min_mean) return false;
-    if (t.min_med > 0 && m.cos_med < min_med) return false;
+    if (t.min_mean > 0 && m.cos_mean < min_mean) return false;
+    if (t.min_med  > 0 && m.cos_med  < min_med)  return false;
     if (!own && t.min_min > 0 && m.cos_min < t.min_min) return false;
-    if (!own && t.max_rel > 0 && m.rel_max > t.max_rel) return false;
+    if (!own && t.max_rel > 0 && m.rel_max > rel_bound(t.max_rel, m.n_rows)) return false;
     return true;
 }
 
@@ -229,8 +330,11 @@ int main(int argc, char ** argv) {
     jepa_context * ctx = jepa_context_new(model, cp);
     if (!ctx) return 2;
     const int ftype = jepa_model_file_type(model);
-    const thresholds thr = thresholds_for(ftype);
-    const thresholds thr_lhs = lhs_thresholds_for(ftype);
+    const fam_class fam = fam_class_of(jepa_model_family(model));
+    const dt_tier   tier = tier_of(ftype);
+    const policy &  pol = POLICY[fam][tier];
+    const thresholds thr = pol.derived;
+    const thresholds thr_lhs = pol.lhs;
 
     jepa_preprocess_params pre_model = jepa_preprocess_default_params(model);
     bool pre_ok = true;
@@ -241,11 +345,24 @@ int main(int argc, char ** argv) {
                              pre_model.resample != pre_ref.resample || pre_model.resize_mode != pre_ref.resize_mode;
 
     const char * kv_name = cp.flash_kv == JEPA_KV_F16 ? "f16" : cp.flash_kv == JEPA_KV_F32 ? "f32" : (ftype == 0 ? "auto(f32)" : "auto(f16)");
-    printf("model: %s (%s, %s, %d layers, D=%d) | ref: %s | threads %d | flash %s | kv %s | thresholds: tokens mean >= %g%s, derived >= %g%s\n",
+    printf("model: %s (%s, %s, %d layers, D=%d) | ref: %s | threads %d | flash %s | kv %s\n",
            jepa_model_name(model), jepa_model_family(model), jepa_model_file_type_name(model), jepa_model_n_layer(model),
            jepa_model_embed_dim(model), manifest.value("model", "?").c_str(), jepa_context_n_threads(ctx),
-           cp.use_flash_attn ? "yes" : "no", kv_name, thr_lhs.min_mean, thr_lhs.min_med > 0 ? " & median >= 0.999/0.99" : "",
-           thr.min_mean, thr.max_rel > 0 ? ", rel_max <= 1e-3" : "");
+           cp.use_flash_attn ? "yes" : "no", kv_name);
+    printf("thresholds [%s family, %s tier]: token map %s | derived %s | top-1 exact%s\n",
+           FAM_NAME[fam], TIER_NAME[tier], bars_to_string(thr_lhs).c_str(), bars_to_string(thr).c_str(),
+           pol.gate_top5 ? ", top-5 >= 4/5" : "");
+    if (pol.advisory) {
+        if (ftype_bits_per_weight(ftype) < 0) {
+            printf("NOTE: general.file_type %d (%s) has no single stored weight type this test can size, so it "
+                   "is judged in the advisory low-bit tier: the token map is reported but not gated, only the "
+                   "derived tensors and the top-1 label are.\n", ftype, jepa_model_file_type_name(model));
+        } else {
+            printf("NOTE: %s is below the recommended quantization for parity (q8_0, docs/quantization.md): the "
+                   "token map is reported but not gated; only the derived tensors and the top-1 label are.\n",
+                   jepa_model_file_type_name(model));
+        }
+    }
     printf("preprocess (%s): %s\n", pre_mode == "model" ? "jepa.pre.* of the GGUF" : "reference manifest", pre_to_string(pre).c_str());
     if (pre_differs) {
         printf("NOTE: the GGUF jepa.pre.* pipeline differs from the reference manifest's: %s\n", pre_to_string(pre_mode == "model" ? pre_ref : pre_model).c_str());
@@ -448,7 +565,8 @@ int main(int argc, char ** argv) {
             bool ok = passes(m_lhs, thr_lhs, own) && passes(m_pool, thr, own) && passes(m_cls, thr, own) && passes(m_emb, thr, own)
                       && passes(m_hpool, thr, own) && passes(m_logits, thr, own);
             if (top1_ok == 0) ok = false;                       // top-1 must agree with the reference
-            if (top5_frac >= 0 && top5_frac < 0.8) ok = false;   // and at least 4 of the reference top-5
+            // and (outside the advisory low-bit tier) at least 4 of the reference top-5
+            if (pol.gate_top5 && top5_frac >= 0 && top5_frac < 0.8) ok = false;
             if (!m_lhs.valid && !m_pool.valid && !m_cls.valid && !m_emb.valid && !m_hpool.valid && !m_logits.valid) ok = true;
             res.ok &= ok;
             all_ok &= ok;
@@ -508,7 +626,14 @@ int main(int argc, char ** argv) {
         out["model"] = model_path; out["ref"] = ref_dir; out["family"] = jepa_model_family(model);
         out["file_type"] = jepa_model_file_type_name(model); out["threads"] = jepa_context_n_threads(ctx);
         out["flash"] = cp.use_flash_attn; out["flash_kv"] = kv_name; out["pass"] = all_ok;
-        out["thresholds"] = {{"min_cos_mean", thr.min_mean}, {"min_cos_min", thr.min_min}, {"max_rel", thr.max_rel}};
+        out["thresholds"] = {
+            {"family_class", FAM_NAME[fam]}, {"tier", TIER_NAME[tier]}, {"advisory", pol.advisory},
+            {"gate_top5", pol.gate_top5},
+            {"token_map", {{"min_cos_mean", thr_lhs.min_mean}, {"min_cos_med", thr_lhs.min_med},
+                           {"min_cos_min", thr_lhs.min_min}, {"max_rel_at_2048_tokens", thr_lhs.max_rel}}},
+            {"derived",   {{"min_cos_mean", thr.min_mean}, {"min_cos_med", thr.min_med},
+                           {"min_cos_min", thr.min_min}, {"max_rel_at_2048_tokens", thr.max_rel}}},
+        };
         out["mean_ms_per_item"] = n_timed ? sum_ms / n_timed : 0.0;
         out["ref_mean_ms_per_sample"] = n_timed ? 1000.0 * sum_ref_s / n_timed : 0.0;
         out["peak_rss_mib"] = rss / 1024.0;
