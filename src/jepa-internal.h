@@ -10,8 +10,10 @@
 //                             encoder (here), the video encoder and the predictors/heads.
 //   5. graph execution     : jepa_graph_begin / jepa_graph_compute
 //   6. host-side helpers    : patchify, preprocessing params
+//   7. video encoders       : V-JEPA 2 / 2.1 graph (3-D RoPE) + the attentive-pool head
 #pragma once
 #include "jepa.h"
+#include "rope3d.h"
 #include "ggml.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
@@ -303,3 +305,33 @@ int64_t jepa_patchify(const float * cthw, int C, int T, int H, int W, int patch,
 // ([C*T*P*P, n_patches] F32). Returns the [D, n_tokens] output tensor (after enc.norm).
 // Only the ijepa / hfvit / lewm image families are handled here; video builders live elsewhere.
 ggml_tensor * jepa_build_encoder_image(jepa_context * ctx, ggml_tensor * inp, int gh, int gw);
+
+// ---------------------------------------------------------------------------------------------
+// 7. video encoders (V-JEPA 2 / V-JEPA 2.1) and the attentive-pool head
+// ---------------------------------------------------------------------------------------------
+// How one input shape maps onto the encoder: which patch embedding runs, the tubelet depth and the
+// resulting token grid (T-major, then h, then w). Filled by jepa_video_shape_for().
+struct jepa_video_shape {
+    int  tubelet = 1;
+    int  gt = 0, gh = 0, gw = 0;
+    bool image_path = false;      // V-JEPA 2.1 patch_embed_img + img modality vector (n_frames == 1)
+    int64_t n_tokens = 0;
+    int64_t patch_dim = 0;        // C * tubelet * patch * patch (row width fed to the patch embed)
+};
+
+// Resolve the shape for `n_frames` x `height` x `width`; logs and returns false if it is not encodable.
+bool jepa_video_shape_for(const jepa_model * m, int n_frames, int height, int width, jepa_video_shape & vs, bool verbose);
+
+// 3-D RoPE parameters of the encoder at this token grid (variant / interpolation from the hparams).
+jepa_rope3d_params jepa_encoder_rope_params(const jepa_model * m, int gt, int gh, int gw);
+
+// Build the video encoder graph for one clip: `inp` [patch_dim, n_tokens] F32 patch rows, `cos_t` /
+// `sin_t` the RoPE tables as graph inputs [head_dim, 1, n_tokens] F32 (jepa_rope3d_tables).
+// Returns the [D, n_tokens] output tensor (after enc.norm == norms_block[-1] for 2.1).
+ggml_tensor * jepa_build_encoder_video(jepa_context * ctx, ggml_tensor * inp,
+                                       ggml_tensor * cos_t, ggml_tensor * sin_t, bool image_path);
+
+// Attentive pooler + classifier (see scripts/jepa_convert/VJEPA_NOTES.md S2): `inp` [D, N] encoder
+// tokens. Returns the logits [n_classes, 1]; *pooled_out receives the pooler output [D, 1]
+// (= the classifier input) when non-null.
+ggml_tensor * jepa_build_head(jepa_context * ctx, ggml_tensor * inp, ggml_tensor ** pooled_out);

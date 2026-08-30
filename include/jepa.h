@@ -121,6 +121,29 @@ int jepa_predict(jepa_context * ctx, const jepa_output * enc,
                  const int32_t * context_idx, int n_context,
                  const int32_t * target_idx,  int n_target, jepa_output * out);
 
+// ==============================================================================================
+// Appended for the video encoders (V-JEPA 2 / V-JEPA 2.1) and the attentive-pool head.
+// Everything above is unchanged; this section is append-only.
+// ==============================================================================================
+
+// Video input: pass the clip as one item — jepa_input NCTHW with n_frames = T (a multiple of the
+// tubelet size; V-JEPA 2.1 also accepts T = 1, which selects its image tokenizer). jepa_encode()
+// then returns [n_batch * (T/tubelet)*(H/patch)*(W/patch), embed_dim], token order t-major, h, w.
+
+// Token grid this model would produce for one T x H x W item: t-major grid dimensions in
+// gt/gh/gw (any may be NULL). Returns the token count per item, or 0 if the shape is not encodable.
+int64_t jepa_token_grid(const jepa_model * model, int n_frames, int height, int width, int * gt, int * gh, int * gw);
+
+// Attentive-pool head with both outputs: `pooled` (the pooler output = classifier input,
+// [1, embed_dim]) and `logits` ([1, n_classes]); either may be NULL. jepa_head() is this with
+// pooled = NULL. `enc` must hold the tokens of exactly one item. Caller frees the .data pointers.
+int jepa_head_ex(jepa_context * ctx, const jepa_output * enc, jepa_output * pooled, jepa_output * logits);
+
+// probs[i] = softmax(logits)[i] over n classes (host side; probs may not alias logits).
+void jepa_softmax(const float * logits, int n, float * probs);
+// Indices of the k largest logits, descending (ties by smaller index). Returns the number written.
+int  jepa_top_k(const float * logits, int n, int k, int32_t * idx);
+
 // --- misc ----------------------------------------------------------------------------
 const char * jepa_version(void);
 void jepa_print_system_info(void);
