@@ -200,7 +200,7 @@ static dt_tier tier_of(int ftype) {
 // f32 rel_max bound, widened with the sequence length.  max|a-b| over a token map grows like the
 // accumulated round-off of the longest reduction in the graph (~sqrt(N) for attention over N
 // tokens): the 8192-token V-JEPA 2 clip reaches 1.22e-3 at cosine 1.000000 on every token, and the
-// V-JEPA 2.1 predictor 1.26e-3 at 4608 context rows.  The 2048-token reference point is the
+// V-JEPA 2.1 predictor 1.07e-3 at 4608 context rows (cosine 1.0000000, worst row 0.9999944).  The 2048-token reference point is the
 // 16-frame ViT-L clip (7.5e-4), so the bound is 1e-3 there and only loosens beyond it.
 static double rel_bound(double base, int64_t rows) {
     if (base <= 0) return -1.0;

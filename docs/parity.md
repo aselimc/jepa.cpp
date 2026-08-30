@@ -109,12 +109,14 @@ tokens the worst token is 0.999990 and `rel_max` is 1.22e-3 — larger than 1e-3
 wrong but because max|a−b| grows with the length of the reductions in the graph, which is why the f32
 `rel_max` bar is length-aware (`REL(N)` under "Thresholds"; 2e-3 at 8192 tokens, 1e-3 at ≤ 2048).
 
-**Quantisation below q8_0 is not a parity configuration for the video encoders.** `vjepa2_1-vitb-384-q4_k`
-on the 576-token COCO image measures token-map mean 0.9896 / median 0.9903 / worst 0.9496 and pooled
-0.9979 — usable for retrieval, far outside the f16/q8_0 envelope for per-token work; `test-parity` puts
-every file below 8 bits per weight in the advisory tier (results printed, only the derived tensors and
-top-1 gated) and prints a note saying so. Per-model quantisation numbers and the recommendation:
-`docs/quantization.md`.
+**Quantisation below q8_0 is not a parity configuration for the video encoders.**
+`vjepa2_1-vitb-384-q4_k` on the 576-token COCO image measures token-map mean 0.9896 / median 0.9903 /
+worst 0.9496 and pooled 0.9979 — usable for retrieval, far outside the f16/q8_0 envelope for per-token
+work — and `vjepa2-vitl-fpc16-256-ssv2-q4_k` misses even the advisory bar (token map mean 0.883–0.928,
+attentive-pooler output 0.977–0.981, logits 0.979–0.986 with top-1 still exact and 4 of 5 top-5), so it
+is reported as a **FAIL**. `test-parity` puts every file below 8 bits per weight in the advisory tier
+(results printed, only the derived tensors ≥ 0.99 and top-1 gated) and prints a note saying so.
+Per-model quantisation numbers and the recommendation: `docs/quantization.md`.
 
 At f16 the *mean* stays at 0.9971–0.999999 and every pooled/logit output stays ≥ 0.9998, but individual
 tokens drop far below that (worst 0.51 on V-JEPA 2 ViT-L, 0.97 on 2.1 ViT-B). That is **not** graph
@@ -203,11 +205,15 @@ default); `jepa_predict_mod(..., JEPA_MODALITY_IMAGE)` selects the image one for
 | q8_0 | **image** | 576 | 0.9996050 | 0.9907839 | 8.3e-02 | 79 |
 | f32 | video (wrong vector) | 576 | 0.8624148 | 0.6550520 | 8.1e-01 | 101 |
 | f16 | video (wrong vector) | 576 | 0.8624867 | 0.6554096 | 8.1e-01 | 108 |
-| f16 | video (4608-token clip, correct) | 4608 | 0.9999955 | 0.9999133 | 7.5e-03 | 1440 |
+| f16 | video, 4608-token clip (correct) | 4608 | 0.9999955 | 0.9999133 | 7.5e-03 | 1440 |
+| f32 | video, 4608-token clip archery | 4608 | 1.0000000 | 0.9999958 | 8.3e-04 | 1408 |
+| f32 | video, 4608-token clip bowling | 4608 | 1.0000000 | 0.9999944 | **1.07e-03** | 1712 |
 
 i.e. the image path is exact at f32 once the right modality vector is used, and using the video vector
 on an image costs two digits of *mean* cosine and a third of the worst row — a silent error the video
-default would have shipped.
+default would have shipped. The two f32 clip rows are the second case that needs the length-aware f32
+`rel_max` bound: bowling sits at 1.07e-3 with cosine 1.0000000 on the mean and 0.9999944 on the worst
+of 4608 rows, i.e. a false FAIL under a flat 1e-3 and a comfortable pass under REL(4608) = 1.5e-3.
 
 Regenerating the case dirs (they live in git-ignored `tmp/`; the same snippet with `mode="video"` and a
 clip sample writes the video case):
@@ -292,8 +298,9 @@ stricter than 0.99** and no worst-token / `rel_max` bound (it carries JPEG-decod
 rows. `rel_max` is a max-abs difference, and max|a−b| grows with the length of the reductions feeding
 it (~√N for attention over N tokens), while the cosine does not. At the 2048-token reference point
 (the 16-frame ViT-L clip, 7.5e-4) the bound is the historical 1e-3; the 8192-token clip measures
-1.22e-3 with cosine 1.000000 on *every* token, and the 4608-row V-JEPA 2.1 predictor case 1.26e-3 —
-both were false FAILs under a flat 1e-3. Derived tensors have N = 1, so their bound stays exactly 1e-3.
+1.22e-3 with cosine 1.000000 on *every* token, and the 4608-row V-JEPA 2.1 predictor case 1.07e-3
+(bowling; 8.3e-4 on archery) at cosine 1.0000000 / worst row 0.9999944 — both were false FAILs under a
+flat 1e-3. Derived tensors have N = 1, so their bound stays exactly 1e-3.
 The bar is still ~40× the observed f32 noise floor: perturbing one encoder weight tensor of
 `vjepa2_1-vitb-384-f32` by +1 % pushes the 4608-token clip to `rel_max` 2.09e-3 → FAIL, and +0.1 % on
 the final `enc.norm.weight` fails on the (unwidened) pooled bound, while a clean run sits at 4.0e-5.

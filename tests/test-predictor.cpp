@@ -67,7 +67,8 @@ struct thresholds { double min_mean, min_min, max_rel; };
 // f32 rel_max bound, widened with the number of rows: max|a-b| grows like the accumulated round-off
 // of the longest reduction in the graph (~sqrt(N) for attention over N rows).  1e-3 up to the
 // 2048-row reference point, 2e-3 at 8192 rows (the 64-frame V-JEPA 2 clip measures 1.22e-3 there at
-// cosine 1.000000, the 2.1 predictor 1.26e-3 at 4608 rows).  Same formula as test-parity.cpp.
+// cosine 1.000000, the 2.1 predictor 1.07e-3 at 4608 rows at cosine 1.0000000).  Same formula as
+// test-parity.cpp.
 static double rel_bound(double base, int64_t rows) {
     if (base <= 0) return -1.0;
     return std::fmax(base, base * std::sqrt((double) rows / 2048.0));

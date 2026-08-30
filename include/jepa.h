@@ -174,8 +174,10 @@ int jepa_predict_ex(jepa_context * ctx, const jepa_output * enc,
 //           an image modality vector, video otherwise;
 //   VIDEO : always pred.mod_embed_video — what jepa_predict / jepa_predict_ex use, so their
 //           behaviour is unchanged;
-//   IMAGE : always pred.mod_embed_img (the 1x16x16 image tokenizer path of V-JEPA 2.1; using the
-//           video vector there costs ~2 digits: mean cos 0.99, worst 0.964 on a 576-token image).
+//   IMAGE : always pred.mod_embed_img (the 1x16x16 image tokenizer path of V-JEPA 2.1).  Measured on
+//           the 576-token COCO image against the numpy spec's mode="image" (docs/parity.md): the
+//           image vector gives cosine 1.0000000 on every row at f32, the video vector 0.862 mean /
+//           0.655 worst -- a silent two-digit error, not noise.
 enum { JEPA_MODALITY_AUTO = 0, JEPA_MODALITY_VIDEO = 1, JEPA_MODALITY_IMAGE = 2 };
 
 // jepa_predict_ex with an explicit modality (jepa_predict_ex == modality JEPA_MODALITY_VIDEO).
