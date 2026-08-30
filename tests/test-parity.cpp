@@ -161,15 +161,40 @@ static fam_class fam_class_of(const char * family) {
     return (f == "vjepa" || f == "vjepa2" || f == "vjepa2_1") ? FAM_VIDEO : FAM_IMAGE;
 }
 
+// Bits per stored weight of the majority type of `ftype`, or -1 for a value that is not a known
+// GGML_FTYPE.  The mapping is spelled out here on purpose: general.file_type comes from a file, and
+// ggml_ftype_to_ggml_type() GGML_ASSERTs (aborts) on values it does not know (UNKNOWN,
+// Q4_1_SOME_F16, anything outside the enum).  Covers every type tools/jepa-quantize.cpp can write.
+static double ftype_bits_per_weight(int ftype) {
+    ggml_type t;
+    switch (ftype) {
+        case GGML_FTYPE_ALL_F32:     t = GGML_TYPE_F32;  break;
+        case GGML_FTYPE_MOSTLY_F16:  t = GGML_TYPE_F16;  break;
+        case GGML_FTYPE_MOSTLY_BF16: t = GGML_TYPE_BF16; break;
+        case GGML_FTYPE_MOSTLY_Q4_0: t = GGML_TYPE_Q4_0; break;
+        case GGML_FTYPE_MOSTLY_Q4_1: t = GGML_TYPE_Q4_1; break;
+        case GGML_FTYPE_MOSTLY_Q5_0: t = GGML_TYPE_Q5_0; break;
+        case GGML_FTYPE_MOSTLY_Q5_1: t = GGML_TYPE_Q5_1; break;
+        case GGML_FTYPE_MOSTLY_Q8_0: t = GGML_TYPE_Q8_0; break;
+        case GGML_FTYPE_MOSTLY_Q2_K: t = GGML_TYPE_Q2_K; break;
+        case GGML_FTYPE_MOSTLY_Q3_K: t = GGML_TYPE_Q3_K; break;
+        case GGML_FTYPE_MOSTLY_Q4_K: t = GGML_TYPE_Q4_K; break;
+        case GGML_FTYPE_MOSTLY_Q5_K: t = GGML_TYPE_Q5_K; break;
+        case GGML_FTYPE_MOSTLY_Q6_K: t = GGML_TYPE_Q6_K; break;
+        default: return -1.0;
+    }
+    const int64_t blk = ggml_blck_size(t);
+    return blk > 0 ? 8.0 * (double) ggml_type_size(t) / (double) blk : -1.0;
+}
+
 // general.file_type carries a GGML_FTYPE_* value (see src/jepa-gguf.cpp jepa_file_type_name).
-// Anything below 8 bits per stored weight (q4_*, q5_*, q6_k, iq*) lands in the advisory tier.
+// Anything below 8 bits per stored weight (q4_*, q5_*, q6_k, the iq* family) lands in the advisory
+// tier, and so does an unrecognised value -- printing results is more useful than a hard gate whose
+// meaning we cannot know.
 static dt_tier tier_of(int ftype) {
     if (ftype == GGML_FTYPE_ALL_F32) return TIER_F32;
     if (ftype == GGML_FTYPE_MOSTLY_F16 || ftype == GGML_FTYPE_MOSTLY_BF16) return TIER_F16;
-    const ggml_type t = ggml_ftype_to_ggml_type((ggml_ftype) ftype);
-    if (t == GGML_TYPE_COUNT || ggml_blck_size(t) <= 0) return TIER_LOWBIT;   // unknown: be lenient
-    const double bits = 8.0 * (double) ggml_type_size(t) / (double) ggml_blck_size(t);
-    return bits >= 8.0 ? TIER_Q8 : TIER_LOWBIT;
+    return ftype_bits_per_weight(ftype) >= 8.0 ? TIER_Q8 : TIER_LOWBIT;   // q8_0 = 8.5 bits
 }
 
 // f32 rel_max bound, widened with the sequence length.  max|a-b| over a token map grows like the
@@ -328,9 +353,15 @@ int main(int argc, char ** argv) {
            FAM_NAME[fam], TIER_NAME[tier], bars_to_string(thr_lhs).c_str(), bars_to_string(thr).c_str(),
            pol.gate_top5 ? ", top-5 >= 4/5" : "");
     if (pol.advisory) {
-        printf("NOTE: %s is below the recommended quantization for parity (q8_0, docs/quantization.md): the token "
-               "map is reported but not gated; only the derived tensors and the top-1 label are.\n",
-               jepa_model_file_type_name(model));
+        if (ftype_bits_per_weight(ftype) < 0) {
+            printf("NOTE: general.file_type %d (%s) has no single stored weight type this test can size, so it "
+                   "is judged in the advisory low-bit tier: the token map is reported but not gated, only the "
+                   "derived tensors and the top-1 label are.\n", ftype, jepa_model_file_type_name(model));
+        } else {
+            printf("NOTE: %s is below the recommended quantization for parity (q8_0, docs/quantization.md): the "
+                   "token map is reported but not gated; only the derived tensors and the top-1 label are.\n",
+                   jepa_model_file_type_name(model));
+        }
     }
     printf("preprocess (%s): %s\n", pre_mode == "model" ? "jepa.pre.* of the GGUF" : "reference manifest", pre_to_string(pre).c_str());
     if (pre_differs) {
