@@ -128,8 +128,8 @@ static int predict_masked(jepa_context * ctx, const jepa_output * enc,
                  (long long) enc->dim, (long long) enc_dim);
         return -1;
     }
-    if (n_target <= 0) {
-        jepa_log("jepa: jepa_predict: n_target must be > 0\n");
+    if (n_target <= 0 || n_context < 0) {
+        jepa_log("jepa: jepa_predict: need n_target > 0 and n_context >= 0 (got %d / %d)\n", n_target, n_context);
         return -1;
     }
 
