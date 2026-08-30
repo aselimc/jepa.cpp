@@ -12,6 +12,8 @@ src/jepa.cpp          model struct, GGUF load, graph build, run (encoder / predi
 src/jepa-gguf.cpp     GGUF metadata + tensor lookup helpers, hparam parsing
 src/preprocess.cpp    image/video → normalized float tensors (stb_image; bilinear/bicubic resize matching PIL/torchvision)
 src/rope3d.cpp        V-JEPA 3D RoPE: cos/sin table generation + graph application
+src/npy.h             header-only .npy reader/writer (fixtures, tool output)
+third_party/json.hpp  nlohmann/json 3.12 (manifests, hparam dumps); stb_image*.h for image decode/resize
 tools/jepa-info       print GGUF hparams/tensors
 tools/jepa-embed      image/video → features (.npy / text)
 tools/jepa-classify   video → top-k labels (attentive-pool head)
