@@ -26,6 +26,8 @@ add_library(jepa STATIC
   src/jepa-gguf.cpp
   src/preprocess.cpp
   src/rope3d.cpp
+  src/predictor.cpp
+  src/lewm.cpp
 )
 target_include_directories(jepa PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(jepa PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
@@ -34,7 +36,7 @@ target_compile_options(jepa PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unu
 
 # --- tools -------------------------------------------------------------------
 if(JEPA_BUILD_TOOLS)
-  foreach(tool jepa-embed jepa-classify jepa-quantize jepa-bench jepa-info)
+  foreach(tool jepa-embed jepa-classify jepa-quantize jepa-bench jepa-info jepa-worldmodel)
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/${tool}.cpp)
       add_executable(${tool} tools/${tool}.cpp)
       target_link_libraries(${tool} PRIVATE jepa)
@@ -63,6 +65,26 @@ if(JEPA_BUILD_TESTS)
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/${_ref} --threads 8 --quiet)
       endif()
     endforeach()
+  endif()
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-predictor.cpp)
+    add_executable(test-predictor tests/test-predictor.cpp)
+    target_link_libraries(test-predictor PRIVATE jepa)
+    target_include_directories(test-predictor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    # LeWM predictor parity (f32) — registered only when the git-ignored GGUF and reference dump exist
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lewm-pusht-f32.gguf AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/lewm-pusht/manifest.json)
+      add_test(NAME predictor-lewm
+               COMMAND test-predictor --lewm ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lewm-pusht-f32.gguf
+                       --ref ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/lewm-pusht --threads 8)
+    endif()
+    # V-JEPA 2 masked predictor parity (f16) on the 16-frame archery sample
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/vjepa2-vitl-fpc64-256-f16.gguf AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2-vitl-fpc64-256/manifest.json)
+      add_test(NAME predictor-vjepa2
+               COMMAND test-predictor --vjepa2 ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/vjepa2-vitl-fpc64-256-f16.gguf
+                       --ref ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2-vitl-fpc64-256
+                       --samples archery_f16 --threads 8)
+    endif()
   endif()
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-ops.cpp)
     add_executable(test-ops tests/test-ops.cpp)
