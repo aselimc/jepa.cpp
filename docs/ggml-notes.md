@@ -228,7 +228,7 @@ into the qkv tensor, flash allocates only the output (graph buffer halves again)
 ## 5. Matmul throughput of this box (what a ViT-L/H layer can expect)
 
 `test-attn bench`: `Y = ggml_mul_mat(W, X)`, W = [4096×1024] (a ViT-L ffn_up / 4·1024 attention block),
-X = [1024×N] F32, best of ≥3 runs; `max rel err` vs a double reference (Q8_0's ~8e-3 is the quantisation of W *and*
+X = [1024×N] F32, best of ≥3 runs; `max rel err` vs a double reference sampled over the first min(N, 64) output columns (Q8_0's ~8e-3 is the quantisation of W *and*
 of X to Q8_0 for the dot products — Q8_0 activations are quantised on the fly by the CPU backend).
 
 ggml default (`GGML_LLAMAFILE=OFF`, what `build/` currently produces), 32 threads:
@@ -249,7 +249,7 @@ turns it on):
 | Q8_0 | 4098 | 3664 | 3575 | 4074 | 3634 | 3865 |
 
 * **Turn `GGML_LLAMAFILE` ON in the top-level CMakeLists** (`set(GGML_LLAMAFILE ON CACHE BOOL "" FORCE)` next to the
-  other ggml options): identical results (same max rel err), 1.6× (F32) / 3.2× (F16) / 2.2× (Q8_0) faster matmuls,
+  other ggml options): identical f16/q8_0 numerics (bit-identical bench outputs; F32 differs only at round-off ~2e-7 — different kernels run), roughly **1.3–1.6× (F32) / 2.6–3.2× (F16) / 1.9–2.2× (Q8_0)** faster matmuls (the spread reflects background load between measurement runs; both ends re-measured),
   which dominate ViT inference. The realistic budget for this box is then **~3.3 TFLOP/s F16 at 32 threads,
   ~5-6 TFLOP/s at 96** (Q8_0 tops out ~4 TFLOP/s and stops scaling past 32 threads — activation-quantisation bound).
 * Back-of-envelope with llamafile F16 at 32 threads: one ViT-L layer has ≈ 24·1024²·N matmul FLOPs (qkv 3C² + out C²

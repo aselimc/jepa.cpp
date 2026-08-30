@@ -15,7 +15,9 @@
 // here and fed as ONE clip.  Their own-preprocessing pass runs on the stored `frames_u8` (THWC uint8,
 // the exact frames the reference processor saw), so no video decoder is needed.  Classifiers also get
 // `pooled` (attentive-pooler output), `logits` and top-1 / top-5 agreement against `top5_idx`.
-// Thresholds come from general.file_type: f32 cos >= 0.9999 & rel_max <= 1e-3; f16 cos >= 0.9999; else cos >= 0.999.
+// Thresholds come from general.file_type: f32 cos >= 0.9999 & rel_max <= 1e-3; f16 / quantized files
+// keep tight bars on the pooled outputs and are judged on the median token cosine for the token map
+// (see thresholds_for / lhs_thresholds_for).
 // They are applied to the stored-input run; the own-preprocessing run must meet the cosine threshold.
 // Exit status 1 on any failure.
 #include "jepa.h"
@@ -82,48 +84,55 @@ static metrics compare(const float * a, const float * b, int64_t rows, int64_t d
 
 // Thresholds by general.file_type, applied to the stored-input pass.  Two tensor classes:
 //
-//   * token maps (`last_hidden_state`, n_rows > 1): judged on the MEDIAN per-token cosine plus a
-//     much weaker mean floor.  Reason (measured, see docs/parity.md): with f16 weights ggml also
-//     rounds the *activations* to F16 inside every f16 mul_mat (llamafile's AVX-512 sgemm only has
-//     an F16xF16 kernel), and the V-JEPA 2 ViT-L encoder is extremely token-sensitive -- the tokens
-//     with the smallest pre-final-LN variance blow up.  On SSv2 bowling_f16 that gives mean 0.9971 /
-//     worst token 0.51 while the f32 file of the same model is exact (1.000000, rel 7.5e-4) and the
-//     numpy spec run with f16 activations reproduces the C++ numbers to 4 digits (mean 0.99718,
-//     worst 0.5576, same token index).  The median (0.999+ at f16, 0.99+ at q8_0) stays tight and
-//     still collapses for a real graph bug: a wrong RoPE layout alone gives ~0.63 everywhere.
-//   * derived single-row tensors (`pooled_mean`, `pooled`, `cls`, `emb`, `logits`): the tail averages
-//     out, so these keep tight bars -- they are what users consume.
+//   * token maps (`last_hidden_state`, lhs_thresholds_for): judged on the MEDIAN per-token cosine
+//     plus a weak mean floor, with no worst-token bound for lossy files.  Two independent effects
+//     produce a long low tail there while everything downstream stays exact:
+//       - weight quantisation amplified by low-variance tokens (docs/quantization.md: I-JEPA q8_0
+//         worst token 0.43, worst sample mean 0.988, pooled >= 0.9999);
+//       - ggml rounding the *activations* to F16 inside every f16 mul_mat (llamafile's AVX-512 sgemm
+//         only has an F16xF16 kernel).  On V-JEPA 2 ViT-L (SSv2 bowling_f16) that is mean 0.9971 /
+//         worst token 0.51, while the f32 file of the same model is exact (1.000000, rel 7.5e-4) and
+//         the numpy spec re-run with F16 activations reproduces the C++ numbers to four digits
+//         (mean 0.99718, worst 0.5576, same token index) -- docs/parity.md.
+//     The median (>= 0.999 at f16, >= 0.99 at q8_0 on every fixture) stays tight and still collapses
+//     for a real graph bug: a wrong RoPE layout alone gives ~0.63/0.91 on *every* token.
+//   * derived single-row tensors (`pooled_mean`, `pooled`, `cls`, `emb`, `logits`, thresholds_for):
+//     the tail averages out, so these keep tight bars -- they are what users consume.  The bars are
+//     set just under the worst fixture value: f16 0.9995 (SSv2 pooler output 0.999897), quantized
+//     0.995 (SSv2 q8_0 pooler 0.996645, its logits 0.998501 with top-1/top-5 still exact).
 //
 //   f32:  tokens mean & worst >= 0.9999, rel_max <= 1e-3; derived >= 0.9999
 //   f16:  tokens median >= 0.999, mean >= 0.99;           derived >= 0.9995
 //   else: tokens median >= 0.99,  mean >= 0.95;           derived >= 0.995
 // Classifiers additionally have to reproduce the reference top-1 exactly and 4 of its top-5.
-// The own-preprocessing pass uses the same rules, but no bar is stricter than 0.99 there: it
-// additionally carries JPEG-decoder differences (stb_image vs PIL) unless --rgb-dir provides the
-// reference pixels (video samples run on the stored frames_u8 and come out bit-exact).
-struct thresholds { double min_mean; double min_med; double min_min; double max_rel; double min_derived; };
+// The own-preprocessing pass uses the same rules with no bar stricter than 0.99: it additionally
+// carries JPEG-decoder differences (stb_image vs PIL) unless --rgb-dir provides the reference pixels
+// (video samples run on the stored frames_u8 and come out bit-exact).
+struct thresholds { double min_mean; double min_med; double min_min; double max_rel; };
 
+// pooled_mean / pooled / cls / emb / logits
 static thresholds thresholds_for(int ftype) {
-    if (ftype == 0) return {0.9999, 0.9999, 0.9999, 1e-3, 0.9999};
-    if (ftype == 1) return {0.99,   0.999,  -1.0,  -1.0,  0.9995};
-    return {0.95, 0.99, -1.0, -1.0, 0.995};
+    if (ftype == 0) return {0.9999, -1.0, 0.9999, 1e-3};
+    if (ftype == 1) return {0.9995, -1.0, -1.0,  -1.0};
+    return {0.995, -1.0, -1.0, -1.0};
+}
+
+// last_hidden_state
+static thresholds lhs_thresholds_for(int ftype) {
+    if (ftype == 0) return {0.9999, 0.9999, 0.9999, 1e-3};
+    if (ftype == 1) return {0.99,   0.999,  -1.0,  -1.0};
+    return {0.95, 0.99, -1.0, -1.0};
 }
 
 static bool passes(const metrics & m, const thresholds & t, bool own) {
     if (!m.valid) return true;
-    thresholds e = t;
-    if (own) {   // decoder noise on top; the input difference itself is reported separately
-        e.min_mean = std::min(t.min_mean, 0.99);
-        e.min_med  = std::min(t.min_med,  0.99);
-        e.min_derived = std::min(t.min_derived, 0.99);
-        e.min_min = -1.0;
-        e.max_rel = -1.0;
-    }
-    if (m.n_rows <= 1) return m.cos_mean >= e.min_derived;
-    if (m.cos_mean < e.min_mean) return false;
-    if (m.cos_med < e.min_med) return false;
-    if (e.min_min > 0 && m.cos_min < e.min_min) return false;
-    if (e.max_rel > 0 && m.rel_max > e.max_rel) return false;
+    // the own-preprocessing pass carries decoder noise on top, so nothing is stricter than 0.99 there
+    const double min_mean = own ? std::min(t.min_mean, 0.99) : t.min_mean;
+    const double min_med  = own ? std::min(t.min_med,  0.99) : t.min_med;
+    if (m.cos_mean < min_mean) return false;
+    if (t.min_med > 0 && m.cos_med < min_med) return false;
+    if (!own && t.min_min > 0 && m.cos_min < t.min_min) return false;
+    if (!own && t.max_rel > 0 && m.rel_max > t.max_rel) return false;
     return true;
 }
 
@@ -221,6 +230,7 @@ int main(int argc, char ** argv) {
     if (!ctx) return 2;
     const int ftype = jepa_model_file_type(model);
     const thresholds thr = thresholds_for(ftype);
+    const thresholds thr_lhs = lhs_thresholds_for(ftype);
 
     jepa_preprocess_params pre_model = jepa_preprocess_default_params(model);
     bool pre_ok = true;
@@ -231,10 +241,11 @@ int main(int argc, char ** argv) {
                              pre_model.resample != pre_ref.resample || pre_model.resize_mode != pre_ref.resize_mode;
 
     const char * kv_name = cp.flash_kv == JEPA_KV_F16 ? "f16" : cp.flash_kv == JEPA_KV_F32 ? "f32" : (ftype == 0 ? "auto(f32)" : "auto(f16)");
-    printf("model: %s (%s, %s, %d layers, D=%d) | ref: %s | threads %d | flash %s | kv %s | thresholds: tokens median >= %g & mean >= %g, derived >= %g%s\n",
+    printf("model: %s (%s, %s, %d layers, D=%d) | ref: %s | threads %d | flash %s | kv %s | thresholds: tokens mean >= %g%s, derived >= %g%s\n",
            jepa_model_name(model), jepa_model_family(model), jepa_model_file_type_name(model), jepa_model_n_layer(model),
            jepa_model_embed_dim(model), manifest.value("model", "?").c_str(), jepa_context_n_threads(ctx),
-           cp.use_flash_attn ? "yes" : "no", kv_name, thr.min_med, thr.min_mean, thr.min_derived, thr.max_rel > 0 ? ", rel_max <= 1e-3" : "");
+           cp.use_flash_attn ? "yes" : "no", kv_name, thr_lhs.min_mean, thr_lhs.min_med > 0 ? " & median >= 0.999/0.99" : "",
+           thr.min_mean, thr.max_rel > 0 ? ", rel_max <= 1e-3" : "");
     printf("preprocess (%s): %s\n", pre_mode == "model" ? "jepa.pre.* of the GGUF" : "reference manifest", pre_to_string(pre).c_str());
     if (pre_differs) {
         printf("NOTE: the GGUF jepa.pre.* pipeline differs from the reference manifest's: %s\n", pre_to_string(pre_mode == "model" ? pre_ref : pre_model).c_str());
@@ -277,6 +288,9 @@ int main(int argc, char ** argv) {
             continue;
         }
         std::vector<float> in_ref = in_npy.to_f32();
+        if ((int64_t) in_ref.size() != (int64_t) N * C * F * H * W) {
+            printf("%-20s ERROR: input npy element count mismatch\n", name.c_str()); all_ok = false; continue;
+        }
         if (ntchw) {   // [N,T,C,H,W] -> [N,C,T,H,W]
             std::vector<float> t((size_t) N * C * F * H * W);
             const size_t plane = (size_t) H * W;
@@ -305,6 +319,15 @@ int main(int argc, char ** argv) {
         const bool has_hpool = load_opt("pooled", hpool_ref, sh);            // attentive-pooler output
         const bool has_logits = load_opt("logits", logits_ref, sh);
         const bool has_top5 = load_opt("top5_idx", top5_ref, sh);
+
+        // Guard against mismatched reference dirs: never read past a smaller ref buffer.
+        auto ref_size_ok = [&](const std::vector<float> & v, int64_t rows, int64_t dim, const char * what) {
+            if ((int64_t) v.size() == rows * dim) return true;
+            printf("%-20s ERROR: reference '%s' has %zu elements, expected %lld x %lld — wrong ref dir for this model?\n",
+                   name.c_str(), what, v.size(), (long long) rows, (long long) dim);
+            all_ok = false;
+            return false;
+        };
 
         // run: (a) stored input, (b) own preprocessing
         for (int pass = 0; pass < 2; pass++) {
@@ -386,26 +409,26 @@ int main(int argc, char ** argv) {
             metrics m_lhs, m_pool, m_cls, m_emb, m_hpool, m_logits;
             int top1_ok = -1;
             double top5_frac = -1;
-            if (has_lhs && N == 1) m_lhs = compare(enc.data, lhs_ref.data(), enc.n_tokens, D);
+            if (has_lhs && N == 1 && ref_size_ok(lhs_ref, enc.n_tokens, D, "last_hidden_state")) m_lhs = compare(enc.data, lhs_ref.data(), enc.n_tokens, D);
             jepa_output one = {enc.data, n_tok, D};
-            if (has_pool && N == 1) { jepa_output o = {nullptr, 0, 0}; if (jepa_pool_mean(model, &one, &o) == 0) { m_pool = compare(o.data, pool_ref.data(), 1, D); jepa_free(o.data); } }
-            if (has_cls && N == 1)  { jepa_output o = {nullptr, 0, 0}; if (jepa_pool_cls(model, &one, &o) == 0)  { m_cls = compare(o.data, cls_ref.data(), 1, D); jepa_free(o.data); } }
+            if (has_pool && N == 1) { jepa_output o = {nullptr, 0, 0}; if (jepa_pool_mean(model, &one, &o) == 0) { if (ref_size_ok(pool_ref, 1, D, "pooled_mean")) m_pool = compare(o.data, pool_ref.data(), 1, D); jepa_free(o.data); } }
+            if (has_cls && N == 1)  { jepa_output o = {nullptr, 0, 0}; if (jepa_pool_cls(model, &one, &o) == 0)  { if (ref_size_ok(cls_ref, 1, D, "cls")) m_cls = compare(o.data, cls_ref.data(), 1, D); jepa_free(o.data); } }
             if (has_emb && N == 1 && jepa_model_has_projector(model)) {
                 jepa_output o = {nullptr, 0, 0};
-                if (jepa_lewm_project(ctx, &one, &o) == 0) { m_emb = compare(o.data, emb_ref.data(), 1, D); jepa_free(o.data); }
+                if (jepa_lewm_project(ctx, &one, &o) == 0) { if (ref_size_ok(emb_ref, 1, D, "emb")) m_emb = compare(o.data, emb_ref.data(), 1, D); jepa_free(o.data); }
             }
             if (has_emb_seq && jepa_model_has_projector(model)) {
                 std::vector<float> cls_rows((size_t) N * D);
                 for (int b = 0; b < N; b++) memcpy(cls_rows.data() + (size_t) b * D, enc.data + (size_t) b * n_tok * D, D * sizeof(float));
                 jepa_output o = {nullptr, 0, 0};
-                if (jepa_lewm_project_rows(ctx, cls_rows.data(), N, &o) == 0) { m_emb = compare(o.data, emb_seq_ref.data(), N, D); jepa_free(o.data); }
+                if (jepa_lewm_project_rows(ctx, cls_rows.data(), N, &o) == 0) { if (ref_size_ok(emb_seq_ref, N, D, "emb_seq")) m_emb = compare(o.data, emb_seq_ref.data(), N, D); jepa_free(o.data); }
             }
             // attentive-pool head: pooler output + logits + top-1 / top-5 agreement
             if ((has_logits || has_hpool) && N == 1 && jepa_model_has_head(model)) {
                 jepa_output hp = {nullptr, 0, 0}, lg = {nullptr, 0, 0};
                 if (jepa_head_ex(ctx, &one, &hp, &lg) == 0) {
-                    if (has_hpool) m_hpool = compare(hp.data, hpool_ref.data(), 1, D);
-                    if (has_logits) m_logits = compare(lg.data, logits_ref.data(), 1, (int64_t) logits_ref.size());
+                    if (has_hpool && ref_size_ok(hpool_ref, 1, D, "pooled")) m_hpool = compare(hp.data, hpool_ref.data(), 1, D);
+                    if (has_logits && ref_size_ok(logits_ref, 1, lg.dim, "logits")) m_logits = compare(lg.data, logits_ref.data(), 1, lg.dim);
                     if (has_top5 && top5_ref.size() >= 1) {
                         const int k = (int) top5_ref.size();
                         std::vector<int32_t> top(k);
@@ -422,7 +445,7 @@ int main(int argc, char ** argv) {
             }
             jepa_free(enc.data);
 
-            bool ok = passes(m_lhs, thr, own) && passes(m_pool, thr, own) && passes(m_cls, thr, own) && passes(m_emb, thr, own)
+            bool ok = passes(m_lhs, thr_lhs, own) && passes(m_pool, thr, own) && passes(m_cls, thr, own) && passes(m_emb, thr, own)
                       && passes(m_hpool, thr, own) && passes(m_logits, thr, own);
             if (top1_ok == 0) ok = false;                       // top-1 must agree with the reference
             if (top5_frac >= 0 && top5_frac < 0.8) ok = false;   // and at least 4 of the reference top-5
@@ -464,6 +487,12 @@ int main(int argc, char ** argv) {
         }
         if (s.contains("timing_s") && s["timing_s"].contains("forward_s")) sum_ref_s += s["timing_s"]["forward_s"].get<double>();
         results.push_back(res);
+    }
+
+    if (results.empty()) {
+        printf("error: no samples matched%s%s — nothing was tested\nRESULT: FAIL\n",
+               sample_filter.empty() ? "" : " filter ", sample_filter.c_str());
+        return 2;
     }
 
     const long rss = peak_rss_kb();
