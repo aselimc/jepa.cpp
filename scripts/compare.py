@@ -47,7 +47,9 @@ def compare_arrays(a, b, topk: int = 5, is_logits: bool | None = None) -> dict:
             return m
     if a.dtype.kind in "iu" and b.dtype.kind in "iu":  # index tensors (top5_idx): exact / set agreement
         m["exact"] = bool(np.array_equal(a, b))
-        m["set_overlap"] = float(len(set(a.ravel().tolist()) & set(b.ravel().tolist())) / max(1, b.size))
+        ua, ub = set(a.ravel().tolist()), set(b.ravel().tolist())
+        m["set_overlap"] = 1.0 if m["exact"] else float(len(ua & ub) / max(1, len(ub)))  # over unique values (top-k index sets)
+        m["mismatch_count"] = int((a != b).sum()) if a.shape == b.shape else -1
         return m
     af, bf = a.astype(np.float64), b.astype(np.float64)
     if not (np.isfinite(af).all() and np.isfinite(bf).all()):
@@ -127,6 +129,8 @@ def check_thresholds(row: dict, min_cos: float, max_abs: float | None, max_rel: 
     if "error" in row:
         return [row["error"]]
     if "exact" in row:
+        if row["exact"]:
+            return fails
         if row["set_overlap"] < min_topk:
             fails.append(f"set_overlap {row['set_overlap']:.2f} < {min_topk}")
         return fails
@@ -150,7 +154,7 @@ def fmt_row(row: dict, fails: list[str]) -> str:
     if "error" in row:
         return f"{head} ERROR: {row['error']}"
     if "exact" in row:
-        return f"{head} exact={row['exact']} set_overlap={row['set_overlap']:.2f}"
+        return f"{head} exact={row['exact']} set_overlap={row['set_overlap']:.2f} mismatches={row.get('mismatch_count', -1)}"
     s = (f"cos mean={row['cos_mean']:.6f} min={row['cos_min']:.6f}  max_abs={row['max_abs']:.3e}  "
          f"rel_max={row['rel_max_abs']:.2e} rel_fro={row['rel_fro']:.2e}")
     if "top1_match" in row:

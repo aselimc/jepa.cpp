@@ -72,7 +72,7 @@ Token order is always t-major, then h, then w (images: h-major then w); `hfvit`-
 All resizing is `torchvision.transforms.v2.functional.resize` **on the uint8 CHW tensor with `antialias=True`** (rounded back
 to uint8), which is what every transformers>=5 image/video processor does (`TorchvisionBackend`); verified against a
 re-implementation to 2.4e-7, whereas PIL resampling differs by up to 1.8e-2 (1-2 uint8 levels). Center crop uses
-`top = int((H-c)/2)`, `left = int((W-c)/2)`; short-side resize keeps the aspect ratio (`other = round(other * s / short)`).
+`top = int((H-c)/2)`, `left = int((W-c)/2)`; short-side resize keeps the aspect ratio with the long side **floored**: `other = int(s * other / short)` (transformers `get_resize_output_image_size`; e.g. 640×426 → 256 short gives 384, not 385).
 
 | model | pipeline |
 |---|---|

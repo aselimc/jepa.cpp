@@ -52,6 +52,11 @@ VJEPA2_SRC_URL = "https://github.com/facebookresearch/vjepa2"
 # --------------------------------------------------------------------------------------------------
 # environment (must run before torch / transformers are imported)
 # --------------------------------------------------------------------------------------------------
+
+def _act_name(hf_act: str) -> str:
+    """Map HF activation strings onto the docs/gguf-schema.md vocabulary."""
+    return {"gelu": "gelu_erf", "gelu_new": "gelu_tanh", "gelu_pytorch_tanh": "gelu_tanh", "silu": "silu", "swish": "silu"}.get(hf_act, hf_act)
+
 def setup_env(root: Path, threads: int) -> None:
     os.environ.setdefault("OMP_NUM_THREADS", str(threads))
     os.environ.setdefault("MKL_NUM_THREADS", str(threads))
@@ -220,7 +225,7 @@ def dump_ijepa(a) -> None:
         hf_id="facebook/ijepa_vith14_1k",
         hparams={"embed_dim": cfg.hidden_size, "n_layer": cfg.num_hidden_layers, "n_head": cfg.num_attention_heads,
                  "ffn_dim": cfg.intermediate_size, "patch_size": cfg.patch_size, "img_size": cfg.image_size,
-                 "ln_eps": cfg.layer_norm_eps, "act": cfg.hidden_act, "qkv_bias": cfg.qkv_bias, "cls_token": False,
+                 "ln_eps": cfg.layer_norm_eps, "act": _act_name(cfg.hidden_act), "qkv_bias": cfg.qkv_bias, "cls_token": False,
                  "pos_type": "sincos2d", "n_tokens": (cfg.image_size // cfg.patch_size) ** 2},
         preprocessing={
             "description": "ViTImageProcessor: RGB -> resize to exactly 224x224 (aspect ratio NOT kept; bilinear + antialias on the "
@@ -276,7 +281,7 @@ def dump_lejepa(a) -> None:
                  "qkv_bias": True, "cls_token": True, "n_registers": cfg.num_register_tokens, "layer_scale": bool(cfg.init_values),
                  "pos_type": "learned", "pos_embed_shape": list(bb.pos_embed.shape), "n_tokens": bb.pos_embed.shape[1]},
         preprocessing={
-            "description": "BitImageProcessor: RGB -> resize shortest edge to 256 keeping aspect (other side = round(W*256/short); BICUBIC + "
+            "description": "BitImageProcessor: RGB -> resize shortest edge to 256 keeping aspect (other side = int(256*W/short), i.e. floored; BICUBIC + "
                            "antialias on the uint8 tensor) -> center crop 224x224 (top=int((H-224)/2), left=int((W-224)/2)) -> x/255 -> "
                            "ImageNet mean/std -> NCHW.  " + RESIZE_NOTE,
             "resize": {"shortest_edge": 256, "resample": "bicubic", "antialias": True, "on_dtype": "uint8"}, "center_crop": 224, "rescale": 1 / 255,
@@ -483,13 +488,13 @@ def dump_lewm(a) -> None:
     n_single = a.n_images
     n_seq = min(3, len(imgs), config["predictor"]["num_frames"])
     g = torch.Generator().manual_seed(0)
-    actions = torch.randn(max(n_single, n_seq), act_dim, generator=g)  # row i = action for image / step i
+    actions = torch.randn(8, act_dim, generator=g)[: max(n_single, n_seq)]  # fixed draw (8 rows) so row i is stable across --n-images
     w = RefWriter(
         a.out / name, name, d,
         hf_id="quentinll/lewm-pusht", config=config,
         hparams={"enc": {"embed_dim": enc_cfg.hidden_size, "n_layer": enc_cfg.num_hidden_layers, "n_head": enc_cfg.num_attention_heads,
                          "ffn_dim": enc_cfg.intermediate_size, "patch_size": enc_cfg.patch_size, "img_size": enc_cfg.image_size,
-                         "ln_eps": enc_cfg.layer_norm_eps, "act": enc_cfg.hidden_act, "qkv_bias": enc_cfg.qkv_bias, "cls_token": True,
+                         "ln_eps": enc_cfg.layer_norm_eps, "act": _act_name(enc_cfg.hidden_act), "qkv_bias": enc_cfg.qkv_bias, "cls_token": True,
                          "pos_type": "learned", "n_tokens": model.encoder.embeddings.position_embeddings.shape[1]},
                  "pred": {"embed_dim": config["predictor"]["hidden_dim"], "n_layer": config["predictor"]["depth"], "n_head": config["predictor"]["heads"],
                           "head_dim": config["predictor"]["dim_head"], "ffn_dim": config["predictor"]["mlp_dim"], "n_frames": config["predictor"]["num_frames"],
@@ -581,11 +586,11 @@ def _vjepa2_preprocessing(proc, crop: int) -> dict:
 def _vjepa2_hparams(cfg) -> dict:
     h = {"embed_dim": cfg.hidden_size, "n_layer": cfg.num_hidden_layers, "n_head": cfg.num_attention_heads,
          "ffn_dim": int(cfg.hidden_size * cfg.mlp_ratio), "patch_size": cfg.patch_size, "tubelet_size": cfg.tubelet_size,
-         "img_size": cfg.crop_size, "n_frames": cfg.frames_per_clip, "ln_eps": cfg.layer_norm_eps, "act": cfg.hidden_act,
+         "img_size": cfg.crop_size, "n_frames": cfg.frames_per_clip, "ln_eps": cfg.layer_norm_eps, "act": _act_name(cfg.hidden_act),
          "qkv_bias": cfg.qkv_bias, "cls_token": False, "pos_type": "rope3d", "rope_theta": 10000.0,
          "pred": {"embed_dim": cfg.pred_hidden_size, "n_layer": cfg.pred_num_hidden_layers, "n_head": cfg.pred_num_attention_heads,
                   "ffn_dim": int(cfg.pred_hidden_size * cfg.pred_mlp_ratio), "n_mask_tokens": cfg.pred_num_mask_tokens}}
-    if getattr(cfg, "num_pooler_layers", None):
+    if getattr(cfg, "num_pooler_layers", None) and "ForVideoClassification" in cfg.architectures[0]:
         h["head"] = {"kind": "attentive_pool", "n_pool_layers": cfg.num_pooler_layers, "n_classes": cfg.num_labels}
     return h
 
@@ -712,6 +717,7 @@ def dump_vjepa2_1(a) -> None:
     encoder.load_state_dict(clean(sd["ema_encoder"]), strict=True)  # hub uses checkpoint_key="ema_encoder" for 2.1 vitb
     predictor.load_state_dict(clean(sd["predictor"]), strict=True)
     encoder = encoder.float().eval()
+    ckpt_epoch = sd.get("epoch") if isinstance(sd, dict) else None
     del sd
     load_s = time.time() - t0
     crop = 384
@@ -721,7 +727,7 @@ def dump_vjepa2_1(a) -> None:
         a.out / name, name, ckpt, source_url="https://dl.fbaipublicfiles.com/vjepa2/vjepa2_1_vitb_dist_vitG_384.pt",
         code=f"{VJEPA2_SRC_URL} (hubconf vjepa2_1_vit_base_384, app/vjepa_2_1/models/vision_transformer.py), local clone at {src}",
         checkpoint={"top_level_keys": ckpt_keys, "encoder_key_used": "ema_encoder", "key_cleanup": "strip 'module.' and 'backbone.'",
-                    "epoch": None},
+                    "epoch": ckpt_epoch},
         hparams={"embed_dim": encoder.embed_dim, "n_layer": len(encoder.blocks), "n_head": encoder.num_heads, "ffn_dim": blk.mlp.fc1.out_features,
                  "patch_size": encoder.patch_size, "tubelet_size": encoder.tubelet_size, "img_size": crop, "n_frames": encoder.num_frames,
                  "ln_eps": blk.norm1.eps, "act": "gelu_erf", "qkv_bias": blk.attn.qkv.bias is not None, "cls_token": False,
