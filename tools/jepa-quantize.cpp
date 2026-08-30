@@ -389,6 +389,27 @@ int main(int argc, char ** argv) {
 
     printf("plan: %d tensors re-typed, %d kept by the rule, %d kept by --keep, %d K-quant fallbacks, %d re-quantized\n",
            n_changed, n_kept_rule, n_kept_user, n_fallback, n_requant);
+
+    // If K-quant fallbacks re-typed the majority of quantized tensors to a different type than requested,
+    // general.file_type would misdescribe the file (e.g. "q4_k" that is mostly q4_0). Record the majority.
+    if (n_fallback > 0 && ggml_is_quantized(target)) {
+        ggml_type major = target; int64_t major_n = -1; int64_t total_q = 0;
+        for (const auto & kv : after) {
+            if (!ggml_is_quantized(kv.first)) continue;
+            total_q += kv.second.first;
+            if (kv.second.first > major_n) { major = kv.first; major_n = kv.second.first; }
+        }
+        if (major != target) {
+            for (const auto & ts : TYPE_SPECS) {
+                if (ts.type == major) {
+                    gguf_set_val_u32(out, "general.file_type", (uint32_t) ts.ftype);
+                    printf("note: %lld/%lld quantized tensors are %s after fallbacks -> general.file_type set to %s (requested %s)\n",
+                           (long long) major_n, (long long) total_q, ggml_type_name(major), ts.name, spec->name);
+                    break;
+                }
+            }
+        }
+    }
     printf("tensor bytes by type, before:\n");
     for (const auto & kv : before) {
         printf("  %-6s %4" PRId64 " tensors %12zu bytes (%s)\n", ggml_type_name(kv.first), kv.second.first, kv.second.second, fmt_bytes((double) kv.second.second).c_str());
