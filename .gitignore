@@ -1,0 +1,19 @@
+# scratch & build
+/tmp/
+/build*/
+/.venv/
+__pycache__/
+*.pyc
+# weights (kept on disk in-repo, never committed)
+/models/
+*.gguf
+*.safetensors
+*.pt
+*.pth
+*.pth.tar
+*.bin
+# reference dumps
+/tests/fixtures/ref/*.npy
+/tests/fixtures/ref/*.npz
+/tests/fixtures/media/*.mp4
+.DS_Store
