@@ -69,9 +69,7 @@ def compare_arrays(a, b, topk: int = 5, is_logits: bool | None = None) -> dict:
     nrm_b = float(np.linalg.norm(bf))
     m["rel_fro"] = float(np.linalg.norm(diff) / nrm_b) if nrm_b > 0 else (0.0 if m["max_abs"] == 0 else math.inf)
     m["mean_abs"] = float(np.abs(diff).mean())
-    if is_logits is None:
-        is_logits = a.ndim == 1 and a.shape[0] >= 2 and a.shape[0] <= 100000 and False
-    if is_logits:
+    if is_logits:  # top-k metrics only when the caller says the tensor holds class scores
         k = min(topk, b.size)
         ta, tb = np.argsort(-af.ravel(), kind="stable")[:k], np.argsort(-bf.ravel(), kind="stable")[:k]
         m["top1_match"] = bool(ta[0] == tb[0])
