@@ -83,6 +83,13 @@ static thresholds thresholds_for(int ftype) {
 // so anything beyond float32 round-off is a bug
 static const thresholds exact = {0.9999999, 0.9999999, 1e-5};
 
+// The one exception: the T = 1 prefix is not the same graph as the T = 3 run -- a single query row
+// and no causal mask take ggml's per-row flash kernel (docs/ggml-notes.md §1) -- so for an f16 /
+// quantized file its row matches only to dtype round-off (lewm-pusht-f16 measures max|d| 2.4e-4,
+// rel 2.0e-4; T >= 2 is bit-identical at every dtype).  A broken causal mask would let row 0 see the
+// later frames, which moves the cosine by ~1e-1, far below this bar.
+static const thresholds exact_dtype = {0.999999, 0.999999, 1e-3};
+
 static void check(const char * what, const metrics & m, const thresholds & t, double ms = -1) {
     const double min_cos = t.min_min, max_rel = rel_bound(t.max_rel, m.rows);
     const bool ok = m.cos_mean >= t.min_mean && m.cos_min >= min_cos && (max_rel <= 0 || m.rel_max <= max_rel);
@@ -113,7 +120,8 @@ static bool exists(const std::string & p) { std::ifstream f(p); return (bool) f;
 // ------------------------------------------------------------------------------------------
 // LeWM
 // ------------------------------------------------------------------------------------------
-static void run_lewm(jepa_context * ctx, jepa_model * model, const std::string & ref, const thresholds & thr) {
+static void run_lewm(jepa_context * ctx, jepa_model * model, const std::string & ref, const thresholds & thr,
+                     bool lossy) {
     const int D = jepa_model_embed_dim(model);
     const int A = jepa_lewm_action_dim(model);
     printf("LeWM predictor: D=%d action_dim=%d window=%d\n", D, A, jepa_lewm_n_frames(model));
@@ -150,7 +158,8 @@ static void run_lewm(jepa_context * ctx, jepa_model * model, const std::string &
         if (jepa_lewm_predict(ctx, emb.data(), act.data(), t + 1, &pre) != 0) { g_fail++; continue; }
         char name[64];
         snprintf(name, sizeof(name), "seq causal prefix T=%d -> row %d", t + 1, t);
-        check(name, compare(pre.data + (size_t) t * D, full.data + (size_t) t * D, 1, D), exact);
+        check(name, compare(pre.data + (size_t) t * D, full.data + (size_t) t * D, 1, D),
+              (t == 0 && lossy) ? exact_dtype : exact);
         free(pre.data);
     }
 
@@ -305,7 +314,7 @@ int main(int argc, char ** argv) {
            jepa_context_n_threads(c), cp.use_flash_attn ? "yes" : "no", modality_arg.c_str(), thr.min_mean, thr.min_min,
            thr.max_rel > 0 ? ", rel <= 1e-3*max(1,sqrt(rows/2048))" : "");
 
-    if (!lewm_path.empty()) run_lewm(c, model, ref, thr);
+    if (!lewm_path.empty()) run_lewm(c, model, ref, thr, ftype != 0);
     if (!vjepa2_path.empty()) {
         if (!case_dir.empty()) run_case(c, case_dir, thr, modality);
         if (!ref.empty()) {
