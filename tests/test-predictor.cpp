@@ -246,8 +246,10 @@ static void run_vjepa2(jepa_context * ctx, jepa_model * model, const std::string
     }
 }
 
-// numpy cross-check case: DIR/{enc,ctx_idx,tgt_idx,pred}.npy (scripts written by the agent's
-// tmp/ driver around scripts/jepa_convert/vjepa2_numpy_ref.py::predictor_forward)
+// numpy cross-check case: DIR/{enc,ctx_idx,tgt_idx,pred}.npy, written by running
+// scripts/jepa_convert/vjepa2_numpy_ref.py::predictor_forward on reference encoder tokens (the
+// snippet that generates one is in docs/parity.md, "Results - predictors").  The case has to be
+// generated from the SAME GGUF that is tested: the spec runs that file's weights.
 static void run_case(jepa_context * ctx, const std::string & dir, const thresholds & thr, int modality) {
     int64_t n = 0, d = 0;
     std::vector<float> enc_rows = load_f32(dir + "/enc.npy", &n, &d);

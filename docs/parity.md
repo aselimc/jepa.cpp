@@ -81,15 +81,16 @@ numbers are given per row: the two samples in run order — the *first* clip of 
 uses. The 15 rows come from 9 `test-parity` runs (a run covers all samples of one file); all of them
 **PASS** the video-family thresholds, on the stored input and on our own preprocessing alike.
 
-⁴ the two f32 rows were measured in the Phase-3 verification sweep, with a second agent building and
-running parity on the same box; in that same sweep the f16 file measured 931 / 1044 ms (16 f) and
-8940 / 8222 ms (64 f) against the 823 / 827 and 7032 / 6386 of its own (exclusive) run, so read the f32
-ms as an upper bound carrying ~20 % contention, not as an f32-vs-f16 gap.
 ² the fpc64 manifest's `timing_s.forward_s` is one `VJEPA2Model` forward, which always runs the
 **predictor** as well (its `predictor_last_hidden_state` comes from the same call), so it is not a
 like-for-like encoder number — treat it as an upper bound.
 ³ the SSv2 reference forward is encoder + attentive pooler + classifier with the predictor skipped, i.e.
 directly comparable to our encoder (814 ms) + head (96 ms, measured with `jepa-classify --time`) = 910 ms.
+⁴ the two f32 rows were added in the Phase-3 verification sweep, with a second agent building and
+running parity on the same box; in that same sweep the f16 file measured 931 / 1044 ms (16 f) and
+8940 / 8222 ms (64 f) against the 823 / 827 and 7032 / 6386 of its own (exclusive) run, so read the f32
+ms as an upper bound carrying ~20 % of contention, not as an f32-vs-f16 gap. The cosines and `rel_max`
+are load-independent.
 
 The 64-frame ViT-L clip is the one case that was also timed at **96 threads** (one run, as budgeted):
 4125 / 4076 ms per clip, i.e. 2010 tokens/s and 1.57× the 32-thread throughput (2.5× the manifest's
