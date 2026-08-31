@@ -17,12 +17,24 @@ third_party/json.hpp  nlohmann/json 3.12 (manifests, hparam dumps); stb_image*.h
 tools/jepa-info       print GGUF hparams/tensors
 tools/jepa-embed      image/video → features (.npy / text)
 tools/jepa-classify   video → top-k labels (attentive-pool head)
+tools/jepa-worldmodel LeWM: image → world-model state → K-step action rollout; --ref-check against fixtures/ref
 tools/jepa-quantize   f32/f16 GGUF → q8_0 / q4_k ...
-tools/jepa-bench      timing
+tools/jepa-bench      timing: encoder / head / predictor / lewm-step / lewm-rollout, thread sweep, --md / --json
 tests/test-parity     load fixtures/ref/<model>/manifest.json + .npy, run model, report cosine / max-abs / top-k agreement, exit non-zero on regression
+tests/test-predictor  same for the predictors (V-JEPA 2 masked, V-JEPA 2.1 image/video modality, LeWM) against the reference encoder tokens
+tests/test-attn       flash vs naive attention: accuracy against a double-precision reference, K/V dtype policy, timing
+tests/test-ops        rope3d and friends against tests/vectors/ (from scripts/gen_rope_ref.py)
 scripts/convert.py    HF safetensors / torch.hub .pt → GGUF (docs/gguf-schema.md)
 scripts/dump_reference.py   PyTorch golden outputs for tests/fixtures/media/* → tests/fixtures/ref/<model>/{manifest.json, <sample>.<tensor>.npy}
 scripts/compare.py    python-side comparison of .npy outputs / ref dirs (cosine, max-abs, rel, top-k; non-zero exit on regression)
+scripts/knn_eval.py   the frozen-feature k-NN / nearest-centroid protocol shared by both accuracy benchmarks
+scripts/bench_all.sh + gen_benchmarks_md.py   the benchmark sweep and the generator for docs/benchmarks.md
+scripts/bench_accuracy_{image,video}.py       the Imagenette / UCF-101 accuracy sweeps → tests/results/accuracy-*.json
+docs/index.md         one paragraph per document; start here
+docs/{architecture,gguf-schema}.md            this brief and the GGUF format
+docs/{parity,quantization}.md                 measured correctness per model × dtype, and the dtype recommendation
+docs/{benchmarks,ggml-notes}.md               measured speed/memory, and the ggml-level findings behind the graph
+docs/accuracy-{image,video}.md                frozen-feature k-NN against PyTorch on real datasets
 ```
 
 ## The shared graph
