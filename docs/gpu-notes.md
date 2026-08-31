@@ -345,7 +345,18 @@ are down-converted regardless, so those two comments become CPU-only statements.
 
 ## 4. Scratch CUDA build
 
-*(filled in §5 — see `tmp/gpu-probe/` in this worktree for the driver and CMake project)*
+The audit builds ggml with `GGML_CUDA=ON` in a **separate** CMake project under this worktree's
+`tmp/gpu-probe/` (build dir `tmp/build-cuda/`), so the shared `build/` is untouched. It links `ggml`
+only — no jepa.cpp code — and reproduces jepa.cpp's graphs from first principles, which is what lets
+the op probes use the exact shapes and strides `src/jepa.cpp` produces.
+
+What the build has to chew through at `-j8`: **138 CUDA translation units** (67 top-level `.cu`,
+about 24 k lines, plus 71 `template-instances/*.cu` for the flash-attention and MMQ/MMF kernels;
+`GGML_CUDA_FA_ALL_QUANTS` stays off, which is what keeps the fattn-vec instances out). `GGML_NATIVE=ON`
+resolves `CMAKE_CUDA_ARCHITECTURES` to `native` → the single arch `89`, so this is the cheapest
+faithful build available. Measured build time and any CUDA-13/compute-8.9 diagnostics are in §5.
+
+*(measurements pending the shared-box sentinel)*
 
 ## 5. Measured
 
