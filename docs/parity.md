@@ -11,8 +11,8 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -
 .venv/bin/python tests/dump_rgb_u8.py tmp/rgb                    # PIL-decoded pixels (optional, see below)
 build/test-parity models/gguf/<model>.gguf tests/fixtures/ref/<ref> --threads 32 [--rgb-dir tmp/rgb] [--json out.json]
 build/test-predictor --lewm  models/gguf/<lewm>.gguf   --ref tests/fixtures/ref/lewm-pusht --threads 32
-build/test-predictor --vjepa2 models/gguf/<vjepa2>.gguf --ref tests/fixtures/ref/<ref> --samples archery_f16
-ctest --test-dir build                                           # parity-lejepa-vits16, parity-lewm-pusht,
+build/test-predictor --vjepa2 models/gguf/<vjepa2>.gguf --ref tests/fixtures/ref/<ref> --samples archery_f16 --threads 32
+ctest --test-dir build                                           # parity-lejepa-vits16, parity-lewm-pusht, (re-run cmake once GGUFs + refs exist — tests register at configure time)
                                                                  # parity-vjepa2_1-vitb-384-images, predictor-lewm,
                                                                  # predictor-vjepa2, ops, attn — 7 tests, ~14 s
 ```
@@ -53,7 +53,7 @@ I-JEPA's is 331.8 against 249.8 (mean 263.0); LeWM keeps the mean of its two **1
 16.8, because its 3-frame `seq` sample times encode + projector + a predictor call and is not an
 encoder forward at all. The video table below is unaffected: no video group has a cold first sample.
 
-All 18 runs (9 files × {stored input, own preprocessing}) **PASS** the *image-family* thresholds below
+All 9 image files **PASS** on both passes (18 file×pass combinations) against the *image-family* thresholds below
 — the strict ones: every token ≥ 0.9999 at f32, token-map mean ≥ 0.9999 with worst ≥ 0.99 at f16, and
 mean ≥ 0.98 with pooled/CLS/emb ≥ 0.999 at q8_0. Raw per-sample JSON: `test-parity ... --json`.
 
@@ -120,7 +120,7 @@ predictor — caveat ²). Peak RSS: 1183 MiB (f16, 8192 tokens), 872 MiB (q8_0),
 ### What the f32 rows prove, and why f16 tokens scatter
 
 The f32 files (converted with `scripts/convert.py --family vjepa2{,_1} --ftype f32`) reproduce the
-PyTorch reference **exactly**: cosine 1.000000 on every token of every clip, `rel_max` 7.5e-4 (ViT-L,
+PyTorch reference **exactly**: mean cosine 1.000000 and every token ≥ 0.99999 on every clip, `rel_max` 7.5e-4 (ViT-L,
 whose activations reach ±43) and 8.7e-5 (2.1 ViT-B), logits cosine 1.000000, top-1/top-5 identical. So
 the tubelet patchify, the tiled vs interleaved RoPE tables, `interpolate_rope`, the modality vectors,
 the image tokenizer and the attentive-pool head are all bit-faithful. That now includes the

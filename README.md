@@ -6,8 +6,8 @@ One GGUF file carries a whole model bundle: the ViT **encoder**, and optionally 
 (V-JEPA 2 / 2.1), the **attentive-pool classifier head** (SSv2, 174 classes) or the **LeWorldModel
 predictor + rollout**. Shipping today: I-JEPA ViT-H/14, V-JEPA 2 ViT-L/16 (encoder-only and SSv2),
 V-JEPA 2.1 ViT-B/16 @384 (image *and* video paths), LeJEPA-style ViTs (`hfvit`) and LeWorldModel Push-T.
-Every f32 file reproduces its PyTorch reference **exactly** (cosine 1.000000 on every token of every
-fixture); f16 and q8_0 are measured against it, and `tools/jepa-quantize` produces q8_0 / q4_k / q5_k /
+Every f32 file reproduces its PyTorch reference **exactly** (mean cosine 1.000000 on every fixture, every
+token ≥ 0.99999); f16 and q8_0 are measured against it, and `tools/jepa-quantize` produces q8_0 / q4_k / q5_k /
 q6_k from an f32 or f16 file.
 
 **Status** — `ctest` 7/7 pass (3 parity, 2 predictor, ops, attention). All 18 `test-parity` runs — 9 image
@@ -209,7 +209,12 @@ scripts/download_fixtures.sh            # 8 COCO images + 6 Kinetics-mini clips 
 
 .venv/bin/python scripts/convert.py --family hfvit    --src models/OK-AI/lejepa-vits16-pretrain-in1k --ftype f16
 .venv/bin/python scripts/convert.py --family lewm     --src models/quentinll/lewm-pusht              --ftype f32
-.venv/bin/python scripts/convert.py --family vjepa2_1 --src models/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt
+.venv/bin/python scripts/convert.py --family vjepa2_1 --src models/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt --out models/gguf/vjepa2_1-vitb-384-f16.gguf
+# the video-model and dtype variants used by the commands below (needs `scripts/download_models.sh all`, ~7 GB):
+.venv/bin/python scripts/convert.py --family vjepa2 --src models/facebook/vjepa2-vitl-fpc64-256 --ftype f16
+.venv/bin/python scripts/convert.py --family vjepa2 --src models/facebook/vjepa2-vitl-fpc16-256-ssv2 --ftype f16
+.venv/bin/python scripts/convert.py --family hfvit --src models/OK-AI/lejepa-vits16-pretrain-in1k --ftype f32
+.venv/bin/python scripts/convert.py --family lewm --src models/quentinll/lewm-pusht --ftype f16
 # -> models/gguf/<basename>-<ftype>.gguf
 ```
 
@@ -249,7 +254,8 @@ build/jepa-quantize models/gguf/lejepa-vits16-pretrain-in1k-f32.gguf \
 
 # time one configuration (--threads 32,96 sweeps; --md emits a markdown row; --json writes an artifact)
 build/jepa-bench -m models/gguf/vjepa2_1-vitb-384-f16.gguf --frames 16 --threads 32 --md
-scripts/bench_all.sh 32                 # the whole matrix -> tmp/bench/ + docs/benchmarks.md
+scripts/bench_all.sh 32                 # the 32-thread f32/f16/q8_0 matrix -> tmp/bench/ + docs/benchmarks.md
+                                        # (docs/benchmarks.md lists the extra q4 and 96-thread passes behind its tables)
 ```
 
 C API: [`include/jepa.h`](include/jepa.h) — `jepa_model_load` / `jepa_context_new` /
@@ -297,10 +303,11 @@ Deeper ggml notes — attention shapes, block-causal masks, matmul throughput:
 ## Testing and the parity protocol
 
 ```bash
-ctest --test-dir build                 # 7 tests (they register only when GGUFs + ref dumps are present)
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release   # re-run once GGUFs + tests/fixtures/ref exist: tests register at configure time
+ctest --test-dir build                 # 7 tests
 build/test-parity models/gguf/<model>.gguf tests/fixtures/ref/<ref> --threads 32 [--rgb-dir tmp/rgb] [--json out.json]
-build/test-predictor --vjepa2 models/gguf/<model>.gguf --ref tests/fixtures/ref/<ref> --samples archery_f16
-build/test-predictor --lewm  models/gguf/lewm-pusht-f32.gguf --ref tests/fixtures/ref/lewm-pusht
+build/test-predictor --vjepa2 models/gguf/<model>.gguf --ref tests/fixtures/ref/<ref> --samples archery_f16 --threads 32
+build/test-predictor --lewm  models/gguf/lewm-pusht-f32.gguf --ref tests/fixtures/ref/lewm-pusht --threads 32
 ```
 
 `scripts/dump_reference.py` writes the golden `.npy` dumps; `test-parity` feeds the model the **same
