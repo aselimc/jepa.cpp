@@ -797,8 +797,21 @@ loud failure (`ggml_backend_graph_compute` returns an error) instead of a silent
 6. **Predictor attention on GPU.** `src/predictor.cpp` must force `opts.attn.flash = false` when
    `is_gpu` and `head_dim_eff() == 32` (§3), with a one-line log. Leaving `flash = true` there is a
    silent 12-split-per-call trap.
-7. **`ggml_mul_mat_set_prec(GGML_PREC_F32)`** in `jepa_build_linear` when `is_gpu` (§1.3) — one line,
-   and it is a no-op on CPU so it can be unconditional.
+7. **`ggml_mul_mat_set_prec(GGML_PREC_F32)`** in `jepa_build_linear` (§1.3) — one line, a no-op on
+   CPU, so it can be unconditional. §5.1 measured what it buys and costs: for **f16 weights** it takes
+   the error from 4.55e-03 to **2.57e-05** (177×) for −21 % throughput at N=2048 and *+9 %* at
+   N=8192; for **quantized** weights it is free (they never reach cuBLAS); for **f32** weights it
+   changes nothing at all, because ggml's F32 path is TF32 by way of the algo enum, not the compute
+   type. End to end (§5.5) it costs 1.25× on ViT-L@2048 and 2.1× on the short-sequence ViT-H@256.
+   **Recommendation: on by default, with a `--fast-math`-style opt-out** — correctness first, and the
+   one shape where it is expensive (N=256) is also the one that is already 20× faster than the CPU.
+8. **Validate the graph against `supports_op` before computing.** §5.4 established that a single CUDA
+   backend performs *no* such check: `ggml_backend_cuda_graph_compute` dispatches every node and
+   `ggml_cuda_op_roll` happily misreads a strided view, producing a wrong answer with no error, no
+   warning, and a cosine that would pass jepa.cpp's f16 parity gate. So `jepa_graph_alloc` must walk
+   `ctx->gf` and `GGML_ABORT` (or fall back to the CPU backend) on the first node for which
+   `ggml_backend_dev_supports_op(dev, node)` is false. ~15 lines, and it is what converts every
+   future "some op regressed on this ggml bump" from a silent accuracy bug into a loud failure.
 
 ### 6.2 Tools
 
@@ -835,19 +848,42 @@ it skips silently with no GPU, so it can live in the normal `ctest` set.
 
 ### 6.4 Parity implications
 
-| model / dtype | CPU class today | expected GPU class | why |
-|---|---|---|---|
-| f32 image (LeJEPA, LeWM, I-JEPA) with flash | every token cos ≥ 0.9999, `rel_max` ≤ REL(N) | **drops to the f16-K/V class** | no F32 K/V on CUDA (§1.5) |
-| f32 image with `--no-flash` | — | should hold the f32 class, modulo `ggml_norm` (§1.4) | naive path is F32 end to end on CUDA |
-| f32 video (ViT-L 16f/64f) | cos 1.000000, `rel_max` 7.5e-4 / 1.2e-3 | f16-K/V class; `--no-flash` not affordable above ~4 608 tokens | 15.3 GB score matrix at 18 432 |
-| f16 anything | mean ≥ 0.9999, worst ≥ 0.99 | **wider unless `GGML_PREC_F32` is set on every mul_mat** (§1.3) | cuBLAS HGEMM |
-| q8_0 / q4_* | as `docs/parity.md` | comparable; `mmq` is INT8×INT8→INT32 like the CPU dot | same quantisation, different reduction order |
-| I-JEPA ViT-H, any dtype | — | watch `ggml_norm` (§1.4) — the ~2e4 activations are exactly its bad case | one-pass variance |
+This is the part of the port that costs something, and the measurements sharpened it considerably.
+Per-op error, CUDA vs the CPU backend on identical inputs (§5.1–§5.3):
 
-The practical recommendation is that `tests/test-parity.cpp`'s `POLICY` table would need a
-**backend dimension**, not just family × file-type: the GPU rows of the f32 tier cannot meet the CPU
-f32 thresholds with flash attention on. That is a real cost of the port and should be decided before
-any code is written.
+| op | CPU error | CUDA error | fixable? |
+|---|---|---|---|
+| `mul_mat` f32 weights | 1.2e-07 (`docs/ggml-notes.md` §5) | **3.2e-04** (TF32) | **no** — algo enum, not compute type |
+| `mul_mat` f16 weights | 3.0e-04 | 4.6e-03 → **2.6e-05** with `GGML_PREC_F32` | **yes**, and cheap |
+| `mul_mat` q8_0 / q4_0 | 7.6e-03 (incl. activation quant) | 5.2e-04 / 4.8e-04 vs CPU | n/a, comparable |
+| `flash_attn_ext` F16 K/V | rel ≤ 1.3e-3, cos ≥ 0.9999995 | rel 5.2e-03–1.5e-02, cos ≥ 0.99991 | **no** — F16 PV accumulator |
+| `flash_attn_ext` F32 K/V | rel ≤ 6e-07, cos 1.0000000 | **same as F16 K/V** | **no** — silently down-converted |
+| naive attention (F32) | rel ≤ 1.4e-06 | rel 6.5e-04, cos 0.9999993 | this *is* the escape hatch |
+| `ggml_norm` | 9.2e-08 at any mean/σ | 1.4e-07 at mean/σ ≈ 0, degrading to 4.1e-02 at 667 | **no** — one-pass variance |
+
+So the tier-by-tier verdict:
+
+| model / dtype | CPU class today | **measured GPU class** | escape hatch |
+|---|---|---|---|
+| **f32, any model, flash on** | every token cos ≥ 0.9999, `rel_max` ≤ REL(N) | **cannot hold it.** TF32 matmul (3.2e-04) + F16-accumulate attention (5e-03) | none for the matmul |
+| **f32 image models, `--no-flash`** | as above | attention error drops to 6.5e-04 but TF32 stays | `--no-flash` is **free at N=256** (§5.5) |
+| **f32 video, `--no-flash`** | cos 1.000000 | affordable to ~4 608 tokens (0.30 GiB at 2 048; 2.8× slower) | not above ~8 192 tokens |
+| **f16** | mean ≥ 0.9999, worst ≥ 0.99 | **holds, with `GGML_PREC_F32`** — the matmul term becomes 2.6e-05, i.e. *better* than the CPU's 3.0e-04 | on by default |
+| **q8_0 / q4_\*** | as `docs/parity.md` | **holds** — `mmq` is INT8×INT8→INT32, and it is the *fastest* path (§5.1) | — |
+
+**The headline is uncomfortable but clean: a GPU backend cannot reproduce jepa.cpp's f32 tier, and
+can reproduce its f16 and quantized tiers.** The f32 tier is exactly the one `docs/parity.md` uses to
+prove the port is bit-faithful to PyTorch ("the f32 files reproduce the PyTorch reference
+**exactly**"), so this is a claim the project would have to qualify by backend.
+
+Concretely, `tests/test-parity.cpp`'s `POLICY` needs a **backend dimension** on top of family ×
+file-type. The honest framing for users is: *use f16 or a quantized file on the GPU — they are both
+faster and, with `GGML_PREC_F32`, no less accurate than on the CPU; use the CPU when you need the f32
+tier.* That happens to line up with the existing recommendation in `docs/quantization.md`.
+
+One more thing the measurements flagged that is **not** about dtypes: because a wrong `ggml_norm`
+variance is a per-row *scale* error, cosine similarity is blind to it (§5.3). Any backend-parity test
+must gate on `rel_max`, not only on cosine.
 
 ### 6.5 Multi-GPU
 
@@ -872,22 +908,79 @@ Not worth it as a second target *on this box*, and not worth it soon:
 - **Its value is portability**, i.e. AMD and Intel GPUs and Apple-less non-CUDA boxes. That is a real
   goal for a "runs anywhere in plain C++" project, but it is a *third* milestone, after CUDA works
   and after the §2 refactor has proven that the graph is backend-clean. The good news from §1 is
-  that the §2 refactor is what makes *any* backend viable — nothing in it is CUDA-specific.
+  that the §2 refactor is what makes *any* backend viable — nothing in it is CUDA-specific, and §5.4
+  measured it bit-identical on both backends.
+- The §6.1.8 graph check is what makes a second backend cheap to qualify: point it at a Vulkan
+  device and it tells you in one run which ops are missing, instead of producing quiet wrong answers.
 
 ### 6.7 Effort, in reviewable chunks
 
 | # | chunk | files | est. |
 |---|---|---|---|
-| 1 | **RoPE table refactor** (§2) — signed sin table, one-`roll` apply, `ggml_cont` for views. Bit-identical, CPU-only change, ships on its own value. | `src/rope3d.{h,cpp}`, `tests/test-ops.cpp` | ~55 lines, **0.5 d** |
+| 1 | **RoPE table refactor** (§2) — host tables, `ggml_cont` for views, one or two rolls. Measured bit-identical on both backends, 193 sched splits → 1, and it costs 3–5 % of CPU encoder time (§5.4). Ships on its own value. | `src/rope3d.{h,cpp}`, `tests/test-ops.cpp` | ~55 lines, **0.5 d** |
 | 2 | **Backend plumbing** — `gpu_device` param, device discovery, device weight allocation, `jepa_context`/`jepa_model` pairing check, `jepa-info --devices`. | `include/jepa.h`, `src/jepa-internal.h`, `src/jepa.cpp`, `src/jepa-gguf.cpp`, `tools/jepa-info.cpp` | ~250 lines, **1.5 d** |
-| 3 | **GPU numeric policy** — `ggml_mul_mat_set_prec` in `jepa_build_linear`, K/V policy override + log, predictor naive-attention override, `--no-flash` documentation. | `src/jepa.cpp`, `src/predictor.cpp` | ~40 lines, **0.5 d** |
+| 3 | **GPU numeric policy + graph validation** — `ggml_mul_mat_set_prec`, K/V policy override + log, predictor naive-attention override, `--no-flash` docs, and the `supports_op` graph check of §6.1.8 (**not optional**, §5.4). Includes the `ggml_norm` mean/σ pre-flight check of §5.3 on real activations. | `src/jepa.cpp`, `src/predictor.cpp` | ~60 lines, **1 d** |
 | 4 | **Tools + build** — `--gpu N` on four tools, `JEPA_CUDA` option, pinned staging buffer, bench header records the device. | `tools/*.cpp`, `CMakeLists.txt` | ~150 lines, **1 d** |
 | 5 | **Backend-parity test** — `tests/test-backend.cpp` running every graph on CPU and GPU and comparing; `POLICY` gains a backend dimension in `test-parity`. | `tests/`, `CMakeLists.txt` | ~350 lines, **1.5 d** |
 | 6 | **Measure + document** — GPU rows in `docs/benchmarks.md` and `docs/parity.md`, a GPU section in the README, torch-GPU baselines. | `docs/`, `scripts/bench_all.sh` | **1 d** |
 
-**Total ≈ 6 developer-days** for a CUDA backend that is honest about its numerics, plus whatever the
-parity-policy decision (§6.4) costs in discussion. Chunk 1 is worth doing regardless of the outcome.
+**Total ≈ 6.5 developer-days** for a CUDA backend that is honest about its numerics, plus whatever the
+parity-policy decision (§6.4) costs in discussion. Chunk 1 is worth doing regardless of the outcome —
+it is bit-identical, it removes ~340 nodes from a ViT-L video graph, and the repo already lists it as
+a candidate ("rope3d sin-mask hoisting").
+
+A **second, optional** round of optimisation exists and was quantified in §5.6: ~33 % of the
+64-frame ViT-L time is neither GEMM nor attention. The first item on that list is an upstream
+`{NORM, MUL, ADD}` fusion in ggml-cuda (§1.6), which would benefit every ViT on ggml.
 
 ## 7. Go / no-go
 
-*(filled in with the measurements)*
+**Go — with one condition and one disclosure.**
+
+The three decisive facts:
+
+1. **Nothing structural blocks it, and the one thing that did is a ~55-line bit-identical fix.**
+   Of 48 op probes at jepa.cpp's exact shapes and strides, exactly two things fail: `ggml_roll` on
+   the fused-qkv view (which fragments the encoder into **193 scheduler splits**, measured) and
+   `flash_attn_ext` at head_dim 32. The first is fixed by moving the RoPE masks to the host and
+   adding one `ggml_cont` — **1 split, bit-identical on both backends, 3–5 % of CPU encoder time**
+   (§5.4). The second has a measured in-graph fallback that works and fits (§5.2). Everything else —
+   every matmul dtype, both attention paths, LN, GELU, concat, casts, the batched `ne[3]` path — is
+   already supported.
+
+2. **The win is 20–26×, and it lands at 54–80 % of PyTorch.** A measured ggml-CUDA forward of the
+   real encoder shapes gives 7.2 ms for I-JEPA ViT-H, 35 ms for the ViT-L 16-frame clip and 270 ms
+   for the 64-frame clip, against 147 / 821 / 6 388 ms on 32 Zen 4 cores today (§5.5). One 210 W
+   workstation card beats 96 cores by more than an order of magnitude, and ggml gets within 1.25–1.9×
+   of `VJEPA2Model` on the same GPU (§5.6). Quantized weights are the *fastest* path on CUDA
+   (q4_K at 93 TFLOP/s, level with q8_0), which inverts the CPU guidance and makes the small
+   quantized files genuinely attractive rather than a memory-only trade.
+
+3. **The cost is the f32 parity tier, and it is not recoverable.** ggml's "F32" matmul on CUDA is
+   really TF32 (3.2e-04 against the CPU, and `GGML_PREC_F32` cannot turn it off — it is the
+   `CUBLAS_GEMM_DEFAULT_TENSOR_OP` algo enum), flash attention always down-converts K/V to F16 and
+   accumulates PV in F16, and `ggml_norm` uses the numerically weaker one-pass variance. **f16 and
+   quantized tiers hold** — with `GGML_PREC_F32` the f16 matmul term is 2.6e-05, *better* than the
+   CPU's 3.0e-04 — but the f32 tier that `docs/parity.md` uses to prove bit-faithfulness to PyTorch
+   does not, and the project would have to qualify that claim by backend (§6.4).
+
+**The condition:** a single-backend design must validate its own graph against
+`ggml_backend_dev_supports_op` before computing. §5.4 showed that ggml does *not* do this for you —
+the unfixed RoPE chain on a single CUDA backend produced no error, no warning, and a wrong answer
+whose cosine (0.99996) would have **passed jepa.cpp's own f16 parity gate**. Fifteen lines, and
+without them this port is a silent-corruption risk on every future ggml bump.
+
+**The disclosure:** `JEPA_CUDA=OFF` stays the default. `libggml-cuda.so` is 45 MB for a *single*
+GPU architecture (§4.1), 30× the CPU backend, which is not something a project whose pitch is
+"CPU inference in plain C/C++ on ggml" should ship by default.
+
+**Suggested sequencing.** Land chunk 1 (the RoPE refactor) now, on CPU, on its own merits — it is
+bit-identical, it removes ~340 nodes from a ViT-L video graph, and the repo already has it on the
+TODO list. Then decide on the GPU port with the parity question (§6.4) settled first, because that
+is a documentation-and-promises decision, not an engineering one. If it goes ahead, **I-JEPA and the
+image models are the right first target**: 97 % of their work is matmul, `--no-flash` is free at
+256 tokens so the f32 path stays honest there, and they need none of the RoPE or head_dim-32 work.
+
+**One open item this audit could not close:** whether real ViT residual streams ever reach the
+|mean|/σ ratio where CUDA's one-pass `ggml_norm` matters (§5.3). It needs a dump of real pre-LN rows,
+which would have meant changing `src/`. It is the first thing to check in chunk 3.
