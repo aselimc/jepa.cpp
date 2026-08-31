@@ -3,7 +3,7 @@
 //   jepa-bench -m model.gguf [--mode encoder|head|predictor|lewm-step|lewm-rollout]
 //              [--frames N] [--size HxW] [--batch B] [--threads 32,96]
 //              [--repeat R] [--warmup W] [--kv-f16|--kv-f32] [--no-flash]
-//              [--seed S] [--steps K] [--md] [--json out.json] [-v]
+//              [--seed S] [--steps K] [--md] [--json out.json] [--ftype-label NAME] [-v]
 //
 // The input is synthetic but deterministic: a seeded xorshift generates uint8 "pixels" that go through
 // the model's own normalisation ((px/255 - mean)/std, from jepa.pre.*), so the tensor that reaches the
@@ -18,14 +18,20 @@
 //   head         encoder once, then the attentive-pool head R times (requires jepa.head).
 //   predictor    encoder once, then the masked predictor with context = target = every token.
 //   lewm-step    one LeWM predictor call over jepa.pred.n_frames frames.
-//   lewm-rollout autoregressive rollout of --steps (default 20) steps; ms is reported per step.
+//   lewm-rollout autoregressive rollout of --steps (default 20) steps; ms is reported per step, and
+//                a step emits exactly one embedding, so `tokens` is 1 per step and tokens/s = steps/s.
 //
 // The reported ms is the wall time of ggml_backend_graph_compute (jepa_context_last_compute_ms), i.e.
 // graph build/alloc and the host-side patchify are excluded; `wall_ms` in the JSON is the full API
 // call. With --threads a,b a context is created per thread count and each gets its own warmup.
+//
+// In --mode head/predictor the encoder is run three times (one warmup + two measured) and the
+// *minimum* of the measured passes is reported as `encoder_ms`, so a burst of load on the box during
+// one pass does not become the row's encoder figure. It is still a single graph, not an average.
 #include "jepa.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -33,6 +39,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 static void usage(const char * a0) {
@@ -53,6 +60,9 @@ static void usage(const char * a0) {
         "  --no-md-header    suppress that header (for appending rows to an existing table)\n"
         "  --json FILE       write every run of this process as JSON\n"
         "  --label NAME      override the model name printed/emitted\n"
+        "  --ftype-label N   override the file type printed/emitted (general.file_type is the most\n"
+        "                    common stored tensor type, so a q4_k mix with more q4_0 fallbacks than\n"
+        "                    q4_k tensors reads as q4_0; pass the type that was asked for)\n"
         "  -v                verbose model load + ggml system info\n", a0);
 }
 
@@ -117,7 +127,7 @@ static stats summarize(std::vector<double> v) {
 }
 
 struct run {
-    std::string model_name, model_path, family, ftype, mode, shape, kv;
+    std::string model_name, model_path, family, ftype, ftype_gguf, mode, shape, kv;
     int  threads = 0, batch = 1, frames = 0, height = 0, width = 0;
     int  repeat = 0, warmup = 0, steps = 0;
     bool flash = true;
@@ -160,9 +170,12 @@ static void json_str(FILE * f, const char * key, const std::string & v) {
     fputs("\", ", f);
 }
 
-static void write_json(const std::string & path, const std::vector<run> & runs) {
+// -> true on success. A JSON that could not be written (or could not be flushed to disk) must not be
+// mistaken for a successful run: bench_all.sh counts the exit status, and a silently missing file
+// would drop the config from docs/benchmarks.md without anyone noticing.
+static bool write_json(const std::string & path, const std::vector<run> & runs) {
     FILE * f = fopen(path.c_str(), "w");
-    if (!f) { fprintf(stderr, "cannot write %s\n", path.c_str()); return; }
+    if (!f) { fprintf(stderr, "cannot write %s: %s\n", path.c_str(), strerror(errno)); return false; }
     fprintf(f, "{\n  \"tool\": \"jepa-bench\",\n  \"jepa_version\": \"%s\",\n  \"runs\": [\n", jepa_version());
     for (size_t i = 0; i < runs.size(); i++) {
         const run & r = runs[i];
@@ -171,6 +184,7 @@ static void write_json(const std::string & path, const std::vector<run> & runs) 
         json_str(f, "path",  r.model_path);
         json_str(f, "family", r.family);
         json_str(f, "ftype", r.ftype);
+        json_str(f, "ftype_gguf", r.ftype_gguf);
         json_str(f, "mode",  r.mode);
         json_str(f, "shape", r.shape);
         json_str(f, "kv",    r.kv);
@@ -187,12 +201,30 @@ static void write_json(const std::string & path, const std::vector<run> & runs) 
         fprintf(f, "}%s\n", i + 1 < runs.size() ? "," : "");
     }
     fputs("  ]\n}\n", f);
-    fclose(f);
+    const bool ok = ferror(f) == 0;
+    if (fclose(f) != 0 || !ok) {
+        fprintf(stderr, "failed to write %s: %s\n", path.c_str(), strerror(errno));
+        return false;
+    }
     fprintf(stderr, "wrote %s (%zu run%s)\n", path.c_str(), runs.size(), runs.size() == 1 ? "" : "s");
+    return true;
+}
+
+// Parse one --threads entry. Returns false for anything that is not a whole positive number, so a
+// typo ("32,,96", "-t 32x", "--threads all") fails loudly instead of silently becoming atoi()'s 0,
+// which jepa_context_new() would read as "use every hardware thread".
+static bool parse_thread_count(const std::string & tok, int & out) {
+    errno = 0;
+    char * end = nullptr;
+    const long v = strtol(tok.c_str(), &end, 10);
+    if (end == tok.c_str() || (end && *end != '\0')) return false;   // empty or trailing junk
+    if (errno == ERANGE || v <= 0 || v > 100000) return false;
+    out = (int) v;
+    return true;
 }
 
 int main(int argc, char ** argv) {
-    std::string model_path, mode = "encoder", json_out, label, size_arg, threads_arg;
+    std::string model_path, mode = "encoder", json_out, label, ftype_label, size_arg, threads_arg;
     jepa_context_params cp = jepa_context_default_params();
     int frames = -1, batch = 1, repeat = 3, warmup = 1, steps = 20;
     uint64_t seed = 1234;
@@ -220,6 +252,7 @@ int main(int argc, char ** argv) {
         else if (a == "--no-md-header")         md_header   = false;
         else if (a == "--json")                 json_out    = next("--json");
         else if (a == "--label")                label       = next("--label");
+        else if (a == "--ftype-label")          ftype_label = next("--ftype-label");
         else if (a == "-v" || a == "--verbose") verbose     = true;
         else if (a == "-h" || a == "--help")  { usage(argv[0]); return 0; }
         else { fprintf(stderr, "unknown argument %s\n", argv[i]); usage(argv[0]); return 1; }
@@ -244,7 +277,13 @@ int main(int argc, char ** argv) {
     for (size_t p = 0; !threads_arg.empty() && p <= threads_arg.size(); ) {
         const size_t c = threads_arg.find(',', p);
         const std::string tok = threads_arg.substr(p, c == std::string::npos ? std::string::npos : c - p);
-        if (!tok.empty()) thread_list.push_back(atoi(tok.c_str()));
+        int nth = 0;
+        if (!parse_thread_count(tok, nth)) {
+            fprintf(stderr, "--threads wants a comma-separated list of positive integers, got '%s' in '%s'\n",
+                    tok.c_str(), threads_arg.c_str());
+            return 1;
+        }
+        thread_list.push_back(nth);
         if (c == std::string::npos) break;
         p = c + 1;
     }
@@ -296,7 +335,17 @@ int main(int argc, char ** argv) {
 
     std::string name = label.empty() ? jepa_model_name(model) : label;
     if (name.empty()) name = model_path;
-    const std::string ftype = jepa_model_file_type_name(model);
+    // general.file_type is the *most common* stored tensor type. A k-quant mix falls back to q4_0 for
+    // every tensor whose rows are not a multiple of the 256-element super-block, so a small model can
+    // end up with more q4_0 tensors than q4_k ones (lejepa-vits16 q4_k: 36 q4_0 against 12 q4_k) and
+    // reads back as a q4_0 file. --ftype-label carries the type that was asked for (the filename
+    // suffix); both it and the GGUF's own answer go into the JSON.
+    const std::string ftype_gguf = jepa_model_file_type_name(model);
+    const std::string ftype      = ftype_label.empty() ? ftype_gguf : ftype_label;
+    if (!ftype_label.empty() && ftype_label != ftype_gguf) {
+        fprintf(stderr, "note: labelling as '%s'; the GGUF's general.file_type reads '%s'\n",
+                ftype_label.c_str(), ftype_gguf.c_str());
+    }
 
     // ---- synthetic inputs, built once so every thread count sees identical numbers
     std::vector<float> x, embs, acts;
@@ -317,6 +366,7 @@ int main(int argc, char ** argv) {
     std::vector<run> runs;
     bool first_row = true;
     int  rc_exit = 0;
+    const int smt_threads = (int) std::thread::hardware_concurrency();
     for (int nth : thread_list) {
         jepa_context_params p = cp;
         p.n_threads = nth;
@@ -324,8 +374,17 @@ int main(int argc, char ** argv) {
         if (!ctx) { rc_exit = 1; break; }
 
         run r;
-        r.model_name = name; r.model_path = model_path; r.family = family; r.ftype = ftype; r.mode = mode;
+        r.model_name = name; r.model_path = model_path; r.family = family; r.mode = mode;
+        r.ftype = ftype; r.ftype_gguf = ftype_gguf;
         r.threads = jepa_context_n_threads(ctx);
+        // The published tables are 32/96 threads (one worker per physical core, or a third of them).
+        // Falling through to hardware_concurrency() puts two workers on every SMT sibling, which is
+        // both slower and not what the documents quote — say so rather than let it pass unnoticed.
+        if (smt_threads > 0 && r.threads == smt_threads) {
+            fprintf(stderr, "note: running with all %d hardware threads (SMT siblings included); "
+                            "docs/benchmarks.md quotes 32 and 96 — pass --threads 32 to match it\n",
+                    smt_threads);
+        }
         r.batch = batch; r.repeat = repeat; r.warmup = warmup;
         r.flash = p.use_flash_attn; r.kv = kv_name(p.flash_kv);
         r.load_ms = load_ms; r.weight_bytes = jepa_model_n_bytes(model);
@@ -354,17 +413,21 @@ int main(int argc, char ** argv) {
             r.units = batch;
         } else if (mode == "head" || mode == "predictor") {
             // The head and the masked predictor both consume exactly one item's tokens. Encode
-            // twice and keep the second: the first pass also pages the weights in, so its time is
-            // not the steady-state encoder cost this row reports next to the head/predictor one.
+            // three times: the first pass pages the weights in, and the *minimum* of the two after
+            // it is the encoder cost reported next to the head/predictor one — a single pass would
+            // hand this row whatever contention that one pass happened to see.
             const jepa_input in = { x.data(), 1, 3, T, H, W };
             jepa_output enc = {};
-            for (int i = 0; i < 2 && !failed; i++) {
+            double enc_min = 0.0;
+            for (int i = 0; i < 3 && !failed; i++) {
                 jepa_free(enc.data);
                 enc = jepa_output{};
-                if (jepa_encode(ctx, &in, &enc) != 0) failed = true;
+                if (jepa_encode(ctx, &in, &enc) != 0) { failed = true; break; }
+                const double e = jepa_context_last_compute_ms(ctx);
+                if (i > 0 && (enc_min == 0.0 || e < enc_min)) enc_min = e;
             }
             if (!failed) {
-                r.enc_ms = jepa_context_last_compute_ms(ctx);
+                r.enc_ms = enc_min;
                 r.tokens = enc.n_tokens;
                 r.units  = 1;
                 std::vector<int32_t> idx;
@@ -403,7 +466,10 @@ int main(int argc, char ** argv) {
         } else {  // lewm-rollout: ms is per predicted step
             const int D = jepa_model_embed_dim(model);
             r.steps  = steps;
-            r.tokens = steps;
+            // One rollout step emits one embedding, and the reported ms is already per step, so the
+            // rate derived from (tokens / ms) is steps/s. Setting tokens = steps here would multiply
+            // it by K — the K steps are what the ms was already divided by.
+            r.tokens = 1;
             r.units  = steps;
             r.shape  = "rollout K=" + std::to_string(steps);
             std::vector<float> out((size_t) steps * D);
@@ -435,7 +501,7 @@ int main(int argc, char ** argv) {
         first_row = false;
     }
 
-    if (!json_out.empty() && !runs.empty()) write_json(json_out, runs);
+    if (!json_out.empty() && !runs.empty() && !write_json(json_out, runs)) rc_exit = 1;
     jepa_model_free(model);
     return rc_exit;
 }
