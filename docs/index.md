@@ -21,6 +21,14 @@ their PyTorch reference to cosine 1.000000 per token, preprocessing is bit-exact
 and quantized files are scored on real datasets — Imagenette k-NN within **0.13 pp** of PyTorch at
 f16 and q8_0 (0.16 pp on the parameter-free centroid metric), UCF-101 k-NN within one clip of it.
 
+![Three panels: encoder latency per item for PyTorch and jepa.cpp on the CPU and on one GPU, k-NN
+top-1 against PyTorch on Imagenette and UCF-101, and what each dtype costs in weights and in
+time](assets/results.svg)
+
+*Every number on it is read from `tests/results/{benchmarks,accuracy-image,accuracy-video}.json` and
+the GPU tables of [performance.md](performance.md), measured on a 96-core Threadripper 7995WX and one
+RTX 4500 Ada; `scripts/gen_results_figure.py` redraws it.*
+
 ## Where to go
 
 | page | what is on it |
