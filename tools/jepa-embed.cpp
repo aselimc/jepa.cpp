@@ -19,6 +19,7 @@
 // encodes every clip with one model load and one context, and writes the pooled vectors as a single
 // [n_clips, D] float32 .npy in list order — what scripts/bench_accuracy_video.py consumes.
 #include "jepa.h"
+#include "jepa-args.h"
 #include "npy.h"
 
 #include <chrono>
@@ -48,6 +49,7 @@ static void usage(const char * argv0) {
         "  --progress N      print progress every N items to stderr (0 = off; default 0, 25 with --frames-list,\n"
         "                    which also replaces the per-item stdout line)\n"
         "  -t N              threads (default: all)\n"
+        JEPA_GPU_USAGE
         "  --time            print preprocessing / encode timings\n"
         "  --repeat N        encode each batch N times (timing)\n"
         "  --no-flash        naive attention (mul_mat + soft_max) instead of flash attention\n"
@@ -162,6 +164,8 @@ int main(int argc, char ** argv) {
     std::string model_path, out_path, pool, dump_input, frames_npy, frames_list, logits_path, json_path;
     std::vector<std::string> images;
     jepa_context_params cp = jepa_context_default_params();
+    jepa_model_params   mp = jepa_model_default_params();
+    mp.verbose = true;
     bool timing = false, as_video = false, as_images = false;
     int repeat = 1, print_n = 8, batch = 0, progress = -1;   // batch 0 = whatever the context defaults to
     for (int i = 1; i < argc; i++) {
@@ -186,6 +190,7 @@ int main(int argc, char ** argv) {
         else if (a == "-t") cp.n_threads = atoi(next("-t"));
         else if (a == "--time") timing = true;
         else if (a == "--repeat") repeat = atoi(next("--repeat"));
+        else if (jepa_arg_gpu(argc, argv, i, mp.device)) {}
         else if (a == "--no-flash") cp.use_flash_attn = false;
         else if (a == "--kv-f32") cp.flash_kv = JEPA_KV_F32;
         else if (a == "--kv-f16") cp.flash_kv = JEPA_KV_F16;
@@ -199,7 +204,7 @@ int main(int argc, char ** argv) {
     if (progress < 0) progress = frames_list.empty() ? 0 : 25;
 
     const double t_load = now_ms();
-    jepa_model * model = jepa_model_load(model_path.c_str(), true);
+    jepa_model * model = jepa_model_load_ex(model_path.c_str(), &mp);
     if (!model) return 1;
     const double load_ms = now_ms() - t_load;
     jepa_context * ctx = jepa_context_new(model, cp);

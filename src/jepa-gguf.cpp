@@ -386,7 +386,27 @@ static bool check_shape(const jepa_model & m, const char * name, int64_t ne0, in
     return ok;
 }
 
+jepa_model_params jepa_model_default_params(void) {
+    jepa_model_params p;
+    p.verbose = false;
+    p.device  = jepa_device_from_env();
+    return p;
+}
+
 jepa_model * jepa_model_load(const char * gguf_path, bool verbose) {
+    jepa_model_params p = jepa_model_default_params();
+    p.verbose = verbose;
+    return jepa_model_load_ex(gguf_path, &p);
+}
+
+jepa_model * jepa_model_load_ex(const char * gguf_path, const jepa_model_params * params) {
+    jepa_model_params defaults = jepa_model_default_params();
+    const jepa_model_params & mp = params ? *params : defaults;
+    const bool verbose = mp.verbose;
+    // Resolve the device before touching the file: a bad --gpu N should fail immediately.
+    ggml_backend_dev_t dev = jepa_device_get(mp.device);
+    if (!dev) return nullptr;
+
     gguf_init_params ip;
     ip.no_alloc = true;
     ggml_context * ctx_meta = nullptr;
@@ -406,10 +426,15 @@ jepa_model * jepa_model_load(const char * gguf_path, bool verbose) {
         return nullptr;
     }
 
-    // tensors: ctx_meta already holds one (unallocated) ggml_tensor per GGUF tensor
-    m->backend = ggml_backend_cpu_init();
+    // tensors: ctx_meta already holds one (unallocated) ggml_tensor per GGUF tensor.
+    // ggml_backend_alloc_ctx_tensors + ggml_backend_tensor_set below both dispatch through the
+    // backend interface, so putting the weights on a GPU is exactly this one choice of backend
+    // (docs/gpu-notes.md §6.1.2). Every context built from this model computes on it.
+    m->device  = mp.device;
+    m->dev     = mp.device >= 0 ? dev : nullptr;
+    m->backend = mp.device >= 0 ? ggml_backend_dev_init(dev, nullptr) : ggml_backend_cpu_init();
     if (!m->backend) {
-        jepa_log("jepa: ggml_backend_cpu_init() failed\n");
+        jepa_log("jepa: could not initialise the %s backend\n", ggml_backend_dev_name(dev));
         gguf_free(gg); ggml_free(ctx_meta); delete m;
         return nullptr;
     }
@@ -514,6 +539,13 @@ jepa_model * jepa_model_load(const char * gguf_path, bool verbose) {
     if (!ok) { jepa_model_free(m); return nullptr; }
 
     if (verbose) {
+        if (m->device >= 0) {
+            size_t dfree = 0, dtotal = 0;
+            ggml_backend_dev_memory(m->dev, &dfree, &dtotal);
+            jepa_log("jepa: weights on %s (%s), %.1f MiB of %.0f MiB free\n",
+                     ggml_backend_dev_name(m->dev), ggml_backend_dev_description(m->dev),
+                     m->n_bytes_weights / (1024.0 * 1024.0), dtotal / (1024.0 * 1024.0));
+        }
         jepa_log("jepa: loaded %s: family=%s name='%s' ftype=%s D=%d L=%d H=%d ffn=%d patch=%d tubelet=%d img=%d "
                  "cls=%d pos=%s tensors=%zu weights=%.1f MiB\n",
                  gguf_path, m->hp.family_str.c_str(), m->hp.name.c_str(), jepa_file_type_name(m->hp.file_type),
@@ -557,3 +589,11 @@ const char * jepa_model_name(const jepa_model * m)     { return m->hp.name.c_str
 int  jepa_model_file_type(const jepa_model * m)        { return (int) m->hp.file_type; }
 const char * jepa_model_file_type_name(const jepa_model * m) { return jepa_file_type_name(m->hp.file_type); }
 size_t jepa_model_n_bytes(const jepa_model * m)        { return m->n_bytes_weights; }
+int  jepa_model_device(const jepa_model * m)           { return m ? m->device : -1; }
+bool jepa_model_is_gpu(const jepa_model * m)           { return m && m->device >= 0; }
+const char * jepa_model_device_name(const jepa_model * m) {
+    if (!m) return nullptr;
+    if (m->dev) return ggml_backend_dev_name(m->dev);
+    ggml_backend_dev_t cpu = jepa_device_get(-1);
+    return cpu ? ggml_backend_dev_name(cpu) : "CPU";
+}

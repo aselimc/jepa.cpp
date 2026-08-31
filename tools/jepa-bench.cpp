@@ -32,6 +32,7 @@
 // *minimum* of the measured passes is reported as `encoder_ms`, so a burst of load on the box during
 // one pass does not become the row's encoder figure. It is still a single graph, not an average.
 #include "jepa.h"
+#include "jepa-args.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -53,6 +54,7 @@ static void usage(const char * a0) {
         "  --size HxW        input crop (default: the model's jepa.enc.img_size square)\n"
         "  --batch B         items per encoder call (default 1); image families put all B through ONE graph\n"
         "  --threads L       thread count, or a comma-separated list to sweep (default: all cores)\n"
+        JEPA_GPU_USAGE
         "  --repeat R        measured runs (default 3)\n"
         "  --warmup W        unmeasured runs before them (default 1)\n"
         "  --steps K         lewm-rollout steps (default 20)\n"
@@ -237,6 +239,7 @@ static bool parse_thread_count(const std::string & tok, int & out) {
 int main(int argc, char ** argv) {
     std::string model_path, mode = "encoder", json_out, label, ftype_label, size_arg, threads_arg;
     jepa_context_params cp = jepa_context_default_params();
+    jepa_model_params   mp = jepa_model_default_params();
     int frames = -1, batch = 1, repeat = 3, warmup = 1, steps = 20;
     uint64_t seed = 1234;
     bool md = false, md_header = true, verbose = false;
@@ -258,6 +261,7 @@ int main(int argc, char ** argv) {
         else if (a == "--seed")                 seed        = strtoull(next("--seed"), nullptr, 10);
         else if (a == "--kv-f16")               cp.flash_kv = JEPA_KV_F16;
         else if (a == "--kv-f32")               cp.flash_kv = JEPA_KV_F32;
+        else if (jepa_arg_gpu(argc, argv, i, mp.device)) {}
         else if (a == "--no-flash")             cp.use_flash_attn = false;
         else if (a == "--md")                   md          = true;
         else if (a == "--no-md-header")         md_header   = false;
@@ -303,7 +307,8 @@ int main(int argc, char ** argv) {
     if (verbose) jepa_print_system_info();
 
     const double t_load = now_ms();
-    jepa_model * model = jepa_model_load(model_path.c_str(), verbose);
+    mp.verbose = verbose;
+    jepa_model * model = jepa_model_load_ex(model_path.c_str(), &mp);
     if (!model) return 1;
     const double load_ms = now_ms() - t_load;
 

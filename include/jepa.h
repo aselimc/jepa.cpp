@@ -228,6 +228,37 @@ int  jepa_context_max_batch(const jepa_context * ctx);
 // items than this). Only jepa_encode updates it; head/predictor/projector calls leave it unchanged.
 int  jepa_context_last_batch(const jepa_context * ctx);
 
+// ======================================================================================
+// APPEND-ONLY: backend / device selection (src/jepa.cpp, src/jepa-gguf.cpp).
+// See docs/gpu-notes.md. Requires a build configured with -DJEPA_CUDA=ON; without one
+// jepa_device_count() is 0 and any device >= 0 is rejected with a message.
+// ======================================================================================
+
+// Devices are numbered over the GPU devices of the ggml backend registry, in registry order,
+// so device 0 is the first GPU (CUDA0), 1 the second, and so on. -1 means the CPU.
+typedef struct {
+    bool verbose;
+    int  device;   // -1 = CPU (the default), >= 0 = the n-th GPU device
+} jepa_model_params;
+
+// Defaults: verbose = false, device from $JEPA_DEVICE ("cpu" | "cuda:N" | "gpu:N" | "N"; anything
+// unparseable is reported and ignored), i.e. -1 unless the environment says otherwise.
+jepa_model_params jepa_model_default_params(void);
+// jepa_model_load(path, verbose) == jepa_model_load_ex(path, {verbose, $JEPA_DEVICE}).
+// The weights are allocated on `params->device` and every jepa_context built from this model
+// computes there: a model and its contexts never straddle two backends.
+jepa_model * jepa_model_load_ex(const char * gguf_path, const jepa_model_params * params);
+
+// GPU devices the ggml backend registry can see (0 for a CPU-only build).
+int          jepa_device_count(void);
+const char * jepa_device_name(int device);         // ggml device name, e.g. "CUDA0"
+const char * jepa_device_description(int device);  // e.g. "NVIDIA RTX 4500 Ada Generation"
+void         jepa_device_memory(int device, size_t * free_bytes, size_t * total_bytes);  // either may be NULL
+
+int          jepa_model_device(const jepa_model * model);       // -1 = CPU
+const char * jepa_model_device_name(const jepa_model * model);  // "CPU" | "CUDA0" | ...
+bool         jepa_model_is_gpu(const jepa_model * model);
+
 #ifdef __cplusplus
 }
 #endif

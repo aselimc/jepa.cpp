@@ -3,6 +3,7 @@
 #include "jepa-internal.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdarg>
@@ -28,6 +29,82 @@ jepa_context_params jepa_context_default_params(void) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// devices (docs/gpu-notes.md §6.1)
+// ---------------------------------------------------------------------------------------------
+// The registry API is backend-agnostic, so a Vulkan / Metal / ROCm build would light up here with
+// no further change. With GGML_BACKEND_DL off (our case) the backends register themselves at
+// static-init time and ggml_backend_load_all() is a no-op; it is called anyway so a DL build works.
+const std::vector<ggml_backend_dev_t> & jepa_gpu_devices() {
+    static std::vector<ggml_backend_dev_t> devs = [] {
+        ggml_backend_load_all();
+        std::vector<ggml_backend_dev_t> v;
+        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+            ggml_backend_dev_t d = ggml_backend_dev_get(i);
+            const enum ggml_backend_dev_type t = ggml_backend_dev_type(d);
+            if (t == GGML_BACKEND_DEVICE_TYPE_GPU || t == GGML_BACKEND_DEVICE_TYPE_IGPU) v.push_back(d);
+        }
+        return v;
+    }();
+    return devs;
+}
+
+ggml_backend_dev_t jepa_device_get(int device) {
+    if (device < 0) return ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    const std::vector<ggml_backend_dev_t> & devs = jepa_gpu_devices();
+    if (device >= (int) devs.size()) {
+        if (devs.empty()) {
+            jepa_log("jepa: no GPU device is available — this build has no GPU backend "
+                     "(configure with -DJEPA_CUDA=ON) or no GPU was detected\n");
+        } else {
+            jepa_log("jepa: GPU device %d does not exist (%d available: 0..%d)\n",
+                     device, (int) devs.size(), (int) devs.size() - 1);
+        }
+        return nullptr;
+    }
+    return devs[device];
+}
+
+int jepa_device_count(void) { return (int) jepa_gpu_devices().size(); }
+
+const char * jepa_device_name(int device) {
+    ggml_backend_dev_t d = jepa_device_get(device);
+    return d ? ggml_backend_dev_name(d) : nullptr;
+}
+const char * jepa_device_description(int device) {
+    ggml_backend_dev_t d = jepa_device_get(device);
+    return d ? ggml_backend_dev_description(d) : nullptr;
+}
+void jepa_device_memory(int device, size_t * free_bytes, size_t * total_bytes) {
+    size_t f = 0, t = 0;
+    ggml_backend_dev_t d = jepa_device_get(device);
+    if (d) ggml_backend_dev_memory(d, &f, &t);
+    if (free_bytes)  *free_bytes  = f;
+    if (total_bytes) *total_bytes = t;
+}
+
+// $JEPA_DEVICE: "cpu" | "cuda:N" | "gpu:N" | "N" (bare index). Anything else is reported and
+// ignored, so a typo degrades to the CPU with a message rather than silently.
+int jepa_device_from_env(void) {
+    const char * s = getenv("JEPA_DEVICE");
+    if (!s || !*s) return -1;
+    std::string v(s);
+    for (char & c : v) c = (char) tolower((unsigned char) c);
+    if (v == "cpu") return -1;
+    size_t p = v.find(':');
+    std::string head = p == std::string::npos ? v : v.substr(0, p);
+    std::string tail = p == std::string::npos ? "" : v.substr(p + 1);
+    if (head == "cuda" || head == "gpu") {
+        const int n = tail.empty() ? 0 : atoi(tail.c_str());
+        return n >= 0 ? n : -1;
+    }
+    if (p == std::string::npos && !v.empty() && v.find_first_not_of("0123456789") == std::string::npos) {
+        return atoi(v.c_str());
+    }
+    jepa_log("jepa: ignoring JEPA_DEVICE='%s' (expected cpu, cuda:N, gpu:N or a bare device index)\n", s);
+    return -1;
+}
+
+// ---------------------------------------------------------------------------------------------
 // context
 // ---------------------------------------------------------------------------------------------
 jepa_context * jepa_context_new(jepa_model * model, jepa_context_params params) {
@@ -37,13 +114,31 @@ jepa_context * jepa_context_new(jepa_model * model, jepa_context_params params) 
     ctx->params = params;
     ctx->n_threads = params.n_threads > 0 ? params.n_threads : (int) std::thread::hardware_concurrency();
     if (ctx->n_threads < 1) ctx->n_threads = 1;
-    ctx->backend = ggml_backend_cpu_init();
-    if (!ctx->backend) {
-        jepa_log("jepa: ggml_backend_cpu_init() failed\n");
-        delete ctx;
-        return nullptr;
+    // The compute backend is the model's: weights and activations must share one address space,
+    // and a split graph is a bug rather than a feature here (docs/gpu-notes.md §6.1). There is no
+    // way to ask for a different one, so a model/context device mismatch cannot be constructed.
+    ctx->is_gpu = model->device >= 0;
+    if (ctx->is_gpu) {
+        ctx->dev = model->dev;
+        ctx->backend = ggml_backend_dev_init(ctx->dev, nullptr);
+        if (!ctx->backend) {
+            jepa_log("jepa: ggml_backend_dev_init(%s) failed\n", ggml_backend_dev_name(ctx->dev));
+            delete ctx;
+            return nullptr;
+        }
+    } else {
+        ctx->backend = ggml_backend_cpu_init();
+        if (!ctx->backend) {
+            jepa_log("jepa: ggml_backend_cpu_init() failed\n");
+            delete ctx;
+            return nullptr;
+        }
+        ctx->dev = ggml_backend_get_device(ctx->backend);
+        ggml_backend_cpu_set_n_threads(ctx->backend, ctx->n_threads);
     }
-    ggml_backend_cpu_set_n_threads(ctx->backend, ctx->n_threads);
+    // Graph validation (jepa_graph_validate): mandatory on a GPU, opt-in on the CPU.
+    ctx->validate_graph = ctx->is_gpu;
+    if (const char * s = getenv("JEPA_VALIDATE_GRAPH")) ctx->validate_graph = atoi(s) != 0;
     ctx->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(ctx->backend));
     // encoder batching knobs, overridable without touching the caller (JEPA_MAX_BATCH=1 = no batching)
     if (const char * s = getenv("JEPA_MAX_BATCH")) {
@@ -91,7 +186,48 @@ void jepa_graph_begin(jepa_context * ctx, size_t max_nodes) {
     ctx->graph_max_nodes = max_nodes;
 }
 
+// docs/gpu-notes.md §5.4 / §6.1.8: ggml_backend_cuda_graph_compute walks the graph and calls
+// ggml_cuda_compute_forward on every node without ever consulting supports_op — that predicate is
+// wired only into the *device* interface, which only ggml_backend_sched reads. A node the backend
+// cannot really run (the classic being ggml_roll on a strided view, whose CUDA kernel indexes as
+// if the tensor were contiguous) therefore produces no error, no warning and a wrong answer. This
+// walk is what turns that into a loud failure, and what makes qualifying a new backend one run.
+// ggml's own predicate, which is static in ggml-backend.cpp (same four ops).
+static bool jepa_is_view_op(enum ggml_op op) {
+    return op == GGML_OP_VIEW || op == GGML_OP_RESHAPE || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE;
+}
+
+bool jepa_graph_validate(jepa_context * ctx) {
+    if (!ctx->validate_graph || !ctx->dev) return true;
+    const int n = ggml_graph_n_nodes(ctx->gf);
+    int n_bad = 0;
+    for (int i = 0; i < n; i++) {
+        ggml_tensor * node = ggml_graph_node(ctx->gf, i);
+        // view ops are pure metadata and never dispatch a kernel
+        if (node->op == GGML_OP_NONE || jepa_is_view_op(node->op)) continue;
+        if (ggml_backend_dev_supports_op(ctx->dev, node)) continue;
+        if (++n_bad <= 8) {   // enough to identify the pattern; the count below has the rest
+            const ggml_tensor * s0 = node->src[0];
+            jepa_log("jepa: node %d '%s' (%s, %s [%lld,%lld,%lld,%lld]) is not supported by %s"
+                     "%s\n",
+                     i, node->name, ggml_op_name(node->op), ggml_type_name(node->type),
+                     (long long) node->ne[0], (long long) node->ne[1],
+                     (long long) node->ne[2], (long long) node->ne[3],
+                     ggml_backend_dev_name(ctx->dev),
+                     s0 && !ggml_is_contiguous(s0) ? "  [src0 is not contiguous]" : "");
+        }
+    }
+    if (n_bad > 0) {
+        jepa_log("jepa: %d of %d graph nodes cannot run on %s — refusing to compute, because this "
+                 "backend would silently produce a wrong answer (docs/gpu-notes.md §5.4). Run on "
+                 "the CPU, or fix the graph.\n", n_bad, n, ggml_backend_dev_name(ctx->dev));
+        return false;
+    }
+    return true;
+}
+
 bool jepa_graph_alloc(jepa_context * ctx) {
+    if (!jepa_graph_validate(ctx)) return false;
     if (!ggml_gallocr_alloc_graph(ctx->galloc, ctx->gf)) {
         jepa_log("jepa: ggml_gallocr_alloc_graph failed (%d nodes)\n", ggml_graph_n_nodes(ctx->gf));
         return false;

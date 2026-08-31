@@ -12,6 +12,7 @@
 //       compare `emb`, run the predictor with the stored action and compare `pred_next`; then the
 //       3-frame `seq` sample against `pred_seq`. Exit status 1 if any cosine is below the threshold.
 #include "jepa.h"
+#include "jepa-args.h"
 #include "npy.h"
 #include "json.hpp"
 
@@ -36,6 +37,7 @@ static void usage(const char * a0) {
         "usage: %s -m lewm.gguf --image a.jpg [--image b.jpg] (--actions 'a,b,..;c,d,..' | --random-actions K) [options]\n"
         "       %s -m lewm.gguf --ref-check tests/fixtures/ref/lewm-pusht [--min-cos X]\n"
         "  -t N              threads (default: all)\n"
+        JEPA_GPU_USAGE
         "  --seed S          RNG seed for --random-actions (default 0)\n"
         "  -o FILE.npy       write the [K, D] rollout to a float32 .npy\n"
         "  --print-n N       print the first N values of each predicted state (default 0)\n"
@@ -179,6 +181,7 @@ int main(int argc, char ** argv) {
     std::string model_path, actions_str, out_path, ref;
     std::vector<std::string> images;
     jepa_context_params cp = jepa_context_default_params();
+    jepa_model_params   mp = jepa_model_default_params();
     int n_random = 0, seed = 0, print_n = 0;
     double min_cos = -1;
     for (int i = 1; i < argc; i++) {
@@ -194,6 +197,7 @@ int main(int argc, char ** argv) {
         else if (a == "-o") out_path = next();
         else if (a == "--print-n") print_n = atoi(next());
         else if (a == "-t" || a == "--threads") cp.n_threads = atoi(next());
+        else if (jepa_arg_gpu(argc, argv, i, mp.device)) {}
         else if (a == "--no-flash") cp.use_flash_attn = false;
         else if (a == "--kv-f32") cp.flash_kv = JEPA_KV_F32;
         else if (a == "-h" || a == "--help") { usage(argv[0]); return 0; }
@@ -201,7 +205,7 @@ int main(int argc, char ** argv) {
     }
     if (model_path.empty() || (ref.empty() && images.empty())) { usage(argv[0]); return 2; }
 
-    jepa_model * model = jepa_model_load(model_path.c_str(), false);
+    jepa_model * model = jepa_model_load_ex(model_path.c_str(), &mp);
     if (!model) return 2;
     if (jepa_lewm_action_dim(model) <= 0 || !jepa_model_has_projector(model)) {
         fprintf(stderr, "%s is not a LeWM world model (no predictor action embed / enc.proj)\n", model_path.c_str());

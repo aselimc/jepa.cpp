@@ -1,6 +1,7 @@
 // jepa-info: print the hparams and the tensor table of a jepa.cpp GGUF.
-//   jepa-info model.gguf [--no-tensors] [--kv]
+//   jepa-info model.gguf [--no-tensors] [--kv] | jepa-info --devices
 #include "jepa-internal.h"
+#include "jepa-args.h"
 
 #include <cinttypes>
 #include <cstdio>
@@ -9,19 +10,26 @@
 
 static void usage(const char * argv0) {
     fprintf(stderr, "usage: %s model.gguf [--no-tensors] [--kv]\n"
+                    "       %s --devices\n"
                     "  --no-tensors   skip the tensor table\n"
-                    "  --kv           also dump every general.* / jepa.* key verbatim\n", argv0);
+                    "  --kv           also dump every general.* / jepa.* key verbatim\n"
+                    "  --devices      list the GPU devices the ggml backend registry can see\n", argv0, argv0);
 }
 
 int main(int argc, char ** argv) {
     if (argc < 2) { usage(argv[0]); return 1; }
     const char * path = nullptr;
-    bool tensors = true, kv = false;
+    bool tensors = true, kv = false, devices = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--no-tensors") == 0) tensors = false;
         else if (strcmp(argv[i], "--kv") == 0) kv = true;
+        else if (strcmp(argv[i], "--devices") == 0) devices = true;
         else if (argv[i][0] == '-') { usage(argv[0]); return 1; }
         else path = argv[i];
+    }
+    if (devices) {
+        jepa_print_devices(stdout);
+        if (!path) return 0;
     }
     if (!path) { usage(argv[0]); return 1; }
 

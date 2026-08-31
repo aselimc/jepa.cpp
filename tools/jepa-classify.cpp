@@ -10,6 +10,7 @@
 // ImageNet normalisation), then the encoder and the attentive pooler + classifier (jepa_head_ex), and
 // the logits are softmaxed.
 #include "jepa.h"
+#include "jepa-args.h"
 #include "npy.h"
 
 #include <chrono>
@@ -25,6 +26,7 @@ static void usage(const char * argv0) {
         "usage: %s -m model.gguf (--frames-npy clip.npy | -i frame.jpg [-i ...]) [options]\n"
         "  -k N              show the top N classes (default 5)\n"
         "  -t N              threads (default: all)\n"
+        JEPA_GPU_USAGE
         "  --time            print preprocessing / encode / head timings\n"
         "  --repeat N        run the encoder N times (timing)\n"
         "  --no-flash        naive attention instead of flash attention\n"
@@ -76,6 +78,7 @@ int main(int argc, char ** argv) {
     std::string model_path, frames_npy, logits_out, dump_input;
     std::vector<std::string> images;
     jepa_context_params cp = jepa_context_default_params();
+    jepa_model_params   mp = jepa_model_default_params();
     int topk = 5, repeat = 1;
     bool timing = false;
     for (int i = 1; i < argc; i++) {
@@ -91,6 +94,7 @@ int main(int argc, char ** argv) {
         else if (a == "-t") cp.n_threads = atoi(next("-t"));
         else if (a == "--time") timing = true;
         else if (a == "--repeat") repeat = atoi(next("--repeat"));
+        else if (jepa_arg_gpu(argc, argv, i, mp.device)) {}
         else if (a == "--no-flash") cp.use_flash_attn = false;
         else if (a == "--kv-f32") cp.flash_kv = JEPA_KV_F32;
         else if (a == "--kv-f16") cp.flash_kv = JEPA_KV_F16;
@@ -102,7 +106,8 @@ int main(int argc, char ** argv) {
     if (model_path.empty() || (frames_npy.empty() && images.empty())) { usage(argv[0]); return 1; }
     if (repeat < 1) repeat = 1;
 
-    jepa_model * model = jepa_model_load(model_path.c_str(), timing);
+    mp.verbose = timing;
+    jepa_model * model = jepa_model_load_ex(model_path.c_str(), &mp);
     if (!model) return 1;
     if (!jepa_model_has_head(model)) {
         fprintf(stderr, "%s has no classification head (jepa.head.kind = none) — use jepa-embed\n", model_path.c_str());

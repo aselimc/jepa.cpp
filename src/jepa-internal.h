@@ -32,6 +32,17 @@
 void jepa_log(const char * fmt, ...);
 
 // ---------------------------------------------------------------------------------------------
+// 0. devices (docs/gpu-notes.md §6.1)
+// ---------------------------------------------------------------------------------------------
+// GPU devices of the ggml backend registry, in registry order (device 0 = the first GPU). Loads
+// the registry on first use; the list is empty for a build without a GPU backend.
+const std::vector<ggml_backend_dev_t> & jepa_gpu_devices();
+// The ggml device for `device` (-1 -> the CPU device). Logs and returns null when out of range.
+ggml_backend_dev_t jepa_device_get(int device);
+// $JEPA_DEVICE parsed: "cpu" | "cuda:N" | "gpu:N" | "N". -1 when unset or unparseable.
+int jepa_device_from_env(void);
+
+// ---------------------------------------------------------------------------------------------
 // 1. hparams (docs/gguf-schema.md)
 // ---------------------------------------------------------------------------------------------
 enum jepa_family_id {
@@ -181,7 +192,9 @@ struct jepa_model {
     std::string   path;
     jepa_hparams  hp;
 
-    ggml_backend_t        backend = nullptr;   // CPU backend used for weight storage
+    ggml_backend_t        backend = nullptr;   // backend the weights live on (CPU or a GPU)
+    ggml_backend_dev_t    dev     = nullptr;   // its device (for supports_op / names); null = CPU
+    int                   device  = -1;        // -1 = CPU, else the n-th GPU of the ggml registry
     ggml_context        * ctx_w   = nullptr;   // holds the tensor metadata (no_alloc)
     ggml_backend_buffer_t buf_w   = nullptr;   // the weight bytes
     std::map<std::string, ggml_tensor *> tensors;   // every GGUF tensor by name
@@ -224,7 +237,10 @@ struct jepa_context {
     jepa_model *        model   = nullptr;
     jepa_context_params params;
     int                 n_threads = 1;
-    ggml_backend_t      backend = nullptr;   // CPU backend (compute)
+    ggml_backend_t      backend = nullptr;   // compute backend; always the model's device
+    ggml_backend_dev_t  dev     = nullptr;   // its device (null = CPU)
+    bool                is_gpu  = false;     // shorthand for model->device >= 0
+    bool                validate_graph = false;  // check every node against dev supports_op
     ggml_gallocr_t      galloc  = nullptr;   // graph allocator, reused across runs
     std::vector<uint8_t> graph_meta;         // memory for the graph ggml_context
     ggml_context *      ctx_g   = nullptr;   // current graph context (rebuilt per run)
@@ -293,8 +309,16 @@ ggml_tensor * jepa_build_block(ggml_context * ctx, ggml_tensor * x, const jepa_l
 // ---------------------------------------------------------------------------------------------
 // Start a new graph: (re)creates ctx->ctx_g (no_alloc) and ctx->gf sized for max_nodes nodes.
 void jepa_graph_begin(jepa_context * ctx, size_t max_nodes);
+// Walk the built graph and check every node against the compute device's supports_op. Returns
+// true when the whole graph runs on the backend; otherwise logs each offending node and returns
+// false. NOT optional on a GPU: ggml_backend_cuda_graph_compute dispatches every node without
+// consulting supports_op, so an unsupported node produces a wrong answer with no error at all
+// (docs/gpu-notes.md §5.4 — the pre-refactor RoPE chain scored cosine 0.99996, which would have
+// passed the f16 parity gate). Runs whenever the backend is not the CPU; $JEPA_VALIDATE_GRAPH=1
+// forces it on the CPU too and =0 turns it off.
+bool jepa_graph_validate(jepa_context * ctx);
 // Allocate the graph's tensors with the context's allocator (call after ggml_build_forward_expand;
-// input tensors can be filled with ggml_backend_tensor_set afterwards).
+// input tensors can be filled with ggml_backend_tensor_set afterwards). Validates first.
 bool jepa_graph_alloc(jepa_context * ctx);
 // Run the current graph on the CPU backend with ctx->n_threads. Returns 0 on success.
 int  jepa_graph_compute(jepa_context * ctx);

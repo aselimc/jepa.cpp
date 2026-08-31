@@ -13,11 +13,22 @@ endif()
 option(JEPA_BUILD_TOOLS "Build command-line tools" ON)
 option(JEPA_BUILD_TESTS "Build tests" ON)
 option(JEPA_NATIVE      "Optimize for the host CPU (-march=native)" ON)
+# OFF by default and it stays that way: libggml-cuda.so is ~45 MB for a *single* GPU architecture,
+# 30x the CPU backend, which is not something a "CPU inference in plain C/C++ on ggml" project
+# should ship by default (docs/gpu-notes.md §4.1, §6.3). Configure a CUDA build in its own dir:
+#   cmake -S . -B build-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DJEPA_CUDA=ON
+option(JEPA_CUDA        "Build with the ggml CUDA backend (adds --gpu to the tools)" OFF)
 
 # --- ggml (submodule) --------------------------------------------------------
 set(GGML_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE ${JEPA_NATIVE} CACHE BOOL "" FORCE)
+if(JEPA_CUDA)
+  # GGML_NATIVE=ON resolves CMAKE_CUDA_ARCHITECTURES to `native` (89 on this box), which is right
+  # for a from-source build and wrong for a distributed binary — pass an explicit
+  # -DCMAKE_CUDA_ARCHITECTURES=89-real;80-virtual for one of those.
+  set(GGML_CUDA ON CACHE BOOL "" FORCE)
+endif()
 # 1.3-3.2x faster mul_mat on AVX-512 with identical f16/q8_0 numerics (F32 differs at round-off only);
 # measured in docs/ggml-notes.md §5. flash_attn_ext is unaffected by this flag.
 set(GGML_LLAMAFILE ON CACHE BOOL "" FORCE)
