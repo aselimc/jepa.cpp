@@ -146,8 +146,9 @@ if(JEPA_BUILD_TESTS)
     add_test(NAME ops COMMAND test-ops ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/rope3d)
   endif()
   # GPU backend checks: the supports_op graph walk (which must REFUSE a strided ggml_roll) and a
-  # GPU-vs-CPU encoder comparison. Skips with exit 0 when the build has no GPU backend, so it is
-  # registered unconditionally and is a no-op in the default CPU build.
+  # GPU-vs-CPU encoder comparison. The binary always builds; the test registers like the other
+  # asset-gated ones (it needs a GGUF) and exits 0 with a SKIP line when the build has no GPU
+  # backend or no GPU is present, so it costs a CPU-only checkout nothing.
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-backend.cpp)
     add_executable(test-backend tests/test-backend.cpp)
     target_link_libraries(test-backend PRIVATE jepa)

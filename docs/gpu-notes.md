@@ -1188,5 +1188,5 @@ install a ~3 GB toolkit to prove something a developer's `-DJEPA_CUDA=ON` build 
 shape §6.3 sketched is still the right one when CI is added: a CPU job running `ctest`, a
 compile-only CUDA job, and GPU correctness on a self-hosted or manual run. What makes that last part
 cheap already exists — `ctest`'s `backend` test runs the whole check and exits 0 with a `SKIP` line
-on a machine without a GPU, so it is registered unconditionally and costs a CPU-only checkout
-nothing.
+on a machine without a GPU, so the same `ctest` invocation covers both kinds of runner. It registers
+like the other asset-gated tests (it needs one small GGUF) and costs a CPU-only checkout nothing.
