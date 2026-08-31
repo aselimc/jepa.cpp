@@ -135,6 +135,17 @@ struct test_case {
     int n_tok = 0;
 };
 
+// The signed table jepa_rope3d_apply consumes must be exactly the raw one with the even lanes
+// negated -- bit for bit, since that is what makes the new apply bit-identical to the old one.
+static bool signed_matches_raw(const std::vector<float> & sgn, const std::vector<float> & raw, int D) {
+    if (sgn.size() != raw.size() || sgn.empty()) return false;
+    for (size_t i = 0; i < sgn.size(); ++i) {
+        const float want = (i % (size_t) D) % 2 == 0 ? -raw[i] : raw[i];
+        if (memcmp(&sgn[i], &want, sizeof(float)) != 0) return false;
+    }
+    return true;
+}
+
 static double max_abs_diff(const float * a, const float * b, size_t n) {
     double m = 0;
     for (size_t i = 0; i < n; ++i) m = std::fmax(m, std::fabs((double) a[i] - (double) b[i]));
@@ -179,21 +190,29 @@ static bool run_case(ggml_backend_t backend, const std::string & dir, const test
     if (subsampled) GGML_ASSERT(ids.shape.size() == 1 && ids.shape[0] == N);
     const int32_t * id_ptr = subsampled ? ids.i32() : nullptr;
 
-    // 1. tables: full grid always, plus the subsampled rows when applicable
+    // 1. tables: full grid always, plus the subsampled rows when applicable. The golden vectors hold
+    // the raw sin(angle), so they are checked against the `signed_sin = false` form; the tables fed
+    // to jepa_rope3d_apply carry the rotation's sign on the even lanes (rope3d.h), and
+    // signed_matches_raw() below asserts the two differ by exactly that.
     std::vector<float> cos_full, sin_full, cos_ref, sin_ref;
-    jepa_rope3d_tables(tc.p, cos_full, sin_full);
+    jepa_rope3d_tables(tc.p, cos_full, sin_full, /*signed_sin =*/ false);
     reference_tables(tc, axes, nullptr, (int) n_full, cos_ref, sin_ref);
     double err_tab = std::fmax(max_abs_diff(cos_full.data(), cos_ref.data(), cos_ref.size()),
                                max_abs_diff(sin_full.data(), sin_ref.data(), sin_ref.size()));
-    std::vector<float> cos_tab, sin_tab;
+    std::vector<float> cos_tab, sin_tab, sin_raw;
     if (subsampled) {
-        jepa_rope3d_tables_ids(tc.p, id_ptr, N, cos_tab, sin_tab);
+        jepa_rope3d_tables_ids(tc.p, id_ptr, N, cos_tab, sin_raw, /*signed_sin =*/ false);
         reference_tables(tc, axes, id_ptr, N, cos_ref, sin_ref);
         err_tab = std::fmax(err_tab, std::fmax(max_abs_diff(cos_tab.data(), cos_ref.data(), cos_ref.size()),
-                                               max_abs_diff(sin_tab.data(), sin_ref.data(), sin_ref.size())));
+                                               max_abs_diff(sin_raw.data(), sin_ref.data(), sin_ref.size())));
+        jepa_rope3d_tables_ids(tc.p, id_ptr, N, cos_tab, sin_tab);
     } else {
-        cos_tab = cos_full;
-        sin_tab = sin_full;
+        sin_raw = sin_full;
+        jepa_rope3d_tables(tc.p, cos_tab, sin_tab);
+    }
+    if (!signed_matches_raw(sin_tab, sin_raw, D)) {
+        printf("FAIL %-18s signed sin table is not the raw table with negated even lanes\n", tc.name.c_str());
+        return false;
     }
 
     // 2. apply on ggml: H identical heads

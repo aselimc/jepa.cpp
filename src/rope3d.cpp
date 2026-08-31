@@ -55,7 +55,7 @@ static std::vector<float> rope3d_omega(int d, float theta) {
 // Shared worker: `pos(r, t, h, w)` yields the (rescaled) coordinates of output row r.
 template <typename PosFn>
 static void rope3d_build(const jepa_rope3d_params & p, int64_t n_rows, PosFn pos,
-                         std::vector<float> & cos_out, std::vector<float> & sin_out) {
+                         std::vector<float> & cos_out, std::vector<float> & sin_out, bool signed_sin) {
     const int D = p.head_dim;
     const int d = jepa_rope3d_axis_dim(D);
     GGML_ASSERT(D > 0 && d >= 0 && 3 * d <= D);
@@ -102,6 +102,11 @@ static void rope3d_build(const jepa_rope3d_params & p, int64_t n_rows, PosFn pos
             c[d + j]     = ch[(size_t) hi * d + j];  s[d + j]     = sh[(size_t) hi * d + j];
             c[2 * d + j] = cw[(size_t) wi * d + j];  s[2 * d + j] = sw[(size_t) wi * d + j];
         }
+        // Fold the rotation's sign into the table (rope3d.h "Implementation"): the graph then needs
+        // one pair swap instead of two masked rolls. out[2k] = x[2k]*C - x[2k+1]*S is unchanged.
+        if (signed_sin) {
+            for (int j = 0; j < D; j += 2) s[j] = -s[j];
+        }
     }
 }
 
@@ -112,18 +117,20 @@ static inline void rope3d_split_id(const jepa_rope3d_params & p, int64_t i, int 
     wi = (int) (i % p.grid_w);
 }
 
-void jepa_rope3d_tables(const jepa_rope3d_params & p, std::vector<float> & cos_out, std::vector<float> & sin_out) {
+void jepa_rope3d_tables(const jepa_rope3d_params & p, std::vector<float> & cos_out, std::vector<float> & sin_out,
+                        bool signed_sin) {
     const int64_t N = (int64_t) p.grid_t * p.grid_h * p.grid_w;
-    rope3d_build(p, N, [&](int64_t r, int & ti, int & hi, int & wi) { rope3d_split_id(p, r, ti, hi, wi); }, cos_out, sin_out);
+    rope3d_build(p, N, [&](int64_t r, int & ti, int & hi, int & wi) { rope3d_split_id(p, r, ti, hi, wi); },
+                 cos_out, sin_out, signed_sin);
 }
 
 void jepa_rope3d_tables_ids(const jepa_rope3d_params & p, const int32_t * ids, int n_ids,
-                            std::vector<float> & cos_out, std::vector<float> & sin_out) {
+                            std::vector<float> & cos_out, std::vector<float> & sin_out, bool signed_sin) {
     const int64_t N = (int64_t) p.grid_t * p.grid_h * p.grid_w;
     rope3d_build(p, n_ids, [&](int64_t r, int & ti, int & hi, int & wi) {
         GGML_ASSERT(ids[r] >= 0 && ids[r] < N);
         rope3d_split_id(p, ids[r], ti, hi, wi);
-    }, cos_out, sin_out);
+    }, cos_out, sin_out, signed_sin);
 }
 
 struct ggml_tensor * jepa_rope3d_apply(struct ggml_context * ctx, struct ggml_tensor * x,
@@ -135,24 +142,21 @@ struct ggml_tensor * jepa_rope3d_apply(struct ggml_context * ctx, struct ggml_te
     GGML_ASSERT(x->ne[3] == 1);
     GGML_ASSERT(cos_t->ne[0] == D && cos_t->ne[1] == 1 && cos_t->ne[2] == x->ne[2] && cos_t->ne[3] == 1);
     GGML_ASSERT(ggml_are_same_shape(cos_t, sin_t));
+    const int64_t H = x->ne[1], N = x->ne[2];
 
-    // Pair masks over head_dim, built in-graph so callers only upload the plain tables:
-    //   m_odd = [0,1,0,1,...]   m_evn = [-1,0,-1,0,...]
-    struct ggml_tensor * m01   = ggml_arange(ctx, 0.0f, 2.0f, 1.0f);                       // [0, 1]
-    struct ggml_tensor * m_odd = ggml_reshape_1d(ctx, ggml_repeat_4d(ctx, m01, 2, D / 2, 1, 1), D);
-    struct ggml_tensor * m_evn = ggml_scale_bias(ctx, m_odd, 1.0f, -1.0f);
+    // ggml_roll needs a fully contiguous source (its CUDA kernel indexes as if it were: see
+    // ggml/src/ggml-cuda/roll.cu and docs/gpu-notes.md S1.2), and jepa_build_qkv hands us a view
+    // into the fused [3D, N] projection. The copy is not wasted work: the old two-roll form
+    // materialised the same bytes twice inside `roll` itself.
+    struct ggml_tensor * xc = ggml_is_contiguous(x) ? x : ggml_cont(ctx, x);
 
-    // rotate90(x)*S == roll(x,-1) * (-S on even dims) + roll(x,+1) * (S on odd dims):
-    //   even j=2k : roll(x,-1)[j] = x[2k+1], factor -S[2k]
-    //   odd  j=2k+1: roll(x,+1)[j] = x[2k],   factor +S[2k+1]
-    // The wrapped-around elements (j = D-1 and j = 0) are multiplied by exactly 0.
-    struct ggml_tensor * s_e = ggml_mul(ctx, sin_t, m_evn); // [D, 1, N]
-    struct ggml_tensor * s_o = ggml_mul(ctx, sin_t, m_odd); // [D, 1, N]
-    struct ggml_tensor * x_next = ggml_roll(ctx, x, -1, 0, 0, 0); // x_next[j] = x[j+1]
-    struct ggml_tensor * x_prev = ggml_roll(ctx, x,  1, 0, 0, 0); // x_prev[j] = x[j-1]
+    // rotate90(x)[j] = -x[j^1] for even j, +x[j^1] for odd j -- i.e. the pair swap with the sign
+    // already folded into sin_t. Rolling a length-2 axis by 1 IS that swap: over [2, D/2*H*N],
+    // out[0] = in[1] and out[1] = in[0], with no wrap-around lane left to mask off.
+    struct ggml_tensor * sw = ggml_roll(ctx, ggml_reshape_2d(ctx, xc, 2, D * H * N / 2), 1, 0, 0, 0);
+    sw = ggml_reshape_3d(ctx, sw, D, H, N);
 
-    struct ggml_tensor * y = ggml_mul(ctx, x, cos_t);              // x * C
-    y = ggml_add(ctx, y, ggml_mul(ctx, x_next, s_e));              // + rotate90(x) * S  (even dims)
-    y = ggml_add(ctx, y, ggml_mul(ctx, x_prev, s_o));              // + rotate90(x) * S  (odd dims)
-    return y;
+    // out = x*C + swap(x)*S'  ==  out[2k] = x[2k]*C[2k] - x[2k+1]*S[2k]
+    //                             out[2k+1] = x[2k+1]*C[2k+1] + x[2k]*S[2k+1]
+    return ggml_add(ctx, ggml_mul(ctx, xc, cos_t), ggml_mul(ctx, sw, sin_t));
 }

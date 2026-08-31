@@ -47,11 +47,19 @@
 // Implementation
 // ------------------------------------------------------------------------------------------------
 //   Host side (jepa_rope3d_tables*) builds [N, D] cos/sin tables in the layout above, mirroring the
-//   float32 op order of the references (cos = 1, sin = 0 for the untouched dims [3d, D)).
-//   Graph side (jepa_rope3d_apply) applies out = x*C + rotate90(x)*S with stock ggml ops only:
-//   rotate90(x)*S == roll(x,-1)*(S masked to even dims, negated) + roll(x,+1)*(S masked to odd dims),
-//   which keeps every kernel row-contiguous (no strided even/odd gathers) and is bit-exact w.r.t.
-//   the reference's `x*cos + y*sin` evaluation order.
+//   float32 op order of the references (cos = 1, sin = 0 for the untouched dims [3d, D)).  The sin
+//   table carries the SIGN of the rotation already folded in (`signed_sin`, the default):
+//       S'[j] = (j even) ? -S[j] : +S[j]
+//   so that rotate90(x)*S == swap(x)*S' with swap(x)[j] = x[j ^ 1].
+//   Graph side (jepa_rope3d_apply) is then out = x*C + swap(x)*S', five nodes:
+//       cont (only when x is a view) -> reshape [2, ...] -> roll(1) -> 2x mul -> add
+//   Rolling an axis of length 2 by 1 *is* the pair swap, with no wrap-around lane to mask away, so
+//   no mask has to be built in the graph. Every node has a CUDA kernel and the whole chain is one
+//   scheduler split on any backend (docs/gpu-notes.md S2); the older form (two ne0-wide rolls plus
+//   in-graph arange/repeat/scale masks) had none for `roll` on the strided qkv view and fragmented
+//   a 24-block encoder into 193 splits. The refactor is bit-identical for finite inputs: the only
+//   difference against the old expression is that it also added an exact +0.0 per lane (the masked
+//   -out half of each roll), and adding +0.0 to a finite float is exact (measured: max abs 0.0).
 #pragma once
 
 #include "ggml.h"
@@ -82,19 +90,24 @@ void jepa_rope3d_position(const jepa_rope3d_params & p, int64_t i, float & t, fl
 
 // cos/sin tables for the full grid: row-major [N, head_dim] (N = grid_t*grid_h*grid_w), token order
 // T-major/H/W. Upload as a ggml tensor of shape [head_dim, 1, N] (ne0 = head_dim) for jepa_rope3d_apply.
-void jepa_rope3d_tables(const jepa_rope3d_params & p, std::vector<float> & cos_out, std::vector<float> & sin_out);
+// `signed_sin` (the default) negates the even lanes of sin_out, which is what jepa_rope3d_apply
+// consumes; pass false to get the raw sin(angle) of the reference (tests/test-ops golden vectors).
+void jepa_rope3d_tables(const jepa_rope3d_params & p, std::vector<float> & cos_out, std::vector<float> & sin_out,
+                        bool signed_sin = true);
 
 // Same, but only for the `n_ids` tokens whose grid ids are given (predictor / masked-token paths,
 // HF `position_mask`): row r corresponds to grid token ids[r]. Output is [n_ids, head_dim].
 void jepa_rope3d_tables_ids(const jepa_rope3d_params & p, const int32_t * ids, int n_ids,
-                            std::vector<float> & cos_out, std::vector<float> & sin_out);
+                            std::vector<float> & cos_out, std::vector<float> & sin_out,
+                            bool signed_sin = true);
 
 // Build the rotation in a ggml graph.
 //   x      : F32 [head_dim, n_head, N]; rows (ne0) must be contiguous, strides over n_head / N are
-//            free, so a view into a fused qkv projection is fine. head_dim must be even.
+//            free, so a view into a fused qkv projection is fine (one ggml_cont is inserted for it).
+//            head_dim must be even.
 //   cos_t  : F32 [head_dim, 1, N] (the tables above), broadcast over n_head
-//   sin_t  : F32 [head_dim, 1, N]
-// Returns a new contiguous F32 tensor [head_dim, n_head, N]. Runs on the CPU backend via
-// ggml_backend / ggml_gallocr (stock ops only: arange, repeat, scale, roll, mul, add).
+//   sin_t  : F32 [head_dim, 1, N] — the SIGNED table (see "Implementation" above)
+// Returns a new contiguous F32 tensor [head_dim, n_head, N]. Backend-agnostic: cont (only when x is
+// a view) + roll + 2 mul + add, all of which have CPU and CUDA kernels.
 struct ggml_tensor * jepa_rope3d_apply(struct ggml_context * ctx, struct ggml_tensor * x,
                                        struct ggml_tensor * cos_t, struct ggml_tensor * sin_t);

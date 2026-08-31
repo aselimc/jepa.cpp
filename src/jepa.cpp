@@ -551,7 +551,8 @@ ggml_tensor * jepa_build_encoder_video(jepa_context * ctx, ggml_tensor * inp,
 }
 
 static size_t video_graph_nodes(const jepa_model * m) {
-    // ~55 nodes per block: LN 3 + qkv 2 + 3 views + 2x13 RoPE + attention 7 + out 2 + ffn 5 + 2 adds
+    // ~40 nodes per block: LN 3 + qkv 2 + 3 views + 2x5 RoPE (src/rope3d.cpp) + attention 7 + out 2
+    // + ffn 5 + 2 adds. The 96 is left as headroom, not a tight bound.
     return (size_t) m->hp.enc.n_layer * 96 + 256;
 }
 
