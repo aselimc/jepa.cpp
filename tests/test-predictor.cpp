@@ -74,7 +74,16 @@ static double rel_bound(double base, int64_t rows) {
     return std::fmax(base, base * std::sqrt((double) rows / 2048.0));
 }
 
-static thresholds thresholds_for(int ftype) {
+// On a GPU there is no f32 tier: ggml's CUDA "F32" mul_mat is TF32 (the algo enum, which
+// GGML_PREC_F32 cannot undo), the attention path is F16-accumulate, and ggml_norm uses the
+// one-pass variance -- docs/gpu-notes.md §6.4, same reasoning as test-parity's POLICY. An f32 file
+// is therefore judged with the f16 bars there, and every GPU tier gates rel_max as well, because a
+// wrong ggml_norm variance is a per-row *scale* error that cosine is blind to by construction.
+static thresholds thresholds_for(int ftype, bool gpu) {
+    if (gpu) {
+        if (ftype == 0 || ftype == 1) return {0.9999, 0.99, 2e-2};
+        return {0.999, 0.98, 8e-2};
+    }
     if (ftype == 0) return {0.9999, 0.9999, 1e-3};
     if (ftype == 1) return {0.9999, 0.99, -1.0};
     return {0.999, 0.98, -1.0};
@@ -275,6 +284,7 @@ static void run_case(jepa_context * ctx, const std::string & dir, const threshol
 int main(int argc, char ** argv) {
     std::string lewm_path, vjepa2_path, ref, case_dir, samples_arg = "archery_f16", modality_arg = "video";
     jepa_context_params cp = jepa_context_default_params();
+    jepa_model_params   mp = jepa_model_default_params();
     double min_cos = -1, max_rel = -1;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -285,6 +295,10 @@ int main(int argc, char ** argv) {
         else if (a == "--case") case_dir = next();
         else if (a == "--samples") samples_arg = next();
         else if (a == "--threads" || a == "-t") cp.n_threads = atoi(next());
+        else if (a == "--gpu") {
+            mp.device = 0;
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') mp.device = atoi(argv[++i]);
+        }
         else if (a == "--no-flash") cp.use_flash_attn = false;
         else if (a == "--kv-f32") cp.flash_kv = JEPA_KV_F32;
         else if (a == "--kv-f16") cp.flash_kv = JEPA_KV_F16;
@@ -293,7 +307,7 @@ int main(int argc, char ** argv) {
         else if (a == "--quiet") g_quiet = true;
         else if (a == "-h" || a == "--help") {
             printf("usage: %s --lewm MODEL.gguf --ref REFDIR | --vjepa2 MODEL.gguf {--ref REFDIR [--samples a,b] | --case DIR}\n"
-                   "       [--threads N] [--no-flash] [--kv-f32|--kv-f16] [--min-cos X]\n"
+                   "       [--threads N] [--gpu [N]] [--no-flash] [--kv-f32|--kv-f16] [--min-cos X]\n"
                    "       [--modality auto|video|image]   (V-JEPA 2.1 pred.mod_embed_*, default video)\n"
                    "       [--quiet]\n", argv[0]);
             return 0;
@@ -305,17 +319,18 @@ int main(int argc, char ** argv) {
     if (modality < 0) { fprintf(stderr, "--modality must be auto, video or image (got '%s')\n", modality_arg.c_str()); return 2; }
 
     const std::string model_path = !lewm_path.empty() ? lewm_path : vjepa2_path;
-    jepa_model * model = jepa_model_load(model_path.c_str(), false);
+    jepa_model * model = jepa_model_load_ex(model_path.c_str(), &mp);
     if (!model) return 2;
     jepa_context * c = jepa_context_new(model, cp);
     if (!c) return 2;
     const int ftype = jepa_model_file_type(model);
-    thresholds thr = thresholds_for(ftype);
+    thresholds thr = thresholds_for(ftype, jepa_model_is_gpu(model));
     if (min_cos > 0) { thr.min_mean = thr.min_min = min_cos; thr.max_rel = -1; }
-    printf("model: %s (%s, %s) | threads %d | flash %s | modality %s | thresholds cos_mean >= %g, cos_min >= %g%s\n",
+    printf("model: %s (%s, %s) | device %s | threads %d | flash %s | modality %s | thresholds cos_mean >= %g, cos_min >= %g%s\n",
            jepa_model_name(model), jepa_model_family(model), jepa_model_file_type_name(model),
+           jepa_model_device_name(model),
            jepa_context_n_threads(c), cp.use_flash_attn ? "yes" : "no", modality_arg.c_str(), thr.min_mean, thr.min_min,
-           thr.max_rel > 0 ? ", rel <= 1e-3*max(1,sqrt(rows/2048))" : "");
+           thr.max_rel > 0 ? ", rel <= bound*max(1,sqrt(rows/2048))" : "");
 
     if (!lewm_path.empty()) run_lewm(c, model, ref, thr, ftype != 0);
     if (!vjepa2_path.empty()) {

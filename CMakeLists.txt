@@ -145,6 +145,18 @@ if(JEPA_BUILD_TESTS)
     target_include_directories(test-ops PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     add_test(NAME ops COMMAND test-ops ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/rope3d)
   endif()
+  # GPU backend checks: the supports_op graph walk (which must REFUSE a strided ggml_roll) and a
+  # GPU-vs-CPU encoder comparison. Skips with exit 0 when the build has no GPU backend, so it is
+  # registered unconditionally and is a no-op in the default CPU build.
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-backend.cpp)
+    add_executable(test-backend tests/test-backend.cpp)
+    target_link_libraries(test-backend PRIVATE jepa)
+    target_include_directories(test-backend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf)
+      add_test(NAME backend COMMAND test-backend
+               ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf --threads 8)
+    endif()
+  endif()
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-attn.cpp)
     add_executable(test-attn tests/test-attn.cpp)
     target_link_libraries(test-attn PRIVATE ggml)

@@ -14,11 +14,13 @@ build/test-predictor --lewm  models/gguf/<lewm>.gguf   --ref tests/fixtures/ref/
 build/test-predictor --vjepa2 models/gguf/<vjepa2>.gguf --ref tests/fixtures/ref/<ref> --samples archery_f16 --threads 32
 ctest --test-dir build                                           # parity-lejepa-vits16, parity-lewm-pusht, (re-run cmake once GGUFs + refs exist — tests register at configure time)
                                                                  # parity-vjepa2_1-vitb-384-images, predictor-lewm,
-                                                                 # predictor-vjepa2, batch, ops, attn — 8 tests, ~22 s
+                                                                 # predictor-vjepa2, batch, ops, attn, backend — 9 tests, ~22 s
+                                                                 # (`backend` skips with exit 0 unless the build has a GPU; see "Parity on a GPU")
 ```
 
-`test-parity` prints the threshold row it is judging with (family class × file-type tier, see
-"Thresholds"); the numbers below are all from the stored-input pass unless a column says otherwise.
+`test-parity` prints the threshold row it is judging with (backend × family class × file-type tier,
+see "Thresholds"); the numbers below are all from the stored-input pass unless a column says
+otherwise. Add `--gpu [N]` to run any of these on a CUDA device — see "Parity on a GPU" below.
 
 ## Results — image models (stored reference input → encoder, all fixture samples)
 
@@ -296,13 +298,13 @@ the ViT-L predictor; 87/90/79, 101/108, 1440/1408/1712 for 2.1; 0.62/1.28, 0.64/
 LeWM) were taken with a second agent active. The cosines and `rel_max` reproduced to the last printed
 digit in every one of the 20 rows, which is what one expects of load-independent numbers.
 
-## Thresholds (per model family × file-type tier)
+## Thresholds (per backend × model family × file-type tier)
 
 `test-parity` judges two classes of tensor separately, and does it **per family**: the long low-cosine
 tail described above is a property of the V-JEPA 2 *video* encoders at f16/q8_0 — the image ViTs
 (I-JEPA, LeJEPA/hfvit, LeWM) reproduce the reference on every token at every dtype, so they keep the
-hard bars. The table below is the `POLICY` table of `tests/test-parity.cpp`, which prints the row it
-used in its header line:
+hard bars. The table below is the CPU half of the `POLICY` table of `tests/test-parity.cpp`, which prints the
+row it used in its header line; the GPU half is under "Parity on a GPU" below.
 
 | family class | tier | token map (`last_hidden_state`) | derived (`pooled_mean`, `pooled`, `cls`, `emb`, `logits`) |
 |---|---|---|---|
@@ -360,10 +362,165 @@ strict bars live on the pooled outputs.
 below 0.999 / 0.99 (`--json` keeps `cos_med`, `worst_row`, `n_rows_below_cos_0.999`, …), so a regression
 that moves the whole distribution is visible even when the gate passes.
 
+## Parity on a GPU (`--gpu`)
+
+Everything above is the CPU backend. A CUDA build (`-DJEPA_CUDA=ON`, `docs/gpu-notes.md`) runs the
+same graphs on a GPU, and `test-parity` / `test-predictor` take `--gpu [N]` to judge them there.
+Box: one NVIDIA RTX 4500 Ada Generation (compute 8.9, 24 GB), CUDA 13.0.88, driver 580.173.02,
+ggml @ 36da5713, `GGML_PREC_F32` on every `mul_mat` (the default on a GPU).
+
+```bash
+cmake -S . -B build-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DJEPA_CUDA=ON && cmake --build build-cuda -j 16
+build-cuda/test-parity models/gguf/<model>.gguf tests/fixtures/ref/<ref> --gpu 0 [--json out.json]
+build-cuda/test-predictor --vjepa2 models/gguf/<model>.gguf --ref tests/fixtures/ref/<ref> --gpu 0
+build-cuda/test-backend models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf   # ctest "backend"
+```
+
+### There is no f32 tier on a GPU
+
+Three backend differences, none of which jepa.cpp can turn off:
+
+| | CPU | GPU (ggml-CUDA) |
+|---|---|---|
+| `mul_mat`, f32 weights | strict FP32, 1.2e-07 | **TF32**, 3.2e-04 — ggml passes `CUBLAS_GEMM_DEFAULT_TENSOR_OP` to every `cublasGemmEx` and never calls `cublasSetMathMode`; `ggml_mul_mat_set_prec` only picks the *compute type*, so it cannot undo this |
+| `mul_mat`, f16 weights | 3.0e-04 | 2.6e-05 **with** `GGML_PREC_F32` (on by default), 4.6e-03 without |
+| `flash_attn_ext` | F32 K/V honoured, rel ≤ 6e-07 | K/V always converted to F16 and the PV accumulator is `half2`; rel 5.2e-03–1.5e-02, and `ggml_flash_attn_ext_set_prec` is a no-op there |
+| `ggml_norm` | centred two-pass variance | one-pass `E[x²] − mean²` |
+
+So **an f32 GGUF on a GPU is judged with its family's f16 bars**, and `test-parity` says so in its
+header. f16 and quantized files keep their own bars: with `GGML_PREC_F32` the f16 matmul term is
+*better* than the CPU's.
+
+Every GPU cell additionally gates **`rel_max`**, which the CPU tiers only do at f32. That is the
+one thing cosine cannot see: a wrong `ggml_norm` variance is a per-row *scale* error, and
+`docs/gpu-notes.md` §5.3 measured CUDA at relative error 5.7 with per-row cosine still reading
+1.0000000. The bars below are set just outside the worst measured fixture value, so they are loose
+in the quantized tiers (where weight rounding dominates `rel_max` anyway) and tight on the derived
+tensors — but any of them collapses a norm-scale failure.
+
+| family class | tier | token map (`last_hidden_state`) | derived (`pooled_mean`, `pooled`, `cls`, `emb`, `logits`) |
+|---|---|---|---|
+| image (`ijepa`, `hfvit`, `lewm`) | f32 → judged as f16 | mean ≥ 0.999, median ≥ 0.9999, worst ≥ 0.90, `rel_max` ≤ 0.15·REL | ≥ 0.9995, `rel_max` ≤ 1e-2 |
+| image | f16 | same as above | same as above |
+| image | q8 | mean ≥ 0.98, median ≥ 0.99, `rel_max` ≤ 0.6·REL | mean ≥ 0.999, worst ≥ 0.98, `rel_max` ≤ 5e-2 |
+| video (`vjepa2`, `vjepa2_1`) | f32 → judged as f16 | median ≥ 0.999, mean ≥ 0.99, `rel_max` ≤ 0.5·REL | ≥ 0.9995, `rel_max` ≤ 3e-2 |
+| video | f16 | same as above | same as above |
+| video | q8 | median ≥ 0.99, mean ≥ 0.95, `rel_max` ≤ 0.8·REL | ≥ 0.995, `rel_max` ≤ 0.3 |
+| either | low-bit (< 8 bits/weight) | *reported, not gated* | ≥ 0.99 |
+
+`REL` is the same length-aware widening as on the CPU, `max(1, √(N/2048))`.
+
+The one bar that had to be *loosened* rather than mapped across is the image families'
+**worst-token** floor, 0.99 → 0.90. It is one model: I-JEPA ViT-H/14's worst token goes from 0.9976
+on the CPU at f16 to **0.9613** on a GPU, and to 0.9723 with `--no-flash` (F32 attention). That is
+the F16 PV accumulator of every CUDA flash kernel landing on the one token that is already
+degenerate — a low-norm row whose cosine swings between 0.991 and 0.9996 with op order on the CPU
+too ("Deviation from the protocol" above). LeJEPA and LeWM stay at 0.9998 / 0.99999 on the same
+backend, and I-JEPA's *median* stays at 0.999996, so the median is what gates.
+
+### Results — encoders on CUDA0
+
+Worst sample per file, stored-input pass, all fixture samples. `derived` names the worst of
+`pooled_mean` / `pooled` / `cls` / `emb` / `logits`; its `rel` column is the worst over all of them.
+
+| model | ftype | samples | tokens | cos mean | cos med | cos min | rel_max | derived (worst) | derived rel |
+|---|---|---:|---:|---|---|---|---|---|---|
+| lejepa-vits16 | f32 | 8 | 197 | 0.999994 | 0.999996 | 0.9998 | 6.0e-03 | pooled_mean 1.000000 | 9.6e-04 |
+| lejepa-vits16 | f16 | 8 | 197 | 0.999994 | 0.999996 | 0.9998 | 5.8e-03 | pooled_mean 1.000000 | 8.2e-04 |
+| lejepa-vits16 | q8_0 | 8 | 197 | 0.999277 | 0.999426 | 0.9966 | 3.5e-02 | cls 0.999808 | 2.5e-02 |
+| lejepa-vits16 | q4_k | 8 | 197 | 0.964043 | 0.965076 | 0.8547 | 1.7e-01 | cls 0.985080 | 1.7e-01 |
+| lewm-pusht | f32 | 2 | 257 | 1.000000 | 1.000000 | 1.0000 | 5.9e-04 | emb 1.000000 | 6.2e-04 |
+| lewm-pusht | f16 | 2 | 257 | 1.000000 | 1.000000 | 1.0000 | 7.1e-04 | emb 1.000000 | 7.3e-04 |
+| lewm-pusht | q8_0 | 2 | 257 | 0.999978 | 0.999980 | 0.9999 | 8.9e-03 | emb 0.999923 | 2.0e-02 |
+| lewm-pusht | q4_k | 2 | 257 | 0.998698 | 0.998798 | 0.9966 | 7.1e-02 | emb 0.991171 | 1.2e-01 |
+| ijepa-vith14-1k | f32 | 8 | 256 | 0.999853 | 0.999997 | 0.9730 | 7.4e-02 | pooled_mean 0.999996 | 2.1e-03 |
+| ijepa-vith14-1k | f16 | 8 | 256 | 0.999788 | 0.999996 | 0.9613 | 9.1e-02 | pooled_mean 0.999994 | 2.7e-03 |
+| ijepa-vith14-1k | q8_0 | 8 | 256 | 0.990211 | 0.999443 | 0.6453 | 3.8e-01 | pooled_mean 0.999725 | 1.6e-02 |
+| ijepa-vith14-1k | q4_k | 8 | 256 | 0.907524 | 0.977606 | 0.0352 | 1.0e+00 | pooled_mean 0.992122 | 1.1e-01 |
+| vjepa2-vitl-fpc64-256 | f32 | 4 | 8192 | 0.994774 | 0.999698 | 0.3549 | 4.7e-01 | pooled_mean 0.999984 | 5.2e-03 |
+| vjepa2-vitl-fpc64-256 | f16 | 4 | 8192 | 0.994793 | 0.999696 | 0.3557 | 4.7e-01 | pooled_mean 0.999984 | 5.0e-03 |
+| vjepa2-vitl-fpc64-256 | q8_0 | 4 | 8192 | 0.967114 | 0.996680 | 0.1938 | 6.5e-01 | pooled_mean 0.999889 | 6.6e-03 |
+| vjepa2-vitl-fpc64-256 | q4_k | 4 | 8192 | 0.895503 | 0.964412 | 0.1435 | 9.4e-01 | pooled_mean 0.995438 | 4.6e-02 |
+| vjepa2-vitl-fpc16-256-ssv2 | f32 | 2 | 2048 | 0.997086 | 0.999871 | 0.4917 | 3.6e-01 | pooled 0.999896 | 1.5e-02 |
+| vjepa2-vitl-fpc16-256-ssv2 | f16 | 2 | 2048 | 0.997052 | 0.999870 | 0.4352 | 3.6e-01 | pooled 0.999899 | 1.4e-02 |
+| vjepa2-vitl-fpc16-256-ssv2 | q8_0 | 2 | 2048 | 0.967114 | 0.997084 | 0.1938 | 6.5e-01 | pooled 0.996336 | 1.6e-01 |
+| vjepa2-vitl-fpc16-256-ssv2 | q4_k | 2 | 2048 | 0.895503 | 0.964412 | 0.1944 | 9.4e-01 | logits 0.978056 | 1.8e-01 |
+| vjepa2_1-vitb-384 | f32 | 4 | 4608 | 0.999949 | 0.999985 | 0.9853 | 4.0e-02 | pooled_mean 0.999999 | 5.2e-04 |
+| vjepa2_1-vitb-384 | f16 | 4 | 4608 | 0.999951 | 0.999985 | 0.9769 | 5.1e-02 | pooled_mean 0.999999 | 5.2e-04 |
+| vjepa2_1-vitb-384 | q8_0 | 4 | 4608 | 0.999073 | 0.999568 | 0.8396 | 1.3e-01 | pooled_mean 0.999983 | 1.3e-03 |
+| vjepa2_1-vitb-384 | q4_k | 4 | 4608 | 0.978335 | 0.984305 | 0.6029 | 2.7e-01 | pooled_mean 0.997691 | 1.1e-02 |
+
+**22 of the 24 files PASS.** The two that do not — `lejepa-vits16-q4_k` (derived `cls` 0.9851 against
+the low-bit tier's 0.99) and `vjepa2-vitl-fpc16-256-ssv2-q4_k` (`logits` 0.9781, `pooled` 0.9807) —
+**fail on the CPU too, identically**: q4_k below 8 bits per weight is not a parity configuration for
+these two models and `docs/quantization.md` already says so. Every q4_k row is otherwise a *pass on
+the GPU*, which matters because q4_k is the fastest GPU path (`docs/results.md`).
+
+The classifier rows reproduce the reference **top-1 and top-5 exactly** at f32/f16/q8_0. The
+own-preprocessing pass passes everywhere the stored-input pass does.
+
+Reading the table: the two encoder-only V-JEPA 2 ViT-L rows carry the model's own f16 low-cosine
+tail (`cos min` 0.35), which is *not* a GPU effect — the CPU f16 rows in the video table above show
+the same 0.51/0.60 and the f32 CPU rows do not, because the tail comes from rounding activations to
+F16 inside an f16 `mul_mat`. On the GPU the f32 file behaves like the f16 one (0.3549 vs 0.3557),
+which is the same statement as "there is no f32 tier here", measured end to end.
+
+### Results — predictors on CUDA0
+
+`test-predictor --gpu 0`, against the same PyTorch dumps. The V-JEPA 2 predictor has head_dim 32,
+for which **no CUDA flash-attention kernel exists**, so it runs the naive `mul_mat + soft_max_ext`
+path — fully F32, one graph split, and a 0.75 GiB score matrix at these row counts
+(`docs/gpu-notes.md` §3). `test-predictor` uses the GPU thresholds (f32 judged as f16, plus
+`rel_max` ≤ 2e-2 at f32/f16 and ≤ 8e-2 at q8).
+
+| model | ftype | check | rows | cos mean | cos min | rel_max | ms (GPU) | ms (CPU t=32) |
+|---|---|---|---:|---|---|---|---:|---:|
+| vjepa2-vitl-fpc64-256 | f32 | archery | 2048 | 0.9999996 | 0.9999886 | 2.8e-03 | 164 | 409 |
+| vjepa2-vitl-fpc64-256 | f32 | bowling | 2048 | 0.9999995 | 0.9999955 | 1.7e-03 | 113 | 329 |
+| vjepa2-vitl-fpc64-256 | f16 | archery | 2048 | 0.9999996 | 0.9999904 | 2.5e-03 | 169 | 452 |
+| vjepa2-vitl-fpc64-256 | f16 | bowling | 2048 | 0.9999995 | 0.9999959 | 1.7e-03 | 113 | 326 |
+| vjepa2-vitl-fpc64-256 | q8_0 | archery | 2048 | 0.9998456 | 0.9967527 | 5.1e-02 | 174 | 388 |
+| vjepa2-vitl-fpc64-256 | q8_0 | bowling | 2048 | 0.9998407 | 0.9987917 | 2.6e-02 | 112 | 290 |
+| lewm-pusht | f32 | `pred_next` / `pred_seq` | 1 / 3 | 1.0000000 | 1.0000000 | 3.1e-05 | 0.49 / 0.74 | 0.66 / 1.23 |
+| lewm-pusht | f16 | `pred_next` / `pred_seq` | 1 / 3 | 0.9999999 | 0.9999999 | 4.6e-04 | 0.53 / 3.80 | 0.65 / 1.22 |
+| lewm-pusht | q8_0 | `pred_next` / `pred_seq` | 1 / 3 | 0.9999340 | 0.9999340 | 1.3e-02 | 0.52 / 0.71 | 0.65 / 0.99 |
+
+Every predictor row **PASSES**, and the naive path is *more* accurate than flash would be: it is
+genuinely F32 end to end, so the f32 and f16 files land at `rel_max` 1.7e-03–2.8e-03 against the
+PyTorch dump — the same order as the CPU's 1.3e-03–1.7e-03, not the 5e-03–1.5e-02 a CUDA flash
+kernel costs. The 3.0× speed-up (rather than the encoders' 20×) is the price of that path running
+at ~3 TFLOP/s instead of flash's 50–70.
+
+LeWM's structural self-consistency checks (causal-prefix equality, rollout-vs-predict) are
+**bit-identical on the GPU too**: `max|d| 0.000e+00` for every T ≥ 2 prefix and both rollout steps,
+at all three dtypes.
+
+### The two questions the audit could not close, measured
+
+`docs/gpu-notes.md` §1.3 and §5.3 both ended on "this needs a dump of real activations". Done, with
+forward hooks on the reference PyTorch models over the fixture inputs (1.66 M LayerNorm rows):
+
+* **f16 GEMM accumulation cannot overflow these models.** The largest linear-layer output anywhere
+  is **414** (V-JEPA 2.1 ViT-B, layer 0 fused qkv); I-JEPA ViT-H — the model the docs used to
+  describe as reaching ~2e4 — peaks at **95**, with a largest residual value of 151 and a largest
+  unscaled q·k of 201. The number that actually decides overflow is the running partial sum inside
+  the GEMM: measured in float64 it peaks at **412**, and the unattainable all-same-sign ceiling
+  `Σ|x_k w_k|` over *every* element of *every* linear is **600** — 109× below `half`'s 65504.
+  `GGML_PREC_F32` stays on by default for **mantissa**, not range.
+* **CUDA's one-pass `ggml_norm` variance is not a risk for these models.** Its failure is governed
+  by |row mean| / row σ (1e-7 at ratio 0, 8.9e-4 at 100, catastrophic at 2000). Over 1.66 M real
+  pre-LN rows the maximum ratio is **2.72** (I-JEPA ViT-H, layer 0, one token), the 99.9th
+  percentile 2.30 and the median 0.06–1.35; no row anywhere exceeds 10. At that ratio both backends
+  match a double-precision two-pass reference to ~1.8e-07. The `rel_max` gates above stay, because
+  they cost nothing and this is the only failure mode cosine is blind to — but they are insurance,
+  not a live concern.
+
 ## Flash attention K/V dtype
 
 `ggml_flash_attn_ext` with K/V cast to F16 costs ~3 digits of worst-token cosine on ViT-H/14 f32
-(cos min 0.9910 vs 1.000000, rel_max 3.5e-2 vs 8.6e-5) because I-JEPA activations reach ~2e4.
+(cos min 0.9910 vs 1.000000, rel_max 3.5e-2 vs 8.6e-5). That is F16's 10-bit mantissa, not its range:
+measured on the real forward, I-JEPA ViT-H's largest linear output is 95 and its largest residual
+value 151 (`docs/gpu-notes.md` §8), nowhere near F16's 65504.
 `jepa_context_params.flash_kv` therefore defaults to **auto**: F32 K/V for f32 files, F16 K/V for
 f16/quantized files (where weight rounding dominates anyway). Override with `JEPA_KV_F16` /
 `JEPA_KV_F32` (`--kv-f16` / `--kv-f32` in the tools); `--no-flash` selects the naive

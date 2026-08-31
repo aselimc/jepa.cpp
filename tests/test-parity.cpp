@@ -139,11 +139,32 @@ struct policy {
 
 enum fam_class { FAM_IMAGE = 0, FAM_VIDEO = 1, FAM_COUNT = 2 };
 enum dt_tier   { TIER_F32 = 0, TIER_F16 = 1, TIER_Q8 = 2, TIER_LOWBIT = 3, TIER_COUNT = 4 };
+enum backend_class { BK_CPU = 0, BK_GPU = 1, BK_COUNT = 2 };
 
 static const char * const TIER_NAME[TIER_COUNT] = { "f32", "f16", "q8", "low-bit" };
 static const char * const FAM_NAME[FAM_COUNT]   = { "image", "video" };
+static const char * const BK_NAME[BK_COUNT]     = { "cpu", "gpu" };
 
-static const policy POLICY[FAM_COUNT][TIER_COUNT] = {
+// ---- The GPU dimension (docs/gpu-notes.md §6.4, docs/parity.md "Thresholds on a GPU") ----------
+// On a GPU **there is no f32 tier**, and it is not recoverable:
+//   * ggml passes CUBLAS_GEMM_DEFAULT_TENSOR_OP to every cublasGemmEx and never calls
+//     cublasSetMathMode, so a CUBLAS_COMPUTE_32F GEMM is free to run in TF32 — measured at
+//     3.2e-04 against the CPU on a ViT-L ffn_up shape, and ggml_mul_mat_set_prec cannot undo it
+//     because it only selects the compute type;
+//   * every flash-attention kernel converts K/V to F16 and (MMA) accumulates PV in half2, so the
+//     attention term sits at rel 5e-03 - 1.5e-02 with no flag to turn it off;
+//   * ggml_norm uses the one-pass E[x^2] - mean^2 variance instead of the CPU's centred two-pass.
+// So an f32 file on a GPU is judged with its family's **f16** bars. f16 and q8_0 keep theirs (with
+// GGML_PREC_F32 the f16 matmul term is 2.6e-05, better than the CPU's own f16 path).
+//
+// Every GPU cell additionally gates **rel_max**, which the CPU tiers only do at f32. That is not
+// belt-and-braces: a wrong ggml_norm variance is a per-row *scale* error, and cosine similarity is
+// exactly blind to a per-row scale — the audit's §5.3 sweep shows CUDA at relative error 5.7 with
+// per-row cosine still reading 1.0000000. Without a rel_max gate the GPU tier would not be able to
+// see the one backend difference that has no fix. The bounds are set from the measured worst
+// fixture value with the usual margin (see docs/parity.md's GPU section for the numbers).
+static const policy POLICY[BK_COUNT][FAM_COUNT][TIER_COUNT] = {
+  { // ============================ CPU ==========================================================
     // ---- image families: ijepa / hfvit (LeJEPA) / lewm ---------------------------------------
     { /* f32     */ { {0.9999, -1.0, 0.9999, 1e-3}, {0.9999, -1.0, 0.9999, 1e-3}, true,  false },
       /* f16     */ { {0.9999, -1.0, 0.99,   -1.0}, {0.9995, -1.0, -1.0,   -1.0}, true,  false },
@@ -154,6 +175,28 @@ static const policy POLICY[FAM_COUNT][TIER_COUNT] = {
       /* f16     */ { {0.99,   0.999,  -1.0,   -1.0}, {0.9995, -1.0, -1.0,   -1.0}, true,  false },
       /* q8      */ { {0.95,   0.99,   -1.0,   -1.0}, {0.995,  -1.0, -1.0,   -1.0}, true,  false },
       /* low-bit */ { {-1.0,   -1.0,   -1.0,   -1.0}, {0.99,   -1.0, -1.0,   -1.0}, false, true  } },
+  },
+  { // ============================ GPU ==========================================================
+    // Bars from the measured sweep of docs/parity.md's GPU section, each just outside the worst
+    // fixture value. Two differences from the CPU column beyond the f32 -> f16 collapse:
+    //   * the token map's WORST-token bar drops to 0.90 for the image families. On the CPU
+    //     I-JEPA ViT-H f16 bottoms out at 0.9976; on a GPU the same file measures 0.9613, and with
+    //     --no-flash (F32 attention) 0.9723 — that is the F16 PV accumulator of every CUDA fattn
+    //     kernel plus TF32, on the one model whose activations reach ~2e4 and whose worst token is
+    //     a known degenerate low-norm row (docs/parity.md "Deviation from the protocol"). LeJEPA
+    //     and LeWM stay at 0.9998 / 0.99999 on the same backend, so this bar is about ViT-H, not
+    //     about the port; the MEDIAN stays at 0.9999 and is what actually gates.
+    //   * rel_max is gated in every tier, which the CPU only does at f32 (see the note above).
+    { /* f32     */ { {0.999,  0.9999, 0.90,  0.15}, {0.9995, -1.0, -1.0, 1e-2}, true,  false },
+      /* f16     */ { {0.999,  0.9999, 0.90,  0.15}, {0.9995, -1.0, -1.0, 1e-2}, true,  false },
+      /* q8      */ { {0.98,   0.99,   -1.0,  0.60}, {0.999,  -1.0, 0.98,  5e-2}, true,  false },
+      /* low-bit */ { {-1.0,   -1.0,   -1.0,  -1.0}, {0.99,   -1.0, -1.0, -1.0}, false, true  } },
+    // video: median-gated token map (the f16/q8 tail is a property of the model, not the backend)
+    { /* f32     */ { {0.99,   0.999,  -1.0,  0.50}, {0.9995, -1.0, -1.0, 3e-2}, true,  false },
+      /* f16     */ { {0.99,   0.999,  -1.0,  0.50}, {0.9995, -1.0, -1.0, 3e-2}, true,  false },
+      /* q8      */ { {0.95,   0.99,   -1.0,  0.80}, {0.995,  -1.0, -1.0, 3e-1}, true,  false },
+      /* low-bit */ { {-1.0,   -1.0,   -1.0,  -1.0}, {0.99,   -1.0, -1.0, -1.0}, false, true  } },
+  },
 };
 
 static fam_class fam_class_of(const char * family) {
@@ -299,12 +342,17 @@ int main(int argc, char ** argv) {
     }
     const std::string model_path = argv[1], ref_dir = argv[2];
     jepa_context_params cp = jepa_context_default_params();
+    jepa_model_params   mp = jepa_model_default_params();
     std::string json_out, pre_mode = "manifest", rgb_dir, sample_filter;
     bool quiet = false;
     for (int i = 3; i < argc; i++) {
         std::string a = argv[i];
         auto next = [&]() -> const char * { if (i + 1 >= argc) { fprintf(stderr, "%s needs a value\n", a.c_str()); exit(2); } return argv[++i]; };
-        if (a == "--threads" || a == "-t") cp.n_threads = atoi(next());
+        if (a == "--gpu") {
+            mp.device = 0;
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') mp.device = atoi(argv[++i]);
+        }
+        else if (a == "--threads" || a == "-t") cp.n_threads = atoi(next());
         else if (a == "--no-flash") cp.use_flash_attn = false;
         else if (a == "--kv-f32") cp.flash_kv = JEPA_KV_F32;
         else if (a == "--kv-f16") cp.flash_kv = JEPA_KV_F16;
@@ -325,7 +373,8 @@ int main(int argc, char ** argv) {
     const std::string media_dir = ref_dir + "/../../media";
 
     double t0 = now_ms();
-    jepa_model * model = jepa_model_load(model_path.c_str(), !quiet);
+    mp.verbose = !quiet;
+    jepa_model * model = jepa_model_load_ex(model_path.c_str(), &mp);
     if (!model) return 2;
     const double load_ms = now_ms() - t0;
     jepa_context * ctx = jepa_context_new(model, cp);
@@ -333,7 +382,8 @@ int main(int argc, char ** argv) {
     const int ftype = jepa_model_file_type(model);
     const fam_class fam = fam_class_of(jepa_model_family(model));
     const dt_tier   tier = tier_of(ftype);
-    const policy &  pol = POLICY[fam][tier];
+    const backend_class bk = jepa_model_is_gpu(model) ? BK_GPU : BK_CPU;
+    const policy &  pol = POLICY[bk][fam][tier];
     const thresholds thr = pol.derived;
     const thresholds thr_lhs = pol.lhs;
 
@@ -350,9 +400,15 @@ int main(int argc, char ** argv) {
            jepa_model_name(model), jepa_model_family(model), jepa_model_file_type_name(model), jepa_model_n_layer(model),
            jepa_model_embed_dim(model), manifest.value("model", "?").c_str(), jepa_context_n_threads(ctx),
            cp.use_flash_attn ? "yes" : "no", kv_name);
-    printf("thresholds [%s family, %s tier]: token map %s | derived %s | top-1 exact%s\n",
-           FAM_NAME[fam], TIER_NAME[tier], bars_to_string(thr_lhs).c_str(), bars_to_string(thr).c_str(),
+    printf("thresholds [%s backend, %s family, %s tier]: token map %s | derived %s | top-1 exact%s\n",
+           BK_NAME[bk], FAM_NAME[fam], TIER_NAME[tier], bars_to_string(thr_lhs).c_str(), bars_to_string(thr).c_str(),
            pol.gate_top5 ? ", top-5 >= 4/5" : "");
+    if (bk == BK_GPU && tier == TIER_F32) {
+        printf("NOTE: there is no f32 parity tier on a GPU — ggml's CUDA \"F32\" mul_mat is TF32 (the "
+               "CUBLAS_GEMM_DEFAULT_TENSOR_OP algo enum, which GGML_PREC_F32 cannot undo), flash attention "
+               "always converts K/V to F16 and accumulates PV in F16, and ggml_norm uses the one-pass "
+               "variance. This f32 file is judged with the f16 bars plus rel_max (docs/gpu-notes.md §6.4).\n");
+    }
     if (pol.advisory) {
         if (ftype_bits_per_weight(ftype) < 0) {
             printf("NOTE: general.file_type %d (%s) has no single stored weight type this test can size, so it "
@@ -627,7 +683,9 @@ int main(int argc, char ** argv) {
         out["model"] = model_path; out["ref"] = ref_dir; out["family"] = jepa_model_family(model);
         out["file_type"] = jepa_model_file_type_name(model); out["threads"] = jepa_context_n_threads(ctx);
         out["flash"] = cp.use_flash_attn; out["flash_kv"] = kv_name; out["pass"] = all_ok;
+        out["backend"] = BK_NAME[bk]; out["device"] = jepa_model_device_name(model);
         out["thresholds"] = {
+            {"backend", BK_NAME[bk]},
             {"family_class", FAM_NAME[fam]}, {"tier", TIER_NAME[tier]}, {"advisory", pol.advisory},
             {"gate_top5", pol.gate_top5},
             {"token_map", {{"min_cos_mean", thr_lhs.min_mean}, {"min_cos_med", thr_lhs.min_med},

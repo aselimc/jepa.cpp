@@ -45,7 +45,9 @@ for each block: x += attn(ln1(x)) ; x += ffn(ln2(x))         # pre-LN, GELU(erf)
 x = norm(x)
 ```
 Attention always goes through `ggml_flash_attn_ext`; K/V dtype is **auto** — F32 K/V for f32 model files
-(the F16 cast alone costs ~3 digits of worst-token cosine on I-JEPA ViT-H, whose activations reach ~2e4),
+(the F16 cast alone costs ~3 digits of worst-token cosine on I-JEPA ViT-H — not an overflow: a hook
+dump of the real forward puts its largest linear output at 95 and its largest residual value at 151,
+so the cost is mantissa, not range, see `docs/gpu-notes.md` §8),
 F16 K/V for f16/quantized files (pure storage rounding, cosine ≥ 0.9999995). Sequences reach 18k tokens;
 naive `mul_mat + soft_max_ext` would need a 15.3 GB score matrix there vs ~0.05–0.1 GB for flash (`docs/ggml-notes.md`). For tiny
 sequences (N_q < 64, e.g. the LeWM predictor) the CPU one_chunk kernel rounds q to F16 — use F32 K/V there
