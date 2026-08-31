@@ -360,7 +360,32 @@ faithful build available. Measured build time and any CUDA-13/compute-8.9 diagno
 
 ## 5. Measured
 
-*(pending the shared-box sentinel; see the final report)*
+### 5.0 The FLOP budget the forecast is built on
+
+Per transformer layer and token, the matmuls are `2·D·(3D + D + 2·FF)` FLOPs (qkv, out projection,
+FFN up+down) and the attention is `4·N²·D` (QKᵀ and PV), with `D` the embedding dim. That gives:
+
+| model | shape | tokens N | matmul GFLOP | attention GFLOP | total | attention share |
+|---|---|---:|---:|---:|---:|---:|
+| I-JEPA ViT-H/14 (D 1280, FF 5120, L 32) | 224×224 image | 256 | 322 | 11 | **333** | 3 % |
+| V-JEPA 2 ViT-L (D 1024, FF 4096, L 24) | 16f @256 | 2 048 | 1 237 | 412 | **1 649** | 25 % |
+| V-JEPA 2 ViT-L | 64f @256 | 8 192 | 4 948 | 6 597 | **11 545** | 57 % |
+| V-JEPA 2.1 ViT-B (D 768, FF 3072, L 12) | 384 image | 576 | 98 | 12 | **110** | 11 % |
+| V-JEPA 2.1 ViT-B | 16f @384 | 4 608 | 783 | 783 | **1 566** | 50 % |
+| V-JEPA 2.1 ViT-B | 64f @384 | 18 432 | 3 131 | 12 524 | **15 655** | 80 % |
+| V-JEPA 2 predictor (D 384, FF 1536, L 12) | ViT-L 16f clip, N = ctx+tgt | 4 096 | 174 | 309 | **483** | 64 % |
+| V-JEPA 2.1 predictor | 2.1 16f clip, N = ctx+tgt | 9 216 | 391 | 1 566 | **1 957** | 80 % |
+
+So the port has **two different bottlenecks depending on the shape**: images and short clips are
+matmul-bound (attention 3–25 %), long clips are attention-bound (57–80 %). A forecast therefore
+needs both the `mul_mat` and the `flash_attn_ext` rates, and `t ≈ mm_GF/mm_rate + attn_GF/attn_rate`.
+
+That model is validated against the CPU numbers already in the repo: `docs/ggml-notes.md` §5 measures
+~3.3 TFLOP/s F16 matmul and §3 measures ~1.5–1.9 TFLOP/s flash at 32 threads, which predicts
+`4948/3.3 + 6597/1.7 = 5.4 s` for the 64-frame ViT-L clip against the **6 388 ms** `docs/benchmarks.md`
+actually measures — 18 % out, i.e. the right shape with the expected slack for LN/GELU/launch overhead.
+
+*(GPU rates and the resulting forecast pending the shared-box sentinel; see the final report)*
 
 ## 6. Implementation plan
 
