@@ -40,7 +40,7 @@ brief but jepa.cpp never emits it (it gathers rows on the host in `predict_maske
 
 | op (as jepa.cpp emits it) | where | CUDA kernel | `supports_op` verdict | evidence |
 |---|---|---|---|---|
-| `mul_mat` F32 weight × F32 acts | every linear | `ggml_cuda_mul_mat_cublas` (compute F32) | **yes** | `ggml-cuda.cu:4946` `switch (a->type)` |
+| `mul_mat` F32 weight × F32 acts | every linear | `ggml_cuda_mul_mat_cublas` (compute F32) | **yes** | `ggml-cuda.cu:4949` `switch (a->type)` |
 | `mul_mat` F16 weight × F32 acts | every linear | cuBLAS (**compute F16 unless `GGML_PREC_F32`**) or `mmf` | **yes**, see §1.3 | same switch; `ggml_cuda_mul_mat_cublas` at `ggml-cuda.cu:1623` |
 | `mul_mat` Q8_0 / Q4_0 / Q4_K × F32 | quantized files | `mmq` (INT8 tensor cores) or `mmvq` | **yes** | same switch (`Q8_0`, `Q4_0`, `Q4_K`); `mmq.cu` |
 | `mul_mat` on a permuted view (naive attn) | `jepa_build_attention` naive path | generic | **yes** — only `nb[0] == type_size` is required | `ggml-cuda.cu:4930` |
@@ -58,7 +58,7 @@ brief but jepa.cpp never emits it (it gathers rows on the host in `predict_maske
 | `scale_bias` (`ggml_scale` with bias) | rope masks, LeWM adaLN | `scale.cu` reads both `op_params[0..1]` | **yes** | `ggml-cuda.cu:5189` `case GGML_OP_SCALE`; `scale.cu:12` `dst = scale*x + bias` |
 | `concat` dim 1 (CLS / registers) | `jepa_build_encoder_image` | `concat.cu` | **yes** (non-quantized, 4-byte type) | `ggml-cuda.cu:5120` |
 | `cont` of a permuted view | naive attn, LeWM adaLN split | `cpy.cu` generic dup | **yes** (unconditional) | `ggml-cuda.cu:5225` `case GGML_OP_CONT: return true` |
-| `cast` F32→F16 of a permuted view | flash K/V cast | `cpy.cu` | **yes** | `ggml-cuda.cu:5049` (`GGML_OP_CPY`, `F32 ↔ F16`) |
+| `cast` F32→F16 of a permuted view | flash K/V cast | `cpy.cu` | **yes** | `ggml-cuda.cu:5046` (`GGML_OP_CPY`, `F32 ↔ F16`) |
 | `view` / `reshape` / `permute` / `transpose` | everywhere | no kernel (metadata) | **yes** | `ggml-cuda.cu:5183` |
 | `repeat_4d` (mask tokens, rope masks) | predictor, rope | `unary`/`repeat` | **yes** (F32/F16) | `ggml-cuda.cu:5112` |
 | `arange` (rope pair mask) | `jepa_rope3d_apply` | `arange.cu` | **yes** | `ggml-cuda.cu:5276` |
