@@ -102,6 +102,7 @@ ggml_tensor * jepa_build_predictor_masked(jepa_context * ctx, ggml_tensor * inp,
     opts.head_dim = p.head_dim_eff();
     opts.attn.flash = ctx->params.use_flash_attn;
     opts.attn.kv_type = jepa_context_kv_type(ctx);
+    if (opts.attn.flash && !jepa_gpu_flash_ok(ctx, opts.head_dim)) opts.attn.flash = false;
     opts.qk_hook = [&](ggml_context * gc, ggml_tensor * t, bool /*is_k*/) {
         return jepa_rope3d_apply(gc, t, cos_t, sin_t);
     };
@@ -173,6 +174,13 @@ static int predict_masked(jepa_context * ctx, const jepa_output * enc,
     }
     std::vector<float> cosv, sinv;
     jepa_rope3d_tables_ids(rp, ids.data(), (int) ids.size(), cosv, sinv);
+
+    // On a GPU with head_dim 32 the blocks below fall back to naive attention (jepa_gpu_flash_ok);
+    // check up front that its score matrix fits, so an oversized clip fails with a size rather
+    // than an out-of-memory abort inside the allocator.
+    if (!ctx->params.use_flash_attn || !jepa_gpu_flash_ok(ctx, p.head_dim_eff())) {
+        if (!jepa_gpu_naive_attn_fits(ctx, (int64_t) n_context + n_target, p.n_head, "the masked predictor")) return -1;
+    }
 
     const size_t nodes = (size_t) p.n_layer * 96 + 256;
     jepa_graph_begin(ctx, nodes);
