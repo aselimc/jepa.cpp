@@ -89,6 +89,17 @@ if(JEPA_BUILD_TESTS)
                        ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2_1-vitb-384 --threads 8 --quiet
                        --samples coco_000000000139,coco_000000000285)
     endif()
+    # LeVJEPA: one 3137-token clip covers everything this family adds — the CLS row, its identity
+    # RoPE entry and the block-causal mask on the flash path. ~26 s at 8 threads for the two passes,
+    # the rest of the fixture set (the second clip and the two still-image samples) is run by hand,
+    # see docs/parity.md.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/levjepa-vitl16-f16.gguf AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/levjepa-vitl16/manifest.json)
+      add_test(NAME parity-levjepa-vitl16-clip
+               COMMAND test-parity ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/levjepa-vitl16-f16.gguf
+                       ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/levjepa-vitl16 --threads 8 --quiet
+                       --samples archery_f16)
+    endif()
   endif()
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-predictor.cpp)
     add_executable(test-predictor tests/test-predictor.cpp)

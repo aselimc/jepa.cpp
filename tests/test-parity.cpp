@@ -90,7 +90,9 @@ static metrics compare(const float * a, const float * b, int64_t rows, int64_t d
 // Why per family: the image ViTs (I-JEPA / LeJEPA-hfvit / LeWM) reproduce the reference on EVERY
 // token, so they keep the hard bars; only the V-JEPA 2 video encoders develop a long low-cosine
 // tail at f16/q8_0 while everything downstream stays exact, so their token map is gated on the
-// median instead.  Relaxing the video bars globally (as an earlier revision did) would have let a
+// median instead.  LeVJEPA is judged with the same video rows and clears them with room to spare
+// (CPU f16 worst token 0.99982, q8_0 0.9914; docs/parity.md) -- its 3137-token clips are the
+// shortest of the video families and its f16 tail never opens.  Relaxing the video bars globally (as an earlier revision did) would have let a
 // real image-side regression through: I-JEPA f16 would pass at a token map mean of 0.99 when the
 // measured value is 0.999984, and LeJEPA q8_0 at 0.95 when it measures 0.999263.
 //
@@ -170,7 +172,7 @@ static const policy POLICY[BK_COUNT][FAM_COUNT][TIER_COUNT] = {
       /* f16     */ { {0.9999, -1.0, 0.99,   -1.0}, {0.9995, -1.0, -1.0,   -1.0}, true,  false },
       /* q8      */ { {0.98,   -1.0, -1.0,   -1.0}, {0.999,  -1.0, 0.98,   -1.0}, true,  false },
       /* low-bit */ { {-1.0,   -1.0, -1.0,   -1.0}, {0.99,   -1.0, -1.0,   -1.0}, false, true  } },
-    // ---- video families: vjepa2 / vjepa2_1 (and vjepa v1) ------------------------------------
+    // ---- video families: vjepa2 / vjepa2_1 / levjepa (and vjepa v1) --------------------------
     { /* f32     */ { {0.9999, 0.9999, 0.9999, 1e-3}, {0.9999, -1.0, 0.9999, 1e-3}, true,  false },
       /* f16     */ { {0.99,   0.999,  -1.0,   -1.0}, {0.9995, -1.0, -1.0,   -1.0}, true,  false },
       /* q8      */ { {0.95,   0.99,   -1.0,   -1.0}, {0.995,  -1.0, -1.0,   -1.0}, true,  false },
@@ -206,7 +208,7 @@ static const policy POLICY[BK_COUNT][FAM_COUNT][TIER_COUNT] = {
 static fam_class fam_class_of(const char * family) {
     if (!family) return FAM_IMAGE;
     const std::string f = family;
-    return (f == "vjepa" || f == "vjepa2" || f == "vjepa2_1") ? FAM_VIDEO : FAM_IMAGE;
+    return (f == "vjepa" || f == "vjepa2" || f == "vjepa2_1" || f == "levjepa") ? FAM_VIDEO : FAM_IMAGE;
 }
 
 // Bits per stored weight of the majority type of `ftype`, or -1 for a value that is not a known
