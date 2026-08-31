@@ -350,10 +350,17 @@ loud failure (`ggml_backend_graph_compute` returns an error) instead of a silent
 3. **Transfer points.** Exactly three, all already funnelled through helpers:
    `ggml_backend_tensor_set(inp, …)` for the host-side patchify output (`jepa_encode_image`,
    `jepa_encode_video`), `ggml_backend_tensor_set(cos_t/sin_t, …)` for the RoPE tables, and
-   `ggml_backend_tensor_get(y, …)` for `[D, N]` out. No change needed — `ggml_backend_tensor_set/get`
-   already do the H2D/D2H copy. The one thing to add is a **pinned host staging buffer** for the
-   patch rows (100 MB at 64f ViT-L): `ggml_backend_dev_host_buffer_type` gives pinned memory and
-   roughly doubles H2D bandwidth.
+   `ggml_backend_tensor_get(y, …)` for `[D, N]` out. No change needed — the CUDA implementations
+   (`ggml-cuda.cu:786/794`) are `cudaMemcpyAsync` + `cudaStreamSynchronize` on `cudaStreamPerThread`,
+   i.e. **synchronous**, so `last_compute_ms` keeps its meaning and no explicit sync is needed. (The
+   per-thread stream does mean a `jepa_context` must not be driven from two threads at once — it
+   already must not be.) Budget at the worst shape, 64-frame ViT-L @256: patch rows
+   `8192 × 1536 × 4 B` = 50 MB in, RoPE tables 4 MB in, `[1024, 8192]` = 34 MB out ≈ **88 MB**, or
+   ~7 ms of pageable PCIe 4.0 ×16 against a forward measured in the hundreds of ms. Worth adding a
+   **pinned staging buffer** for the patch rows (`ggml_backend_dev_host_buffer_type`) — it roughly
+   doubles H2D bandwidth — but it is a tuning detail, not a design constraint.
+   Note that `docs/benchmarks.md`'s `ms` column is `ggml_backend_graph_compute` only and therefore
+   **excludes** these copies on both backends; a GPU row must say so, or quote wall time instead.
 4. **`jepa_graph_compute`.** Unchanged: `ggml_backend_graph_compute` already synchronises, so
    `last_compute_ms` stays meaningful. One free win comes with it: the CUDA backend captures a
    **CUDA graph** once it has seen the same topology and the same tensor addresses twice in a row
