@@ -7,6 +7,13 @@ nearest-centroid vote over gallery features (scripts/knn_eval.py).
     scripts/bench_accuracy_image.py --stage all            # splits -> torch -> cpp -> eval
     scripts/bench_accuracy_image.py --stage cpp   --models ijepa-vith14-1k --dtypes q4_k
     scripts/bench_accuracy_image.py --stage eval                        # re-score cached features
+    scripts/bench_accuracy_image.py --stage all --limit 60 --dtypes f16 --out tmp/smoke.json
+
+`--limit N` is the smoke-test mode: it caps every split at N images, caches its features under
+their own `<split>-limitN` file names and *requires* an explicit `--out`, so a one-minute smoke run
+can neither be scored as a full run nor overwrite tests/results/accuracy-image.json.  Cache hits are
+additionally checked for row count, so a stale matrix of the wrong size is a miss, never a silently
+wrong number.
 
 Stages
   splits  deterministic gallery/query lists   -> tests/results/accuracy-image-splits.json (compact,
@@ -33,6 +40,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -220,6 +228,47 @@ def load_torch_model(name: str, dr, torch, models_dir: Path):
     return enc, time.time() - t0
 
 
+def loadavg() -> list[float]:
+    """1 / 5 / 15-minute run-queue length (`uptime`), recorded around every timed pass so the JSON
+    says what else the box was doing while the img/s number was taken."""
+    return [round(v, 2) for v in os.getloadavg()]
+
+
+class Occupancy:
+    """How much of the box belonged to somebody else while a timed stage ran.
+
+    `uptime`'s load average cannot answer that: back-to-back 32-thread stages keep it near 32 no
+    matter how idle the machine otherwise is.  So every timed pass also brackets itself with
+    /proc/stat (CPU-seconds the *whole machine* spent out of idle) and os.times() (CPU-seconds this
+    process and its reaped children spent).  The difference is foreign work.  On an idle box it is a
+    fraction of a core; a second 32-thread agent shows up as tens of cores.
+    """
+
+    def __init__(self) -> None:
+        self.t0 = self._sample()
+
+    @staticmethod
+    def _sample() -> tuple[float, float, float]:
+        with open("/proc/stat") as f:
+            v = [int(x) for x in f.readline().split()[1:]]
+        hz = os.sysconf("SC_CLK_TCK")
+        busy = (sum(v) - v[3] - v[4]) / hz              # everything but idle + iowait
+        t = os.times()
+        return time.time(), busy, t.user + t.system + t.children_user + t.children_system
+
+    def close(self) -> dict:
+        w1, b1, o1 = self._sample()
+        w0, b0, o0 = self.t0
+        wall = max(w1 - w0, 1e-9)
+        machine, own = b1 - b0, o1 - o0
+        foreign = max(machine - own, 0.0)
+        return {"wall_s": round(wall, 2),
+                "machine_cpu_s": round(machine, 1),   # CPU-seconds the whole box spent non-idle
+                "own_cpu_s": round(own, 1),           # ... of which this process tree
+                "foreign_cpu_s": round(foreign, 1),   # ... left for everything else
+                "foreign_cores": round(foreign / wall, 2)}
+
+
 def run_torch(name: str, paths: list[str], out_prefix: Path, models_dir: Path, threads: int,
               batch: int = 32) -> dict:
     dr, torch = torch_setup(DEFAULT_ROOT, threads)
@@ -227,6 +276,7 @@ def run_torch(name: str, paths: list[str], out_prefix: Path, models_dir: Path, t
 
     enc, load_s = load_torch_model(name, dr, torch, models_dir)
     feats: dict[str, list] = {}
+    la0, occ = loadavg(), Occupancy()
     t0 = time.time()
     for s in range(0, len(paths), batch):
         ims = [Image.open(p).convert("RGB") for p in paths[s:s + batch]]
@@ -240,7 +290,8 @@ def run_torch(name: str, paths: list[str], out_prefix: Path, models_dir: Path, t
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
     for k, v in feats.items():
         np.save(f"{out_prefix}.{k}.npy", np.concatenate(v, 0))
-    return {"n": len(paths), "wall_s": wall, "img_per_s": len(paths) / wall, "load_s": load_s, "batch": batch}
+    return {"n": len(paths), "wall_s": wall, "img_per_s": len(paths) / wall, "load_s": load_s,
+            "batch": batch, "loadavg_start": la0, "loadavg_end": loadavg(), "occupancy": occ.close()}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -257,6 +308,7 @@ def run_cpp(name: str, dtype: str, paths: list[str], out_prefix: Path, root: Pat
     tmpd.mkdir(parents=True, exist_ok=True)
     acc: dict[str, list] = {}
     wall = 0.0
+    la0, occ = loadavg(), Occupancy()
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("w") as lf:
         for s in range(0, len(paths), chunk):
@@ -287,14 +339,39 @@ def run_cpp(name: str, dtype: str, paths: list[str], out_prefix: Path, root: Pat
     # the wall time above is the sum of the chunk subprocesses, i.e. it *includes* one model load
     # per chunk; that is the number a user would see running the tool, so it is the one reported.
     return {"n": len(paths), "wall_s": wall, "img_per_s": len(paths) / wall,
-            "chunk": chunk, "n_chunks": (len(paths) + chunk - 1) // chunk, "gguf": gguf.name}
+            "chunk": chunk, "n_chunks": (len(paths) + chunk - 1) // chunk, "gguf": gguf.name,
+            "loadavg_start": la0, "loadavg_end": loadavg(), "occupancy": occ.close()}
 
 
 # --------------------------------------------------------------------------------------------------
 # driver
 # --------------------------------------------------------------------------------------------------
-def feat_path(root: Path, model: str, backend: str, dtype: str, split: str, feat: str) -> Path:
-    return root / "tmp" / "feat" / model / f"{backend}.{dtype}.{split}.{feat}.npy"
+def feat_prefix(root: Path, model: str, backend: str, dtype: str, split: str, limit: int = 0) -> Path:
+    """Where one (backend, dtype, split) pass caches its features.
+
+    A `--limit N` smoke run gets its own `<split>-limitN` names: its 60-row matrices must never be
+    picked up by a later full run (or vice versa), and a mismatch that only shows up as a wrong
+    accuracy number is worse than a cache miss."""
+    tag = f"{split}-limit{limit}" if limit else split
+    return root / "tmp" / "feat" / model / f"{backend}.{dtype}.{tag}"
+
+
+def feat_path(root: Path, model: str, backend: str, dtype: str, split: str, feat: str,
+              limit: int = 0) -> Path:
+    return Path(f"{feat_prefix(root, model, backend, dtype, split, limit)}.{feat}.npy")
+
+
+def cache_hit(prefix: Path, feats: list[str], n_expected: int) -> bool:
+    """True only if every feature file of this pass exists *and* holds exactly `n_expected` rows."""
+    for f in feats:
+        p = Path(f"{prefix}.{f}.npy")
+        if not p.exists():
+            return False
+        rows = int(np.load(p, mmap_mode="r").shape[0])
+        if rows != n_expected:
+            print(f"note: {p} has {rows} rows, expected {n_expected} — ignoring the cache")
+            return False
+    return True
 
 
 def main() -> None:
@@ -318,10 +395,14 @@ def main() -> None:
 
     root: Path = a.root
     models = [m for m in a.models.split(",") if m]
+    if a.limit and a.out is None:
+        sys.exit("--limit is a smoke test over a truncated split: its numbers are not the benchmark, "
+                 "so it will not write the default tests/results/accuracy-image.json.  Pass an "
+                 "explicit --out (e.g. --out tmp/smoke.json).")
     out_json = a.out or root / "tests/results/accuracy-image.json"
     split_dir = root / "tmp" / "splits"
     split_dir.mkdir(parents=True, exist_ok=True)
-    timing_path = root / "tmp" / "timing.json"
+    timing_path = root / "tmp" / ("timing.json" if not a.limit else f"timing-limit{a.limit}.json")
     timing = json.loads(timing_path.read_text()) if timing_path.exists() else {}
 
     # ---- splits
@@ -334,6 +415,10 @@ def main() -> None:
         # keep train2000 a subset of train_full (the eval indexes one into the other)
         tf = splits["train_full"]
         splits["train2000"] = {"paths": tf["paths"][::2], "labels": tf["labels"][::2]}
+        compact["limit"] = a.limit
+        compact["sizes"] = {k: len(v["paths"]) for k, v in splits.items()}
+        compact["note"] = (f"SMOKE RUN: every split truncated to at most {a.limit} images; the "
+                           "recipe and indices above describe the full splits, not these.")
     if a.stage in ("splits", "all"):
         (split_dir / "resolved.json").write_text(json.dumps(splits))
         out_json.parent.mkdir(parents=True, exist_ok=True)
@@ -352,9 +437,9 @@ def main() -> None:
             if "train_full" in need and "train2000" in need:
                 need.remove("train2000")
             for sp in need:
-                pre = root / "tmp" / "feat" / m / f"torch.f32.{sp}"
-                if all(Path(f"{pre}.{f}.npy").exists() for f in cfg["feats"]):
-                    print(f"skip torch {m} {sp} (cached)")
+                pre = feat_prefix(root, m, "torch", "f32", sp, a.limit)
+                if cache_hit(pre, cfg["feats"], len(splits[sp]["paths"])):
+                    print(f"skip torch {m} {sp} (cached, {len(splits[sp]['paths'])} rows)")
                     continue
                 t = run_torch(m, splits[sp]["paths"], pre, a.models_dir, a.threads)
                 timing[f"torch|{m}|f32|{sp}"] = t
@@ -371,9 +456,9 @@ def main() -> None:
                 need.remove("train2000")
             for dt in dts:
                 for sp in need:
-                    pre = root / "tmp" / "feat" / m / f"cpp.{dt}.{sp}"
-                    if all(Path(f"{pre}.{f}.npy").exists() for f in cfg["feats"]):
-                        print(f"skip cpp {m} {dt} {sp} (cached)")
+                    pre = feat_prefix(root, m, "cpp", dt, sp, a.limit)
+                    if cache_hit(pre, cfg["feats"], len(splits[sp]["paths"])):
+                        print(f"skip cpp {m} {dt} {sp} (cached, {len(splits[sp]['paths'])} rows)")
                         continue
                     t = run_cpp(m, dt, splits[sp]["paths"], pre, root, a.gguf_dir, a.threads,
                                 cfg["chunk"], root / "tmp" / "logs" / f"{m}.{dt}.{sp}.log")
@@ -393,9 +478,9 @@ def main() -> None:
         def load(model, backend, dtype, split, feat):
             cfg = MODELS[model]
             if split == "train2000" and "train_full" in cfg["galleries"]:
-                f = feat_path(root, model, backend, dtype, "train_full", feat)
+                f = feat_path(root, model, backend, dtype, "train_full", feat, a.limit)
                 return np.load(f)[sub_rows]
-            return np.load(feat_path(root, model, backend, dtype, split, feat))
+            return np.load(feat_path(root, model, backend, dtype, split, feat, a.limit))
 
         rows = []
         for m in models:
@@ -403,7 +488,7 @@ def main() -> None:
             q_split = cfg["query"]
             ql = np.asarray(splits[q_split]["labels"])
             for feat in cfg["feats"]:
-                ref_q = np.load(feat_path(root, m, "torch", "f32", q_split, feat))
+                ref_q = np.load(feat_path(root, m, "torch", "f32", q_split, feat, a.limit))
                 for gal in cfg["galleries"]:
                     gl = np.asarray(splits[gal]["labels"])
                     ref_g = load(m, "torch", "f32", gal, feat)
@@ -418,7 +503,7 @@ def main() -> None:
                                      margin_all_median=ref["margin_all_median"],
                                      img_per_s=timing.get(f"torch|{m}|f32|{q_split}", {}).get("img_per_s")))
                     for dt in cfg["dtypes"]:
-                        qp = feat_path(root, m, "cpp", dt, q_split, feat)
+                        qp = feat_path(root, m, "cpp", dt, q_split, feat, a.limit)
                         if not qp.exists():
                             print(f"note: no jepa.cpp features for {m} {dt} {feat} -- row skipped")
                             continue
@@ -448,7 +533,7 @@ def main() -> None:
                                    "are tied and a tiny feature perturbation flips the vote",
                          "flip_*": "of the items whose prediction differs from PyTorch's, how many PyTorch got right, "
                                    "how many jepa.cpp got right, and how many both got wrong"},
-            "dataset": compact, "threads": a.threads,
+            "dataset": compact, "threads": a.threads, "limit": a.limit,
             "timing": timing, "rows": rows,
         }
         out_json.parent.mkdir(parents=True, exist_ok=True)

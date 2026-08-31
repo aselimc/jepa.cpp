@@ -40,12 +40,26 @@ import numpy as np
 DEFAULT_K = 20
 DEFAULT_TEMP = 0.07
 
+# aliases kept for the video benchmark, which imported these names from the private copy this
+# module replaced (scripts/_knn_video.py, deleted 2026-08-31)
+K_DEFAULT = DEFAULT_K
+T_DEFAULT = DEFAULT_TEMP
 
-def l2norm(x: np.ndarray) -> np.ndarray:
-    """Rows to unit L2 norm (float32 in, float32 out); a zero row stays zero."""
-    x = np.asarray(x, dtype=np.float32)
-    n = np.linalg.norm(x, axis=1, keepdims=True)
-    return x / np.maximum(n, 1e-12)
+
+def l2norm(x: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    """Rows to unit L2 norm; a zero row stays zero.
+
+    The working dtype follows the input: float64 in -> float64 out, everything else float32.  The
+    image benchmark feeds float32 features and the video benchmark float64 ones, and both are scored
+    in the precision they were scored in before this module absorbed the video copy.
+    """
+    x = np.asarray(x)
+    x = x.astype(np.float64 if x.dtype == np.float64 else np.float32, copy=False)
+    n = np.linalg.norm(x, axis=-1, keepdims=True)
+    return x / np.maximum(n, eps)
+
+
+l2_normalize = l2norm            # the name the video benchmark uses
 
 
 def knn_predict(gallery: np.ndarray, gallery_labels: np.ndarray, query: np.ndarray,
@@ -75,7 +89,7 @@ def centroid_predict(gallery: np.ndarray, gallery_labels: np.ndarray, query: np.
     g = l2norm(gallery)
     q = l2norm(query)
     gl = np.asarray(gallery_labels, dtype=np.int64)
-    cent = np.zeros((n_classes, g.shape[1]), dtype=np.float32)
+    cent = np.zeros((n_classes, g.shape[1]), dtype=g.dtype)
     for c in range(n_classes):
         m = gl == c
         if m.any():
@@ -112,6 +126,16 @@ def pairwise_cosine(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     na = np.linalg.norm(a, axis=1)
     nb = np.linalg.norm(b, axis=1)
     return (a * b).sum(1) / np.maximum(na * nb, 1e-12)
+
+
+def accuracy(pred, labels) -> float:
+    """Top-1 accuracy of a prediction vector against the true labels."""
+    return float((np.asarray(pred) == np.asarray(labels)).mean())
+
+
+def mean_cosine(a: np.ndarray, b: np.ndarray) -> float:
+    """Mean per-row cosine between two feature matrices of the same shape."""
+    return float((l2norm(a) * l2norm(b)).sum(-1).mean())
 
 
 def evaluate(gallery: np.ndarray, gallery_labels, query: np.ndarray, query_labels,

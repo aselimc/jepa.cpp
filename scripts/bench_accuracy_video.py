@@ -2,7 +2,8 @@
 """Video k-NN accuracy + backend agreement: UCF101 subset, PyTorch vs jepa.cpp.
 
 Inference only — the encoders are frozen and nothing is fitted; k-NN and nearest-class-centroid are
-look-ups over the frozen features (see scripts/_knn_video.py for the protocol).
+look-ups over the frozen features (the protocol is scripts/knn_eval.py, shared with the
+image benchmark).
 
 Stages (run in this order; each writes into <work>/ and can be re-run on its own):
 
@@ -34,16 +35,11 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 
-# The protocol lives in scripts/knn_eval.py (owned by the image-accuracy agent) once that lands;
-# until then scripts/_knn_video.py carries an identical private copy.
-try:
-    import knn_eval as _knn                                          # type: ignore
-    if not all(hasattr(_knn, f) for f in ("knn_predict", "centroid_predict", "accuracy", "mean_cosine")):
-        raise ImportError("knn_eval lacks the expected entry points")
-    KNN_IMPL = "scripts/knn_eval.py"
-except ImportError:
-    import _knn_video as _knn                                        # type: ignore
-    KNN_IMPL = "scripts/_knn_video.py"
+# One protocol for both accuracy benchmarks.  (This used to fall back to a private copy in
+# scripts/_knn_video.py; that copy was folded into knn_eval.py and deleted on 2026-08-31.)
+import knn_eval as _knn                                              # noqa: E402
+
+KNN_IMPL = "scripts/knn_eval.py"
 
 MODELS = {
     "vjepa2-vitl-fpc64-256": {
@@ -62,6 +58,47 @@ SHARED = Path("/home/overseer2/workdir/jepa.cpp")     # git-ignored checkpoints 
 
 def shared(p: str) -> Path:
     return SHARED / p
+
+
+def loadavg() -> list[float]:
+    """1 / 5 / 15-minute run-queue length (`uptime`), sampled around every timed stage so the JSON
+    says what else the box was doing while the clips/s number was taken."""
+    return [round(v, 2) for v in os.getloadavg()]
+
+
+class Occupancy:
+    """How much of the box belonged to somebody else while a timed stage ran.
+
+    `uptime`'s load average cannot answer that: back-to-back 32-thread stages keep it near 32 no
+    matter how idle the machine otherwise is.  So every timed pass also brackets itself with
+    /proc/stat (CPU-seconds the *whole machine* spent out of idle) and os.times() (CPU-seconds this
+    process and its reaped children spent).  The difference is foreign work.  On an idle box it is a
+    fraction of a core; a second 32-thread agent shows up as tens of cores.
+    """
+
+    def __init__(self) -> None:
+        self.t0 = self._sample()
+
+    @staticmethod
+    def _sample() -> tuple[float, float, float]:
+        with open("/proc/stat") as f:
+            v = [int(x) for x in f.readline().split()[1:]]
+        hz = os.sysconf("SC_CLK_TCK")
+        busy = (sum(v) - v[3] - v[4]) / hz              # everything but idle + iowait
+        t = os.times()
+        return time.time(), busy, t.user + t.system + t.children_user + t.children_system
+
+    def close(self) -> dict:
+        w1, b1, o1 = self._sample()
+        w0, b0, o0 = self.t0
+        wall = max(w1 - w0, 1e-9)
+        machine, own = b1 - b0, o1 - o0
+        foreign = max(machine - own, 0.0)
+        return {"wall_s": round(wall, 2),
+                "machine_cpu_s": round(machine, 1),   # CPU-seconds the whole box spent non-idle
+                "own_cpu_s": round(own, 1),           # ... of which this process tree
+                "foreign_cpu_s": round(foreign, 1),   # ... left for everything else
+                "foreign_cores": round(foreign / wall, 2)}
 
 
 # --------------------------------------------------------------------------------------------
@@ -110,7 +147,7 @@ def _torch_setup():
     return torch
 
 
-def _load_hf_encoder(name):
+def _load_hf_encoder(name, skip_predictor: bool = True):
     """VJEPA2Model + its video processor; features = last_hidden_state.mean(1)."""
     import torch
     from transformers import AutoVideoProcessor, VJEPA2Model
@@ -121,7 +158,13 @@ def _load_hf_encoder(name):
     def fwd(frames):
         x = proc(videos=frames, return_tensors="pt")["pixel_values_videos"].float()
         with torch.inference_mode():
-            return model(pixel_values_videos=x).last_hidden_state[0].mean(0).numpy()
+            # skip_predictor=True: this benchmark only ever reads `last_hidden_state`, but
+            # VJEPA2Model otherwise also runs a full VJEPA2Predictor forward and throws the result
+            # away, charging the PyTorch baseline for work no backend here does.  The encoder output
+            # is bit-identical either way; `--no-skip-predictor` re-runs the stage without it so the
+            # two can be compared (the `report` stage does exactly that and records the result).
+            out = model(pixel_values_videos=x, skip_predictor=skip_predictor)
+            return out.last_hidden_state[0].mean(0).numpy()
     return fwd
 
 
@@ -152,30 +195,48 @@ def stage_torch(a) -> None:
     work = Path(a.work)
     cj = load_clips(work)
     name = a.model
+    skip = not a.no_skip_predictor
+    tag = a.tag or ("torch" if skip else "torchpred")
+    clips = cj["clips"][:a.limit] if a.limit else cj["clips"]
     t0 = time.time()
-    fwd = _load_hf_encoder(name) if MODELS[name]["kind"] == "hf" else _load_meta_encoder(name)
+    fwd = (_load_hf_encoder(name, skip_predictor=skip) if MODELS[name]["kind"] == "hf"
+           else _load_meta_encoder(name))
     load_s = time.time() - t0
-    print(f"{name}: loaded in {load_s:.1f}s, {len(cj['clips'])} clips, {THREADS} threads", flush=True)
+    la0 = loadavg()
+    print(f"{name}: loaded in {load_s:.1f}s, {len(clips)} clips, {THREADS} threads, "
+          f"skip_predictor={skip}, loadavg {la0}", flush=True)
 
+    occ = Occupancy()
     feats, t0 = [], time.time()
-    for i, r in enumerate(cj["clips"], 1):
+    for i, r in enumerate(clips, 1):
         feats.append(fwd(np.load(r["npy"])))
-        if i % 25 == 0 or i == len(cj["clips"]):
-            print(f"  {i}/{len(cj['clips'])}  {time.time()-t0:.1f}s", flush=True)
+        if i % 25 == 0 or i == len(clips):
+            print(f"  {i}/{len(clips)}  {time.time()-t0:.1f}s", flush=True)
     wall = time.time() - t0
     F = np.stack(feats).astype(np.float32)
-    out = work / f"{name}-torch.npy"
+    out = work / f"{name}-{tag}.npy"
     np.save(out, F)
-    (work / f"{name}-torch.json").write_text(json.dumps(
+    (work / f"{name}-{tag}.json").write_text(json.dumps(
         {"model": name, "backend": "pytorch", "dtype": "f32", "n_clips": len(F), "dim": int(F.shape[1]),
-         "threads": THREADS, "model_load_s": round(load_s, 2), "wall_s": round(wall, 1),
-         "clips_per_s": round(len(F) / wall, 3)}, indent=1))
+         "threads": THREADS, "skip_predictor": skip, "model_load_s": round(load_s, 2),
+         "wall_s": round(wall, 1), "clips_per_s": round(len(F) / wall, 3),
+         "loadavg_start": la0, "loadavg_end": loadavg(), "occupancy": occ.close()}, indent=1))
     print(f"{out} {F.shape} in {wall:.1f}s ({len(F)/wall:.2f} clips/s)")
 
 
 # --------------------------------------------------------------------------------------------
 # stage: cpp  (jepa.cpp pooled-mean features through the batch driver)
 # --------------------------------------------------------------------------------------------
+def _stamp_load(stats_json: Path, la0: list[float], occ: "Occupancy") -> None:
+    """Merge the load conditions around a jepa-embed-clips call into the stats JSON it wrote."""
+    o = occ.close()
+    if not stats_json.exists():
+        return
+    d = json.loads(stats_json.read_text())
+    d["loadavg_start"], d["loadavg_end"], d["occupancy"] = la0, loadavg(), o
+    stats_json.write_text(json.dumps(d, indent=1))
+
+
 def stage_cpp(a) -> None:
     work = Path(a.work)
     load_clips(work)
@@ -187,9 +248,10 @@ def stage_cpp(a) -> None:
     cmd = [str(ROOT / "build" / "jepa-embed-clips"), "-m", str(gguf), "-l", str(work / "clips.txt"),
            "-o", str(out), "--pool", "mean", "-t", str(THREADS), "--json", str(work / f"{name}-{dt}.json")]
     print(" ".join(cmd), flush=True)
-    t0 = time.time()
+    t0, la0, occ = time.time(), loadavg(), Occupancy()
     subprocess.run(cmd, check=True)
-    print(f"{out} in {time.time()-t0:.1f}s")
+    _stamp_load(work / f"{name}-{dt}.json", la0, occ)
+    print(f"{out} in {time.time()-t0:.1f}s (loadavg {la0} -> {loadavg()})")
 
 
 # --------------------------------------------------------------------------------------------
@@ -207,8 +269,11 @@ def stage_ssv2_torch(a) -> None:
     model = VJEPA2ForVideoClassification.from_pretrained(d, dtype=torch.float32).eval()
     load_s = time.time() - t0
     labels = [model.config.id2label[i] for i in range(model.config.num_labels)]
-    print(f"ssv2 head: loaded in {load_s:.1f}s, {len(qidx)} query clips, {model.config.num_labels} classes", flush=True)
+    la0 = loadavg()
+    print(f"ssv2 head: loaded in {load_s:.1f}s, {len(qidx)} query clips, "
+          f"{model.config.num_labels} classes, loadavg {la0}", flush=True)
 
+    occ = Occupancy()
     logits, t0 = [], time.time()
     for n, i in enumerate(qidx, 1):
         fr = np.load(cj["clips"][i]["npy"])
@@ -224,7 +289,8 @@ def stage_ssv2_torch(a) -> None:
         {"model": SSV2_MODEL, "backend": "pytorch", "dtype": "f32", "n_clips": len(L),
          "n_classes": int(L.shape[1]), "query_idx": qidx, "labels": labels, "threads": THREADS,
          "model_load_s": round(load_s, 2), "wall_s": round(wall, 1),
-         "clips_per_s": round(len(L) / wall, 3)}, indent=1))
+         "clips_per_s": round(len(L) / wall, 3),
+         "loadavg_start": la0, "loadavg_end": loadavg(), "occupancy": occ.close()}, indent=1))
     print(f"ssv2 torch logits {L.shape} in {wall:.1f}s ({len(L)/wall:.2f} clips/s)")
 
 
@@ -241,7 +307,9 @@ def stage_ssv2_cpp(a) -> None:
            "-o", str(work / f"ssv2-{a.dtype}-feats.npy"), "--logits", str(work / f"ssv2-{a.dtype}-logits.npy"),
            "-t", str(THREADS), "--json", str(work / f"ssv2-{a.dtype}.json")]
     print(" ".join(cmd), flush=True)
+    la0, occ = loadavg(), Occupancy()
     subprocess.run(cmd, check=True)
+    _stamp_load(work / f"ssv2-{a.dtype}.json", la0, occ)
 
 
 # --------------------------------------------------------------------------------------------
@@ -278,6 +346,35 @@ def _env() -> dict:
                                      capture_output=True, text=True, check=True).stdout.strip()
     except Exception:
         pass
+    return out
+
+
+def _predictor_overhead(work: Path) -> dict:
+    """What `skip_predictor=True` is worth, per model that has a `--no-skip-predictor` control run.
+
+    `VJEPA2Model.forward` runs the predictor unless asked not to and this benchmark never looks at
+    its output, so the baseline used to be timed doing work no backend does.  Dropping it must not
+    move a single feature bit, which is what `features_bit_identical` checks.
+    """
+    out = {}
+    for name in MODELS:
+        a, b = work / f"{name}-torchpred.npy", work / f"{name}-torch.npy"
+        ja, jb = work / f"{name}-torchpred.json", work / f"{name}-torch.json"
+        if not (a.exists() and b.exists() and ja.exists() and jb.exists()):
+            continue
+        A, B = np.load(a), np.load(b)
+        sa, sb = json.loads(ja.read_text()), json.loads(jb.read_text())
+        n = min(len(A), len(B))
+        out[name] = {
+            "n_clips_compared": int(n),
+            "features_bit_identical": bool(A.shape[1:] == B.shape[1:] and
+                                           np.array_equal(A[:n].view(np.uint8), B[:n].view(np.uint8))),
+            "with_predictor": {"wall_s": sa["wall_s"], "clips_per_s": sa["clips_per_s"],
+                               "n_clips": sa["n_clips"], "loadavg_start": sa.get("loadavg_start")},
+            "skip_predictor": {"wall_s": sb["wall_s"], "clips_per_s": sb["clips_per_s"],
+                               "n_clips": sb["n_clips"], "loadavg_start": sb.get("loadavg_start")},
+            "speedup": round(sb["clips_per_s"] / sa["clips_per_s"], 3),
+        }
     return out
 
 
@@ -386,7 +483,10 @@ def stage_report(a) -> None:
         ref_top1 = ref_l.argmax(1)
         ref_top5 = np.argsort(-ref_l, axis=1)[:, :5]
         ssv2 = {"n_clips": int(len(ref_l)), "n_classes": int(ref_l.shape[1]),
-                "pytorch": {"stats": {kk: meta[kk] for kk in ("model_load_s", "wall_s", "clips_per_s", "threads")}},
+                "pytorch": {"stats": {kk: meta[kk] for kk in
+                                      ("model_load_s", "wall_s", "clips_per_s", "threads",
+                                       "loadavg_start", "loadavg_end", "occupancy")
+                                      if kk in meta}},
                 "backends": {}}
         for dt in a.dtypes.split(","):
             p = work / f"ssv2-{dt}-logits.npy"
@@ -406,13 +506,24 @@ def stage_report(a) -> None:
                 "logit_cos": _knn.mean_cosine(L, ref_l),
                 "stats": stats}
 
+    predictor_overhead = _predictor_overhead(work)
+
     payload = {
         "benchmark": "video k-NN accuracy + backend agreement (UCF101 subset)",
         "date": time.strftime("%Y-%m-%d"),
         "env": _env(),
         "dataset": {"root": _relpath(cj["dataset"]), "classes": cj["classes"], "frames_per_clip": cj["frames"],
-                    "gallery": {"split": "train", "n": cj["gallery"]["n"]},
-                    "queries": {sp: cj["queries"][sp]["n"] for sp in cj["queries"]},
+                    "gallery": {"split": "train", "n": cj["gallery"]["n"],
+                                "clips": [cj["clips"][i]["stem"] for i in cj["gallery"]["idx"]],
+                                "labels": [cj["clips"][i]["label"] for i in cj["gallery"]["idx"]]},
+                    # per-split query clip order + true labels: together with the per-backend
+                    # knn_pred / centroid_pred arrays below, every accuracy and agreement number in
+                    # docs/accuracy-video.md is re-derivable from this file alone, with no access to
+                    # the (git-ignored) feature caches under tmp/accuracy-video/.
+                    "queries": {sp: {"n": cj["queries"][sp]["n"],
+                                     "clips": [cj["clips"][i]["stem"] for i in cj["queries"][sp]["idx"]],
+                                     "labels": [cj["clips"][i]["label"] for i in cj["queries"][sp]["idx"]]}
+                                for sp in cj["queries"]},
                     "decode_s": _decode_s(work),
                     "frame_sampling": "idx = round(linspace(0, T_total-1, 16)) over all PyAV rgb24 frames"},
         "protocol": {"impl": KNN_IMPL, "feature": "mean over encoder tokens (pooled_mean), L2-normalized",
@@ -420,6 +531,7 @@ def stage_report(a) -> None:
                      "centroid": "nearest L2-normalized class mean of the gallery",
                      "training": "none — frozen features, look-up only"},
         "threads": THREADS,
+        "pytorch_predictor_overhead": predictor_overhead,
         "models": {}, "ssv2_head": ssv2,
     }
     for name, per in results.items():
@@ -428,12 +540,14 @@ def stage_report(a) -> None:
             payload["models"][name]["backends"][dt] = {
                 "backend": "pytorch" if dt == "torch" else "jepa.cpp", "dtype": "f32" if dt == "torch" else dt,
                 "dim": int(r["feats"].shape[1]),
-                "splits": {sp: {"n": v["n"], "knn_top1": v["knn_top1"], "centroid_top1": v["centroid_top1"]}
+                "splits": {sp: {"n": v["n"], "knn_top1": v["knn_top1"],
+                                "centroid_top1": v["centroid_top1"],
+                                "knn_pred": v["knn_pred"], "centroid_pred": v["centroid_pred"]}
                            for sp, v in r["eval"].items()},
-                "query_labels": r["eval"]["val+test"]["labels"],
                 "agreement": r["agreement"], "disagreements": r["disagreements"],
                 "stats": {kk: r["stats"].get(kk) for kk in
-                          ("model_load_s", "wall_s", "clips_per_s", "weights_mib", "encode_s")
+                          ("model_load_s", "wall_s", "clips_per_s", "weights_mib", "encode_s",
+                           "skip_predictor", "loadavg_start", "loadavg_end", "occupancy")
                           if kk in r["stats"]},
             }
     Path(a.out_json).parent.mkdir(parents=True, exist_ok=True)
@@ -450,10 +564,44 @@ def _pct(x):
 
 def _maj(p) -> str:
     """Majority-class share of the combined query set, as a percentage string."""
-    m = next(iter(p["models"].values()))
-    b = next(iter(m["backends"].values()))
-    lab = b.get("query_labels") or []
+    lab = p["dataset"]["queries"]["val+test"]["labels"]
     return f"{100 * max(lab.count(c) for c in set(lab)) / len(lab):.1f}" if lab else "?"
+
+
+def _all_stats(p: dict) -> list[dict]:
+    """Every timed stage's stats block, models and SSv2 head alike."""
+    out = [b["stats"] for m in p["models"].values() for b in m["backends"].values()]
+    s2 = p.get("ssv2_head") or {}
+    out += [b.get("stats") or {} for b in [s2.get("pytorch", {})]
+            + list((s2.get("backends") or {}).values())]
+    return [s for s in out if s]
+
+
+def _occupancy(p: dict) -> str:
+    """How idle the box actually was, in CPU-seconds that were not this benchmark's."""
+    occ = [s["occupancy"] for s in _all_stats(p) if s.get("occupancy")]
+    if not occ:
+        return ""
+    mach = sum(o["machine_cpu_s"] for o in occ)
+    own = sum(o["own_cpu_s"] for o in occ)
+    foreign = sum(o["foreign_cpu_s"] for o in occ)
+    wall = sum(o["wall_s"] for o in occ)
+    return (f"across the {len(occ)} timed stages the machine spent {mach/60:.0f} CPU-minutes out of "
+            f"idle, of which {own/60:.0f} were this benchmark's own process trees; the "
+            f"{foreign/60:.1f} CPU-minutes left over for everything else on the box average "
+            f"{foreign/max(wall, 1e-9):.2f} of one core out of 96 "
+            f"(`occupancy` per row in the JSON: /proc/stat non-idle minus os.times() self+children)")
+
+
+def _dtype_clock(p: dict) -> str:
+    """`ViT-L f16 0.99 vs q8_0 0.97 clips/s` — straight from the measured stats."""
+    out = []
+    for m in p["models"].values():
+        r = [(dt, b["stats"]["clips_per_s"]) for dt, b in m["backends"].items()
+             if dt != "torch" and b["stats"].get("clips_per_s")]
+        if len(r) > 1:
+            out.append(m["label"] + " " + " vs ".join(f"{dt} {c:.2f}" for dt, c in r) + " clips/s")
+    return "; ".join(out)
 
 
 def render_md(p: dict, cj: dict) -> str:
@@ -464,7 +612,7 @@ def render_md(p: dict, cj: dict) -> str:
       "are frozen and both metrics are look-ups over their pooled clip features.\n")
     A(f"- **Dataset** `{p['dataset']['root']}` — {len(p['dataset']['classes'])} classes, "
       f"gallery = train ({p['dataset']['gallery']['n']} clips), queries = "
-      + " / ".join(f"{sp} ({n})" for sp, n in p['dataset']['queries'].items()) + ".")
+      + " / ".join(f"{sp} ({q['n']})" for sp, q in p['dataset']['queries'].items()) + ".")
     A(f"- **Clip** {p['dataset']['frames_per_clip']} frames, `{p['dataset']['frame_sampling']}`, decoded once "
       "with PyAV to a THWC uint8 `.npy` that *both* backends read, so the two see identical pixels.")
     A(f"- **Feature** {p['protocol']['feature']}.")
@@ -628,13 +776,33 @@ def render_md(p: dict, cj: dict) -> str:
         A("**Throughput.** jepa.cpp is faster than PyTorch on the same 32 threads in every configuration "
           "measured here: " + "; ".join(f"{lbl} {c:.2f} clips/s at {dt} vs {t:.2f} ({c/t:.2f}x)"
                                         for lbl, c, dt, t in sp)
-          + ". Both sides include preprocessing and run one clip per process with no batching. Within "
-          "jepa.cpp the dtype barely moves the clock — ViT-L f16 0.99 vs q8_0 0.97 clips/s, and on "
-          "V-JEPA 2.1 ViT-B/384 the **f32** file is actually the fastest of the three (0.91 vs 0.85 f16 "
-          "vs 0.83 q8_0). `docs/parity.md` sees the same absence of a dtype speedup on its two fixture "
-          "clips (1073 / 1125 / 1067 ms per clip for f32 / f16 / q8_0). These "
-          "encoders are compute-bound at 32 threads, so q8_0 buys resident weights (332.8 vs 622.5 MiB "
-          "for ViT-L, 113.3 vs 209.6 MiB for 2.1 ViT-B — 0.53x and 0.54x), not speed.\n")
+          + ". **Neither side is charged a per-clip model load, and neither batches.** The PyTorch "
+          "loop keeps one `VJEPA2Model` resident and starts its timer after `from_pretrained` "
+          "returns; `build/jepa-embed-clips` mmaps the GGUF once and then walks the whole 405-clip "
+          "list inside that one process (`tools/jepa-embed` *would* reload per clip, which is why "
+          "the driver exists). Both do their own preprocessing per clip, and both run one clip per "
+          "forward.\n")
+        po = (p.get("pytorch_predictor_overhead") or {})
+        if po:
+            A("The PyTorch rows pass `skip_predictor=True`. `VJEPA2Model.forward` otherwise also "
+              "runs a full `VJEPA2Predictor` pass whose output this benchmark discards — an earlier "
+              "version of this table timed the baseline doing it, which is not a like-for-like "
+              "comparison against an encoder-only jepa.cpp graph. " +
+              "; ".join(f"{p['models'][n]['label']}: {v['with_predictor']['clips_per_s']:.2f} clips/s "
+                        f"with the discarded predictor vs {v['skip_predictor']['clips_per_s']:.2f} "
+                        f"without ({v['speedup']:.2f}x)" for n, v in po.items() if n in p["models"])
+              + ". The encoder output is unaffected: the two runs agree "
+              + " and ".join(("bit for bit" if v["features_bit_identical"] else "NOT bit for bit")
+                             + f" on all {v['n_clips_compared']} clips" for v in po.values()) + ".\n")
+        A("Within jepa.cpp the dtype barely moves the clock — " + _dtype_clock(p) + " — so on "
+          "V-JEPA 2.1 ViT-B/384 the **f32** file is the fastest of the three. `docs/parity.md` sees "
+          "the same absence of a dtype speedup on its two fixture clips (1073 / 1125 / 1067 ms per "
+          "clip for f32 / f16 / q8_0). These encoders are compute-bound at 32 threads, so q8_0 buys "
+          "resident weights (332.8 vs 622.5 MiB for ViT-L, 113.3 vs 209.6 MiB for 2.1 ViT-B — 0.53x "
+          "and 0.54x), not speed.\n")
+        A("**Load conditions.** Every row above was measured back-to-back in one sweep, alternating "
+          "PyTorch and jepa.cpp stages so that any residual contention lands on both backends, on a "
+          "box that was otherwise idle: " + _occupancy(p) + ".\n")
 
     A("**Practical reading.** For frozen-feature video retrieval and k-NN, f16 is the default and q8_0 "
       "costs nothing measurable — both land within one clip of PyTorch on 405 clips, at 0.53x the "
@@ -682,7 +850,7 @@ def render_md(p: dict, cj: dict) -> str:
         tot = sum(w for _, w in walls) + p["dataset"].get("decode_s", 0)
         A(f"**Wall time at 32 threads**, measured: frame decode "
           f"{p['dataset'].get('decode_s', 0):.1f} s for all "
-          f"{p['dataset']['gallery']['n'] + p['dataset']['queries']['val+test']} clips (32 processes), "
+          f"{p['dataset']['gallery']['n'] + p['dataset']['queries']['val+test']['n']} clips (32 processes), "
           "then " + ", ".join(f"{k} {v:.0f} s" for k, v in walls) + f" — {tot/60:.0f} min of compute "
           "in total, serial because the 32-thread budget is shared. `report` takes a few seconds.\n")
     A("Every stage writes into `tmp/accuracy-video/` (git-ignored) and can be re-run alone; "
@@ -705,7 +873,14 @@ def main() -> None:
     sub = ap.add_subparsers(dest="stage", required=True)
 
     s = sub.add_parser("lists"); s.add_argument("--index", default=str(ROOT / "tmp" / "frames" / "index.json")); s.set_defaults(fn=stage_lists)
-    s = sub.add_parser("torch"); s.add_argument("--model", required=True, choices=list(MODELS)); s.set_defaults(fn=stage_torch)
+    s = sub.add_parser("torch"); s.add_argument("--model", required=True, choices=list(MODELS))
+    s.add_argument("--no-skip-predictor", action="store_true",
+                   help="also run VJEPA2Model's predictor and throw the output away, as the "
+                        "benchmark did before 2026-08-31; writes <model>-torchpred.npy, which the "
+                        "report stage diffs against the real features and times against")
+    s.add_argument("--tag", default="", help="output suffix (default: torch / torchpred)")
+    s.add_argument("--limit", type=int, default=0, help="only the first N clips (control runs)")
+    s.set_defaults(fn=stage_torch)
     s = sub.add_parser("cpp"); s.add_argument("--model", required=True, choices=list(MODELS))
     s.add_argument("--dtype", required=True); s.set_defaults(fn=stage_cpp)
     s = sub.add_parser("ssv2-torch"); s.set_defaults(fn=stage_ssv2_torch)
