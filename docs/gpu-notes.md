@@ -103,6 +103,14 @@ F16 accumulation over a 1024-long reduction is worse). Quantized weights take th
 `jepa_build_linear` when the backend is a GPU (it is a no-op on CPU — `docs/ggml-notes.md` §6), or
 accept a measurably wider f16 error band on GPU. Cost is measured in §5.
 
+**And a pleasant surprise for the quantized files.** `ggml_cuda_should_use_mmq` (`mmq.cu:259-313`)
+returns `true` unconditionally once `turing_mma_available(cc)` holds — which it does on Ada — for
+every type we ship, **Q4_K included**. So on CUDA all of Q8_0 / Q4_0 / Q4_K get a real INT8
+tensor-core kernel. That inverts the CPU guidance: on this box `GGML_LLAMAFILE`'s fast sgemm only
+covers F32/F16/Q8_0, so `docs/benchmarks.md` measures q4_k *slower* than q8_0 (ViT-H 198 ms vs
+129 ms) and `docs/quantization.md` calls q4_k "a memory win only". On the GPU q4_k should be at
+least as fast as q8_0 and a quarter of the weight bytes. Measured in §5.1.
+
 ### 1.4 `ggml_norm`: CUDA uses the numerically weaker variance formula
 
 - CPU (`ggml-cpu/ops.cpp:3733`): two-pass **centred** variance, `ggml_vec_cvar_f32(n, y, x, mean)`.
