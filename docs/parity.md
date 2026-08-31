@@ -28,21 +28,30 @@ projector outputs are checked too — 1.000000 everywhere, including the 3-frame
 
 | model | ftype | samples | cos mean | cos min | rel_max | ms/item t=32 | ms/item t=96 | PyTorch t=32 | peak RSS |
 |---|---|---|---|---|---|---|---|---|---|
-| lejepa-vits16 | f32 | 8 | 1.000000 | 1.000000 | 1.2e-05 | 14.0 | —¹ | 22.6 | 99 MiB |
-| lejepa-vits16 | f16 | 8 | 0.999999 | 0.999994 | 1.2e-03 | 13.4 | —¹ | 22.6 | 59 MiB |
-| lejepa-vits16 | q8_0 | 8 | 0.999263 | 0.995193 | 3.7e-02 | 12.6 | —¹ | 22.6 | 40 MiB |
-| lewm-pusht | f32 | 3 | 1.000000 | 1.000000 | 1.0e-06 | 10.3 | —¹ | 18.1 | 88 MiB |
-| lewm-pusht | f16 | 3 | 1.000000 | 1.000000 | 5.8e-04 | 10.7 | —¹ | 18.1 | 53 MiB |
-| lewm-pusht | q8_0 | 3 | 0.999913 | 0.999895 | 1.5e-02 | 9.7 | —¹ | 18.1 | 39 MiB |
-| ijepa-vith14-1k | f32 | 8 | 1.000000 | 1.000000 | 7.9e-05 | 185 | —¹ | 263.0 | 2433 MiB |
-| ijepa-vith14-1k | f16 | 8 | 0.999984 | 0.997583 | 2.9e-02 | 156 | 122 | 263.0 | 1233 MiB |
-| ijepa-vith14-1k | q8_0 | 8 | 0.987843 | 0.432576 | 5.0e-01 | 138 | —¹ | 263.0 | 671 MiB |
+| lejepa-vits16 | f32 | 8 | 1.000000 | 1.000000 | 1.2e-05 | 14.0 | —¹ | 15.4 | 99 MiB |
+| lejepa-vits16 | f16 | 8 | 0.999999 | 0.999994 | 1.2e-03 | 13.4 | —¹ | 15.4 | 59 MiB |
+| lejepa-vits16 | q8_0 | 8 | 0.999263 | 0.995193 | 3.7e-02 | 12.6 | —¹ | 15.4 | 40 MiB |
+| lewm-pusht | f32 | 3 | 1.000000 | 1.000000 | 1.0e-06 | 10.3 | —¹ | 16.8 | 88 MiB |
+| lewm-pusht | f16 | 3 | 1.000000 | 1.000000 | 5.8e-04 | 10.7 | —¹ | 16.8 | 53 MiB |
+| lewm-pusht | q8_0 | 3 | 0.999913 | 0.999895 | 1.5e-02 | 9.7 | —¹ | 16.8 | 39 MiB |
+| ijepa-vith14-1k | f32 | 8 | 1.000000 | 1.000000 | 7.9e-05 | 185 | —¹ | 249.8 | 2433 MiB |
+| ijepa-vith14-1k | f16 | 8 | 0.999984 | 0.997583 | 2.9e-02 | 156 | 122 | 249.8 | 1233 MiB |
+| ijepa-vith14-1k | q8_0 | 8 | 0.987843 | 0.432576 | 5.0e-01 | 138 | —¹ | 249.8 | 671 MiB |
 
 ¹ t=96 re-measured only for the mul_mat-bound ijepa f16 (122 ms vs 156 at t=32); the small models are
 launch-/LN-bound and within noise of their t=32 numbers. All timings with `GGML_LLAMAFILE=ON`
 (1.3–3.2× faster matmuls than stock ggml, see `docs/ggml-notes.md` §5). For the LeWM `seq` sample the
 compared tensor is `emb_seq`; q8_0 `cos min` rows reflect the low-variance-token amplification
 analysed in `docs/quantization.md` — pooled/CLS/emb stay ≥ 0.9997 for every q8_0 file.
+
+**PyTorch t=32** is the manifest's `timing_s.forward_s` summarised exactly as `docs/benchmarks.md`
+does it (`scripts/gen_benchmarks_md.py`): the mean over the samples with that frame count, except
+where the manifest's first sample of the group is cold (≥ 1.2× the median of the rest), in which case
+it is the **median of the samples after the first** — the steady-state figure. LeJEPA's first forward
+is 72.2 ms against a steady 15.4 (median of the other seven; the all-sample mean would read 22.6) and
+I-JEPA's is 331.8 against 249.8 (mean 263.0); LeWM keeps the mean of its two **1-frame** samples,
+16.8, because its 3-frame `seq` sample times encode + projector + a predictor call and is not an
+encoder forward at all. The video table below is unaffected: no video group has a cold first sample.
 
 All 18 runs (9 files × {stored input, own preprocessing}) **PASS** the *image-family* thresholds below
 — the strict ones: every token ≥ 0.9999 at f32, token-map mean ≥ 0.9999 with worst ≥ 0.99 at f16, and
@@ -58,12 +67,12 @@ Worst sample per model; both clips (archery, bowling) and, for V-JEPA 2.1, both 
 
 | model | ftype | sample set | tokens | cos mean | cos med | cos min | rel_max | pooled | logits | top-1/top-5 | ms/clip t=32 | tokens/s | PyTorch t=32 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| vjepa2-vitl-fpc64-256 | **f32** | 2 clips × 16 f | 2048 | 1.000000 | 1.000000 | 0.999999 | **7.5e-04** | 1.000000 | – | – | 1240 / 1293⁴ | 1584 | 1290² |
-| vjepa2-vitl-fpc64-256 | **f32** | 2 clips × 64 f | 8192 | 1.000000 | 1.000000 | 0.999990 | **1.2e-03** | 1.000000 | – | – | 9288 / 9004⁴ | 910 | 10113² |
-| vjepa2-vitl-fpc64-256 | f16 | 2 clips × 16 f | 2048 | 0.997144 | 0.999897 | 0.5088 | 5.1e-01 | 0.999991 | – | – | 823 / 827 | 2477 | 1290² |
-| vjepa2-vitl-fpc64-256 | f16 | 2 clips × 64 f | 8192 | 0.998322 | 0.999934 | 0.5971 | 3.2e-01 | 0.999997 | – | – | 7032 / 6386 | 1283 | 10113² |
-| vjepa2-vitl-fpc64-256 | q8_0 | 2 clips × 16 f | 2048 | 0.966128 | 0.996770 | 0.2305 | 6.0e-01 | 0.999876 | – | – | 829 / 852 | 2405 | 1290² |
-| vjepa2-vitl-fpc64-256 | q8_0 | 2 clips × 64 f | 8192 | 0.973126 | 0.996880 | 0.2188 | 5.4e-01 | 0.999925 | – | – | 7220 / 7203 | 1137 | 10113² |
+| vjepa2-vitl-fpc64-256 | **f32** | 2 clips × 16 f | 2048 | 1.000000 | 1.000000 | 0.999999 | **7.5e-04** | 1.000000 | – | – | 956 / 970⁴ | 2112 | 1293² |
+| vjepa2-vitl-fpc64-256 | **f32** | 2 clips × 64 f | 8192 | 1.000000 | 1.000000 | 0.999990 | **1.2e-03** | 1.000000 | – | – | 7393 / 6845⁴ | 1197 | 10114² |
+| vjepa2-vitl-fpc64-256 | f16 | 2 clips × 16 f | 2048 | 0.997144 | 0.999897 | 0.5088 | 5.1e-01 | 0.999991 | – | – | 823 / 827 | 2477 | 1293² |
+| vjepa2-vitl-fpc64-256 | f16 | 2 clips × 64 f | 8192 | 0.998322 | 0.999934 | 0.5971 | 3.2e-01 | 0.999997 | – | – | 7032 / 6386 | 1283 | 10114² |
+| vjepa2-vitl-fpc64-256 | q8_0 | 2 clips × 16 f | 2048 | 0.966128 | 0.996770 | 0.2305 | 6.0e-01 | 0.999876 | – | – | 829 / 852 | 2405 | 1293² |
+| vjepa2-vitl-fpc64-256 | q8_0 | 2 clips × 64 f | 8192 | 0.973126 | 0.996880 | 0.2188 | 5.4e-01 | 0.999925 | – | – | 7220 / 7203 | 1137 | 10114² |
 | vjepa2-vitl-fpc16-256-ssv2 | **f32** | 2 clips × 16 f | 2048 | 1.000000 | 1.000000 | 0.999999 | **7.5e-04** | 1.000000 | 1.000000 | 2/2 · 5/5 | 1037 / 924 | 2216 | 1051³ |
 | vjepa2-vitl-fpc16-256-ssv2 | f16 | 2 clips × 16 f | 2048 | 0.997144 | 0.999897 | 0.5088 | 5.1e-01 | 0.999897 | 0.999935 | 2/2 · 5/5 | 988 / 814 | 2515 | 1051³ |
 | vjepa2-vitl-fpc16-256-ssv2 | q8_0 | 2 clips × 16 f | 2048 | 0.966128 | 0.996770 | 0.2305 | 6.0e-01 | 0.996645 | 0.998501 | 2/2 · 5/5 | 887 / 771 | 2656 | 1051³ |
@@ -76,26 +85,37 @@ Worst sample per model; both clips (archery, bowling) and, for V-JEPA 2.1, both 
 
 `pooled` = `pooled_mean` (mean over the tokens) for the two encoder-only models, the **attentive-pooler
 output** (`pooled`, the classifier input) for SSv2; `logits`/top-k only exist for SSv2. Two `ms/clip`
-numbers are given per row: the two samples in run order — the *first* clip of a process is 10–25 % slower
-(weights are paged in on first touch), so the second is the steady-state figure and the one `tokens/s`
-uses. The 15 rows come from 9 `test-parity` runs (a run covers all samples of one file); all of them
-**PASS** the video-family thresholds, on the stored input and on our own preprocessing alike.
+numbers are given per row: the two samples in run order, and the second is the steady-state figure and
+the one `tokens/s` uses — the *first* clip of a process is 8–25 % slower because the weights are paged
+in on first touch. That penalty lands on whichever shape a process reaches first: in the fpc64 run the
+sample order is archery 64 f, archery 16 f, bowling 64 f, bowling 16 f, so on an idle box only the
+64-frame row still shows it (7393 → 6845, 8 %) while the 16-frame row's two samples are within 1.5 %
+of each other. The 15 rows come from 9 `test-parity` runs (a run covers all samples of one file);
+all of them **PASS** the video-family thresholds, on the stored input and on our own preprocessing
+alike.
 
 ² the fpc64 manifest's `timing_s.forward_s` is one `VJEPA2Model` forward, which always runs the
 **predictor** as well (its `predictor_last_hidden_state` comes from the same call), so it is not a
 like-for-like encoder number — treat it as an upper bound.
 ³ the SSv2 reference forward is encoder + attentive pooler + classifier with the predictor skipped, i.e.
 directly comparable to our encoder (814 ms) + head (96 ms, measured with `jepa-classify --time`) = 910 ms.
-⁴ the two f32 rows were added in the Phase-3 verification sweep, with a second agent building and
-running parity on the same box; in that same sweep the f16 file measured 931 / 1044 ms (16 f) and
-8940 / 8222 ms (64 f) against the 823 / 827 and 7032 / 6386 of its own (exclusive) run, so read the f32
-ms as an upper bound carrying ~20 % of contention, not as an f32-vs-f16 gap. The cosines and `rel_max`
-are load-independent.
+⁴ the two f32 rows were **re-measured on an idle box** (two identical `test-parity` runs, the lower
+per sample; the two runs agree to within 2.1 %). Their earlier values — 1240 / 1293 ms and 9288 /
+9004 ms — came from a sweep sharing the box with a second agent and carried ~20 % of contention; with
+that gone the f32/f16 ratio on the 16-frame clip is 970 / 827 = 1.17×, which is what
+`docs/benchmarks.md` measures on synthetic input of the same shape (1.15×). The f16 and q8_0 rows of
+this table are still from that earlier session and are therefore the pessimistic ones now. Cosines
+and `rel_max` are load-independent and unchanged to the last digit.
 
 The 64-frame ViT-L clip is the one case that was also timed at **96 threads** (one run, as budgeted):
-4125 / 4076 ms per clip, i.e. 2010 tokens/s and 1.57× the 32-thread throughput (2.5× the manifest's
-PyTorch number, which includes the predictor — caveat ²). Peak RSS: 1183 MiB (f16, 8192 tokens),
-872 MiB (q8_0), 1572 MiB (ssv2 f32), 454 MiB (2.1 f16), 336 MiB (2.1 q8_0).
+
+| model | ftype | sample set | tokens | ms/clip t=96 | tokens/s |
+|---|---|---|---|---|---|
+| vjepa2-vitl-fpc64-256 | f16 | 2 clips × 64 f | 8192 | 4125 / 4076 | 2010 |
+
+i.e. 1.57× the 32-thread throughput (2.5× the manifest's PyTorch number, which includes the
+predictor — caveat ²). Peak RSS: 1183 MiB (f16, 8192 tokens), 872 MiB (q8_0), 1572 MiB (ssv2 f32),
+454 MiB (2.1 f16), 336 MiB (2.1 q8_0).
 
 ### What the f32 rows prove, and why f16 tokens scatter
 
@@ -173,19 +193,20 @@ build/test-predictor --lewm models/gguf/lewm-pusht-{f32,f16,q8_0}.gguf \
 
 | ftype | sample | rows | cos mean | cos min | rel_max | ms t=32 | PyTorch t=32 |
 |---|---|---|---|---|---|---|---|
-| f32 | archery | 2048 | 1.0000000 | 1.0000000 | 3.4e-06 | 415 | 2524⁵ |
-| f32 | bowling | 2048 | 1.0000000 | 1.0000000 | 3.9e-06 | 335 | 2524⁵ |
-| f16 | archery | 2048 | 0.9999997 | 0.9999968 | 1.3e-03 | 457 | 2524⁵ |
-| f16 | bowling | 2048 | 0.9999996 | 0.9999961 | 1.7e-03 | 332 | 2524⁵ |
-| q8_0 | archery | 2048 | 0.9998458 | 0.9961310 | 4.2e-02 | 395 | 2524⁵ |
-| q8_0 | bowling | 2048 | 0.9998402 | 0.9990631 | 2.4e-02 | 295 | 2524⁵ |
+| f32 | archery | 2048 | 1.0000000 | 1.0000000 | 3.4e-06 | 409 | 2524⁵ |
+| f32 | bowling | 2048 | 1.0000000 | 1.0000000 | 3.9e-06 | 329 | 2524⁵ |
+| f16 | archery | 2048 | 0.9999997 | 0.9999968 | 1.3e-03 | 452 | 2524⁵ |
+| f16 | bowling | 2048 | 0.9999996 | 0.9999961 | 1.7e-03 | 326 | 2524⁵ |
+| q8_0 | archery | 2048 | 0.9998458 | 0.9961310 | 4.2e-02 | 388 | 2524⁵ |
+| q8_0 | bowling | 2048 | 0.9998402 | 0.9990631 | 2.4e-02 | 290 | 2524⁵ |
 
-The predictor is 12 layers of 384 dims over 4096 rows (2048 context + 2048 mask tokens) — ~5.5×
-faster than the PyTorch predictor at f16, and roughly half the cost of the ViT-L encoder pass on the
-same clip (24 layers of 1024 dims over 2048 rows). The cosines are deterministic; the ms are the lower
-of two identical runs (the box was shared with a second agent, the other run was 15–40 % slower), and
-the *archery* rows carry the first-touch page-in of the run, which is why *bowling* is consistently
-faster at the same shape. `rel_max` at f16 (1.3–1.7e-3 on values reaching ±12) is weight rounding: the same run at f32 is
+The predictor is 12 layers of 384 dims over 4096 rows (2048 context + 2048 mask tokens) — ~5.6×
+faster than the PyTorch predictor at f16, and 40–55 % of the cost of the ViT-L encoder pass on the
+same clip (24 layers of 1024 dims over 2048 rows: 827 ms at f16). The cosines are deterministic; the
+ms are the lower of two identical runs on an **idle** box (the two runs agree to within 1.3 %,
+against the 15–40 % spread the earlier shared-box measurement saw), and the *archery* rows carry the
+first-touch page-in of the run, which is why *bowling* is consistently faster at the same shape.
+`rel_max` at f16 (1.3–1.7e-3 on values reaching ±12) is weight rounding: the same run at f32 is
 exact to 4e-6. **Correction to an earlier draft of this table:** the bowling f16 row is the plain-f16
 measurement above; the 0.9999999 / 6.2e-04 that circulated for it was a `--kv-f32` run, not the default
 K/V policy.
@@ -200,14 +221,14 @@ default); `jepa_predict_mod(..., JEPA_MODALITY_IMAGE)` selects the image one for
 
 | ftype | modality | rows | cos mean | cos min | rel_max | ms t=32 |
 |---|---|---|---|---|---|---|
-| f32 | **image** | 576 | 1.0000000 | 1.0000000 | 7.6e-05 | 87 |
-| f16 | **image** | 576 | 0.9999955 | 0.9999434 | 7.7e-03 | 90 |
-| q8_0 | **image** | 576 | 0.9996050 | 0.9907839 | 8.3e-02 | 79 |
-| f32 | video (wrong vector) | 576 | 0.8624148 | 0.6550520 | 8.1e-01 | 101 |
-| f16 | video (wrong vector) | 576 | 0.8624867 | 0.6554096 | 8.1e-01 | 108 |
-| f16 | video, 4608-token clip (correct) | 4608 | 0.9999955 | 0.9999133 | 7.5e-03 | 1440 |
-| f32 | video, 4608-token clip archery | 4608 | 1.0000000 | 0.9999958 | 8.3e-04 | 1408 |
-| f32 | video, 4608-token clip bowling | 4608 | 1.0000000 | 0.9999944 | **1.07e-03** | 1712 |
+| f32 | **image** | 576 | 1.0000000 | 1.0000000 | 7.6e-05 | 84 |
+| f16 | **image** | 576 | 0.9999955 | 0.9999434 | 7.7e-03 | 91 |
+| q8_0 | **image** | 576 | 0.9996050 | 0.9907839 | 8.3e-02 | 77 |
+| f32 | video (wrong vector) | 576 | 0.8624148 | 0.6550520 | 8.1e-01 | 82 |
+| f16 | video (wrong vector) | 576 | 0.8624867 | 0.6554096 | 8.1e-01 | 89 |
+| f16 | video, 4608-token clip archery (correct) | 4608 | 0.9999955 | 0.9999133 | 7.5e-03 | 1498 |
+| f32 | video, 4608-token clip archery | 4608 | 1.0000000 | 0.9999958 | 8.3e-04 | 1409 |
+| f32 | video, 4608-token clip bowling | 4608 | 1.0000000 | 0.9999944 | **1.07e-03** | 1442 |
 
 i.e. the image path is exact at f32 once the right modality vector is used, and using the video vector
 on an image costs two digits of *mean* cosine and a third of the worst row — a silent error the video
@@ -244,17 +265,18 @@ the file it is given, so an f16 case judged against the f32 file only measures t
 
 | ftype | check | rows | cos mean | cos min | rel_max | ms t=32 | PyTorch t=32 |
 |---|---|---|---|---|---|---|---|
-| f32 | `pred_next` (T = 1) | 1 | 1.0000000 | 1.0000000 | 3.5e-07 | 0.62 | 3.64⁵ |
-| f32 | `pred_seq` (T = 3) | 3 | 1.0000000 | 1.0000000 | 3.5e-07 | 1.28 | 1.94⁵ |
-| f16 | `pred_next` (T = 1) | 1 | 0.9999999 | 0.9999999 | 3.4e-04 | 0.64 | 3.64⁵ |
-| f16 | `pred_seq` (T = 3) | 3 | 0.9999999 | 0.9999999 | 3.1e-04 | 1.26 | 1.94⁵ |
-| q8_0 | `pred_next` (T = 1) | 1 | 0.9999397 | 0.9999397 | 1.4e-02 | 0.63 | 3.64⁵ |
-| q8_0 | `pred_seq` (T = 3) | 3 | 0.9999573 | 0.9999397 | 9.6e-03 | 0.95 | 1.94⁵ |
+| f32 | `pred_next` (T = 1) | 1 | 1.0000000 | 1.0000000 | 3.5e-07 | 0.66 | 3.64⁵ |
+| f32 | `pred_seq` (T = 3) | 3 | 1.0000000 | 1.0000000 | 3.5e-07 | 1.23 | 1.94⁵ |
+| f16 | `pred_next` (T = 1) | 1 | 0.9999999 | 0.9999999 | 3.4e-04 | 0.65 | 3.64⁵ |
+| f16 | `pred_seq` (T = 3) | 3 | 0.9999999 | 0.9999999 | 3.1e-04 | 1.22 | 1.94⁵ |
+| q8_0 | `pred_next` (T = 1) | 1 | 0.9999397 | 0.9999397 | 1.4e-02 | 0.65 | 3.64⁵ |
+| q8_0 | `pred_seq` (T = 3) | 3 | 0.9999573 | 0.9999397 | 9.6e-03 | 0.99 | 1.94⁵ |
 
-(`ms` = the steady-state call; the first predictor call of a process costs 2.3–5.8 ms because the
-weights are paged in and the graph allocator sizes its buffer. LeWM is a 192-dim, 6-layer predictor
-over ≤ 3 rows — it is launch-bound, so f16/q8_0 buy nothing over f32 and PyTorch's 3.64 ms for T = 1 is
-mostly framework overhead as well.)
+(`ms` = the steady-state call — the second `pred_next` sample of the run, best of two runs; the
+*first* predictor call of a process costs 2.3–10.0 ms because the weights are paged in and the graph
+allocator sizes its buffer, and the T = 3 graph pays that once more because it is a different shape.
+LeWM is a 192-dim, 6-layer predictor over ≤ 3 rows — it is launch-bound, so f16/q8_0 buy nothing over
+f32 and PyTorch's 3.64 ms for T = 1 is mostly framework overhead as well.)
 
 plus, at every dtype, the structural checks: row *t* of the T = 3 run is bit-identical to the T = *t*+1
 prefix run (T ≥ 2 exactly; the T = 1 prefix is a different graph — one query row and no causal mask, so
@@ -267,9 +289,12 @@ tool-level twin (cosine 1.0000000 on `emb`, `emb_seq`, `pred_next`, `pred_seq` a
 
 ⁵ PyTorch predictor baselines (torch 2.13.0+cpu, 32 threads) measured in the predictor phase and not
 re-measured here: 2524 ms for the 2048-token V-JEPA 2 predictor call (34810 ms for the 8192-token
-64-frame one) and 3.64 / 1.94 ms for LeWM T = 1 / T = 3. All jepa.cpp ms in this section are single
-`ggml_backend_graph_compute` calls on the llamafile build at 32 threads, measured with a second agent
-active on the box.
+64-frame one) and 3.64 / 1.94 ms for LeWM T = 1 / T = 3. Every jepa.cpp ms in this section is a single
+`ggml_backend_graph_compute` call on the llamafile build at 32 threads, **re-measured on an idle box**
+as the lower of two identical `test-predictor` runs; the earlier values (415/335, 457/332, 395/295 for
+the ViT-L predictor; 87/90/79, 101/108, 1440/1408/1712 for 2.1; 0.62/1.28, 0.64/1.26, 0.63/0.95 for
+LeWM) were taken with a second agent active. The cosines and `rel_max` reproduced to the last printed
+digit in every one of the 20 rows, which is what one expects of load-independent numbers.
 
 ## Thresholds (per model family × file-type tier)
 
@@ -416,11 +441,15 @@ is what the `coco_*` reference samples use.
 ## Timing notes
 
 * ms/item is the wall time of `ggml_backend_graph_compute` per image/clip (graph build + alloc excluded;
-  they add < 1 ms even at 8192 tokens). PyTorch baseline = mean `timing_s.forward_s` from the manifest
-  (32 threads), with the caveats ² and ³ above for the video models.
+  `docs/benchmarks.md` measures that overhead — `wall_ms_mean − ms_mean` — at 0.3–0.8 ms for the
+  image models and 3–99 ms from 2048 to 18432 tokens, where it scales with the token count because it
+  is the host-side patchify and the output copy, not graph build).
+  PyTorch baseline = `timing_s.forward_s` from the manifest (32 threads), summarised with the
+  drop-first rule described under the image table, and with the caveats ² and ³ above for the video
+  models.
 * I-JEPA ViT-H/14 (with `GGML_LLAMAFILE=ON`): f32 185 ms, f16 156 ms, q8_0 139 ms at 32 threads and
-  f16 122 ms at 96 threads vs PyTorch 263 ms (32 t) — 1.7–2.2× faster than the PyTorch CPU baseline;
-  f16 halves the weight memory (1.2 GiB peak vs 2.4 GiB), q8_0 uses 671 MiB.
+  f16 122 ms at 96 threads vs PyTorch 249.8 ms (32 t, drop-first median) — 1.3–2.0× faster than the
+  PyTorch CPU baseline; f16 halves the weight memory (1.2 GiB peak vs 2.4 GiB), q8_0 uses 671 MiB.
 * V-JEPA 2 ViT-L, 64-frame clip (8192 tokens): 6.4 s at 32 threads, 4.1 s at 96, where the raw
   flash-attention cost alone is 24 × 158 ms ≈ 3.8 s (`docs/ggml-notes.md` §3) — attention dominates the
   long clips, matmuls the short ones (16-frame clip: 0.82 s, 2.5 k tokens/s).
