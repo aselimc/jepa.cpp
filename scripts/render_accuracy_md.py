@@ -112,6 +112,26 @@ def render(d: dict) -> str:
         A("")
         A(line)
     A("")
+
+    g = d.get("graph_time") or {}
+    if g:
+        one = next(iter(g.values()))
+        A(f"### Graph compute alone (`jepa-embed --time --repeat {one['repeat']}`, "
+          f"{one['n_images']} query images, {one['threads']} threads)\n")
+        A("| model | dtype | GGUF | ms / image (min–max) | median |")
+        A("|---|---|---|---|---|")
+        for k in sorted(g, key=lambda k: (morder.index(k.split("|")[0])
+                                          if k.split("|")[0] in morder else 99,
+                                          dorder.index(k.split("|")[1])
+                                          if k.split("|")[1] in dorder else 99)):
+            v = g[k]
+            m, dt = k.split("|")
+            A(f"| {m} | {dt} | `{v['gguf']}` | {v['ms_min']}–{v['ms_max']} | {v['ms_median']} |")
+        A("")
+        A("The same already-preprocessed image encoded twice per row, with the JPEG decode, the "
+          "preprocessing and the model load all outside the number — the throughput table above "
+          "contains all three, this table contains none of them.")
+        A("")
     return "\n".join(L)
 
 

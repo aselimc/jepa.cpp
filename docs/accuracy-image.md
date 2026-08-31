@@ -8,8 +8,10 @@ encoders are used exactly as shipped and the "classifier" is a similarity vote o
 
 Box: AMD Ryzen Threadripper PRO 7995WX (96 cores / 192 threads, AVX-512), gcc 13.3.0,
 ggml @ 36da5713, `-O3 -march=native`, `GGML_LLAMAFILE=ON`; torch 2.13.0+cpu / transformers 5.16.1,
-float32, no autocast. **32 threads everywhere, on a machine shared with a second agent**, so read the
-throughput column as indicative (see "Throughput"). Total sweep: 107 min of encoding, 112 min wall.
+float32, no autocast. **32 threads everywhere, on an otherwise idle box** — the PyTorch and jepa.cpp
+passes were alternated inside one sweep, and every pass records how much CPU time on the machine was
+*not* its own (see "Throughput"). Total sweep: 87 min wall, 86.7 of them inside the encoders — the
+splits, the graph-timing stage and the scoring together account for 25 s of it.
 
 Machine-readable copy of every number below: [`tests/results/accuracy-image.json`](../tests/results/accuracy-image.json);
 the split definition: [`tests/results/accuracy-image-splits.json`](../tests/results/accuracy-image-splits.json).
@@ -72,45 +74,45 @@ ImageNet mean/std) on PIL-decoded pixels. **jepa.cpp is given the JPEG file** an
 
 | backend | dtype | feature | gallery | kNN top-1 % | centroid top-1 % | agreement % | mean feat cos | worst feat cos | img/s |
 |---|---|---|---|---|---|---|---|---|---|
-| pytorch | f32 | mean | 2 000 (200/class) | 95.36 | 92.25 | — | 1 | 1 | 3.7 |
-| jepa.cpp | f16 | mean | 2 000 (200/class) | 95.31 | 92.25 | 99.82 | 0.999944 | 0.998962 | 5.3 |
+| pytorch | f32 | mean | 2 000 (200/class) | 95.36 | 92.25 | — | 1 | 1 | 5.5 |
+| jepa.cpp | f16 | mean | 2 000 (200/class) | 95.31 | 92.25 | 99.82 | 0.999944 | 0.998962 | 6.2 |
 | jepa.cpp | q8_0 | mean | 2 000 (200/class) | 95.31 | 92.31 | 99.75 | 0.999774 | 0.997379 | 7.0 |
-| jepa.cpp | q4_k | mean | 2 000 (200/class) | 95.08 | 92.25 | 99.11 | 0.995049 | 0.979088 | 4.0 |
+| jepa.cpp | q4_k | mean | 2 000 (200/class) | 95.08 | 92.25 | 99.11 | 0.995049 | 0.979088 | 4.7 |
 
 ### LeJEPA ViT-S/16 (`lejepa-vits16-pretrain-in1k`)
 
 | backend | dtype | feature | gallery | kNN top-1 % | centroid top-1 % | agreement % | mean feat cos | worst feat cos | img/s |
 |---|---|---|---|---|---|---|---|---|---|
-| pytorch | f32 | cls | 2 000 (200/class) | 92.84 | 87.36 | — | 1 | 1 | 70.4 |
-| jepa.cpp | f32 | cls | 2 000 (200/class) | 92.76 | 87.34 | 99.85 | 0.999983 | 0.999702 | 51.4 |
-| jepa.cpp | f16 | cls | 2 000 (200/class) | 92.76 | 87.36 | 99.85 | 0.999983 | 0.999700 | 49.4 |
-| jepa.cpp | q8_0 | cls | 2 000 (200/class) | 92.71 | 87.41 | 99.77 | 0.999843 | 0.991077 | 59.2 |
-| jepa.cpp | q4_k | cls | 2 000 (200/class) | 92.74 | 87.11 | 99.06 | 0.988725 | 0.885579 | 52.8 |
-| pytorch | f32 | cls | 9 469 (full train) | 94.45 | 87.59 | — | 1 | 1 | 70.4 |
-| jepa.cpp | f32 | cls | 9 469 (full train) | 94.52 | 87.64 | 99.85 | 0.999983 | 0.999702 | 51.4 |
-| jepa.cpp | f16 | cls | 9 469 (full train) | 94.55 | 87.64 | 99.82 | 0.999983 | 0.999700 | 49.4 |
-| jepa.cpp | q8_0 | cls | 9 469 (full train) | 94.50 | 87.64 | 99.87 | 0.999843 | 0.991077 | 59.2 |
-| jepa.cpp | q4_k | cls | 9 469 (full train) | 94.22 | 87.67 | 99.08 | 0.988725 | 0.885579 | 52.8 |
-| pytorch | f32 | mean | 2 000 (200/class) | 90.50 | 86.60 | — | 1 | 1 | 70.4 |
-| jepa.cpp | f32 | mean | 2 000 (200/class) | 90.55 | 86.57 | 99.77 | 0.999987 | 0.999784 | 51.4 |
-| jepa.cpp | f16 | mean | 2 000 (200/class) | 90.55 | 86.57 | 99.77 | 0.999987 | 0.999781 | 49.4 |
-| jepa.cpp | q8_0 | mean | 2 000 (200/class) | 90.52 | 86.75 | 99.44 | 0.999929 | 0.988898 | 59.2 |
-| jepa.cpp | q4_k | mean | 2 000 (200/class) | 90.27 | 86.62 | 97.38 | 0.993192 | 0.968564 | 52.8 |
-| pytorch | f32 | mean | 9 469 (full train) | 92.43 | 87.34 | — | 1 | 1 | 70.4 |
-| jepa.cpp | f32 | mean | 9 469 (full train) | 92.33 | 87.41 | 99.82 | 0.999987 | 0.999784 | 51.4 |
-| jepa.cpp | f16 | mean | 9 469 (full train) | 92.33 | 87.41 | 99.82 | 0.999987 | 0.999781 | 49.4 |
-| jepa.cpp | q8_0 | mean | 9 469 (full train) | 92.36 | 87.44 | 99.69 | 0.999929 | 0.988898 | 59.2 |
-| jepa.cpp | q4_k | mean | 9 469 (full train) | 92.41 | 87.18 | 97.89 | 0.993192 | 0.968564 | 52.8 |
+| pytorch | f32 | cls | 2 000 (200/class) | 92.84 | 87.36 | — | 1 | 1 | 89.1 |
+| jepa.cpp | f32 | cls | 2 000 (200/class) | 92.76 | 87.34 | 99.85 | 0.999983 | 0.999702 | 66.9 |
+| jepa.cpp | f16 | cls | 2 000 (200/class) | 92.76 | 87.36 | 99.85 | 0.999983 | 0.999700 | 67.3 |
+| jepa.cpp | q8_0 | cls | 2 000 (200/class) | 92.71 | 87.41 | 99.77 | 0.999843 | 0.991077 | 75.0 |
+| jepa.cpp | q4_k | cls | 2 000 (200/class) | 92.74 | 87.11 | 99.06 | 0.988725 | 0.885579 | 67.2 |
+| pytorch | f32 | cls | 9 469 (full train) | 94.45 | 87.59 | — | 1 | 1 | 89.1 |
+| jepa.cpp | f32 | cls | 9 469 (full train) | 94.52 | 87.64 | 99.85 | 0.999983 | 0.999702 | 66.9 |
+| jepa.cpp | f16 | cls | 9 469 (full train) | 94.55 | 87.64 | 99.82 | 0.999983 | 0.999700 | 67.3 |
+| jepa.cpp | q8_0 | cls | 9 469 (full train) | 94.50 | 87.64 | 99.87 | 0.999843 | 0.991077 | 75.0 |
+| jepa.cpp | q4_k | cls | 9 469 (full train) | 94.22 | 87.67 | 99.08 | 0.988725 | 0.885579 | 67.2 |
+| pytorch | f32 | mean | 2 000 (200/class) | 90.50 | 86.60 | — | 1 | 1 | 89.1 |
+| jepa.cpp | f32 | mean | 2 000 (200/class) | 90.55 | 86.57 | 99.77 | 0.999987 | 0.999784 | 66.9 |
+| jepa.cpp | f16 | mean | 2 000 (200/class) | 90.55 | 86.57 | 99.77 | 0.999987 | 0.999781 | 67.3 |
+| jepa.cpp | q8_0 | mean | 2 000 (200/class) | 90.52 | 86.75 | 99.44 | 0.999929 | 0.988898 | 75.0 |
+| jepa.cpp | q4_k | mean | 2 000 (200/class) | 90.27 | 86.62 | 97.38 | 0.993192 | 0.968564 | 67.2 |
+| pytorch | f32 | mean | 9 469 (full train) | 92.43 | 87.34 | — | 1 | 1 | 89.1 |
+| jepa.cpp | f32 | mean | 9 469 (full train) | 92.33 | 87.41 | 99.82 | 0.999987 | 0.999784 | 66.9 |
+| jepa.cpp | f16 | mean | 9 469 (full train) | 92.33 | 87.41 | 99.82 | 0.999987 | 0.999781 | 67.3 |
+| jepa.cpp | q8_0 | mean | 9 469 (full train) | 92.36 | 87.44 | 99.69 | 0.999929 | 0.988898 | 75.0 |
+| jepa.cpp | q4_k | mean | 9 469 (full train) | 92.41 | 87.18 | 97.89 | 0.993192 | 0.968564 | 67.2 |
 
 ### LeWorldModel encoder (`lewm-pusht`) — feature = `emb` = enc.proj(CLS), sanity row
 
 | backend | dtype | feature | gallery | kNN top-1 % | centroid top-1 % | agreement % | mean feat cos | worst feat cos | img/s |
 |---|---|---|---|---|---|---|---|---|---|
-| pytorch | f32 | emb | 2 000 (200/class) | 27.00 | 24.10 | — | 1 | 1 | 139.5 |
-| jepa.cpp | f32 | emb | 2 000 (200/class) | 26.70 | 24.00 | 97.40 | 0.999994 | 0.999916 | 77.9 |
-| jepa.cpp | f16 | emb | 2 000 (200/class) | 26.60 | 24.00 | 97.40 | 0.999994 | 0.999916 | 76.4 |
-| jepa.cpp | q8_0 | emb | 2 000 (200/class) | 26.70 | 24.00 | 94.40 | 0.999929 | 0.999692 | 79.9 |
-| jepa.cpp | q4_k | emb | 2 000 (200/class) | 28.20 | 24.60 | 83.40 | 0.994496 | 0.980771 | 70.1 |
+| pytorch | f32 | emb | 2 000 (200/class) | 27.00 | 24.10 | — | 1 | 1 | 189.7 |
+| jepa.cpp | f32 | emb | 2 000 (200/class) | 26.70 | 24.00 | 97.40 | 0.999994 | 0.999916 | 95.3 |
+| jepa.cpp | f16 | emb | 2 000 (200/class) | 26.60 | 24.00 | 97.40 | 0.999994 | 0.999916 | 95.2 |
+| jepa.cpp | q8_0 | emb | 2 000 (200/class) | 26.70 | 24.00 | 94.40 | 0.999929 | 0.999692 | 101.0 |
+| jepa.cpp | q4_k | emb | 2 000 (200/class) | 28.20 | 24.60 | 83.40 | 0.994496 | 0.980771 | 85.2 |
 
 ### Where the predictions differ (largest gallery of each model)
 
@@ -136,34 +138,54 @@ ImageNet mean/std) on PIL-decoded pixels. **jepa.cpp is given the JPEG file** an
 
 | backend | model | dtype | split | images | wall s | img/s |
 |---|---|---|---|---|---|---|
-| PyTorch, batch 32 | ijepa-vith14-1k | f32 | train2000 | 2000 | 514.5 | 3.89 |
-| PyTorch, batch 32 | ijepa-vith14-1k | f32 | val | 3925 | 1055.1 | 3.72 |
-| jepa-embed, 1 img/call | ijepa-vith14-1k | f16 | train2000 | 2000 | 390.1 | 5.13 |
-| jepa-embed, 1 img/call | ijepa-vith14-1k | f16 | val | 3925 | 740.8 | 5.30 |
-| jepa-embed, 1 img/call | ijepa-vith14-1k | q8_0 | train2000 | 2000 | 334.8 | 5.97 |
-| jepa-embed, 1 img/call | ijepa-vith14-1k | q8_0 | val | 3925 | 559.9 | 7.01 |
-| jepa-embed, 1 img/call | ijepa-vith14-1k | q4_k | train2000 | 2000 | 446.1 | 4.48 |
-| jepa-embed, 1 img/call | ijepa-vith14-1k | q4_k | val | 3925 | 977.7 | 4.01 |
-| PyTorch, batch 32 | lejepa-vits16 | f32 | train_full | 9469 | 147.8 | 64.06 |
-| PyTorch, batch 32 | lejepa-vits16 | f32 | val | 3925 | 55.8 | 70.37 |
-| jepa-embed, 1 img/call | lejepa-vits16 | f32 | train_full | 9469 | 176.0 | 53.80 |
-| jepa-embed, 1 img/call | lejepa-vits16 | f32 | val | 3925 | 76.3 | 51.42 |
-| jepa-embed, 1 img/call | lejepa-vits16 | f16 | train_full | 9469 | 227.2 | 41.67 |
-| jepa-embed, 1 img/call | lejepa-vits16 | f16 | val | 3925 | 79.4 | 49.40 |
-| jepa-embed, 1 img/call | lejepa-vits16 | q8_0 | train_full | 9469 | 160.3 | 59.08 |
-| jepa-embed, 1 img/call | lejepa-vits16 | q8_0 | val | 3925 | 66.3 | 59.19 |
-| jepa-embed, 1 img/call | lejepa-vits16 | q4_k | train_full | 9469 | 178.9 | 52.94 |
-| jepa-embed, 1 img/call | lejepa-vits16 | q4_k | val | 3925 | 74.3 | 52.81 |
-| PyTorch, batch 32 | lewm-pusht | f32 | train2000 | 2000 | 12.6 | 158.47 |
-| PyTorch, batch 32 | lewm-pusht | f32 | val1000 | 1000 | 7.2 | 139.53 |
-| jepa-embed, 1 img/call | lewm-pusht | f32 | train2000 | 2000 | 25.5 | 78.33 |
-| jepa-embed, 1 img/call | lewm-pusht | f32 | val1000 | 1000 | 12.8 | 77.87 |
-| jepa-embed, 1 img/call | lewm-pusht | f16 | train2000 | 2000 | 26.2 | 76.31 |
-| jepa-embed, 1 img/call | lewm-pusht | f16 | val1000 | 1000 | 13.1 | 76.36 |
-| jepa-embed, 1 img/call | lewm-pusht | q8_0 | train2000 | 2000 | 24.9 | 80.20 |
-| jepa-embed, 1 img/call | lewm-pusht | q8_0 | val1000 | 1000 | 12.5 | 79.88 |
-| jepa-embed, 1 img/call | lewm-pusht | q4_k | train2000 | 2000 | 28.5 | 70.18 |
-| jepa-embed, 1 img/call | lewm-pusht | q4_k | val1000 | 1000 | 14.3 | 70.11 |
+| PyTorch, batch 32 | ijepa-vith14-1k | f32 | train2000 | 2000 | 363.1 | 5.51 |
+| PyTorch, batch 32 | ijepa-vith14-1k | f32 | val | 3925 | 719.5 | 5.45 |
+| jepa-embed, 1 img/call | ijepa-vith14-1k | f16 | train2000 | 2000 | 324.9 | 6.16 |
+| jepa-embed, 1 img/call | ijepa-vith14-1k | f16 | val | 3925 | 637.2 | 6.16 |
+| jepa-embed, 1 img/call | ijepa-vith14-1k | q8_0 | train2000 | 2000 | 282.4 | 7.08 |
+| jepa-embed, 1 img/call | ijepa-vith14-1k | q8_0 | val | 3925 | 557.4 | 7.04 |
+| jepa-embed, 1 img/call | ijepa-vith14-1k | q4_k | train2000 | 2000 | 419.5 | 4.77 |
+| jepa-embed, 1 img/call | ijepa-vith14-1k | q4_k | val | 3925 | 826.8 | 4.75 |
+| PyTorch, batch 32 | lejepa-vits16 | f32 | train_full | 9469 | 109.6 | 86.40 |
+| PyTorch, batch 32 | lejepa-vits16 | f32 | val | 3925 | 44.0 | 89.15 |
+| jepa-embed, 1 img/call | lejepa-vits16 | f32 | train_full | 9469 | 141.3 | 66.99 |
+| jepa-embed, 1 img/call | lejepa-vits16 | f32 | val | 3925 | 58.7 | 66.90 |
+| jepa-embed, 1 img/call | lejepa-vits16 | f16 | train_full | 9469 | 140.6 | 67.34 |
+| jepa-embed, 1 img/call | lejepa-vits16 | f16 | val | 3925 | 58.3 | 67.32 |
+| jepa-embed, 1 img/call | lejepa-vits16 | q8_0 | train_full | 9469 | 126.5 | 74.83 |
+| jepa-embed, 1 img/call | lejepa-vits16 | q8_0 | val | 3925 | 52.3 | 75.01 |
+| jepa-embed, 1 img/call | lejepa-vits16 | q4_k | train_full | 9469 | 141.0 | 67.15 |
+| jepa-embed, 1 img/call | lejepa-vits16 | q4_k | val | 3925 | 58.4 | 67.16 |
+| PyTorch, batch 32 | lewm-pusht | f32 | train2000 | 2000 | 9.7 | 206.16 |
+| PyTorch, batch 32 | lewm-pusht | f32 | val1000 | 1000 | 5.3 | 189.66 |
+| jepa-embed, 1 img/call | lewm-pusht | f32 | train2000 | 2000 | 21.0 | 95.33 |
+| jepa-embed, 1 img/call | lewm-pusht | f32 | val1000 | 1000 | 10.5 | 95.26 |
+| jepa-embed, 1 img/call | lewm-pusht | f16 | train2000 | 2000 | 21.0 | 95.36 |
+| jepa-embed, 1 img/call | lewm-pusht | f16 | val1000 | 1000 | 10.5 | 95.21 |
+| jepa-embed, 1 img/call | lewm-pusht | q8_0 | train2000 | 2000 | 20.1 | 99.67 |
+| jepa-embed, 1 img/call | lewm-pusht | q8_0 | val1000 | 1000 | 9.9 | 101.05 |
+| jepa-embed, 1 img/call | lewm-pusht | q4_k | train2000 | 2000 | 23.1 | 86.43 |
+| jepa-embed, 1 img/call | lewm-pusht | q4_k | val1000 | 1000 | 11.7 | 85.16 |
+
+Measured back-to-back in one sweep on an otherwise idle box: over the 28 timed passes above the machine spent 2673 CPU-minutes out of idle, 2651 of them this benchmark's own process trees, leaving 22.9 CPU-minutes — an average of 0.26 of one core out of 96 — for everything else on the machine (`occupancy` per row in the JSON: /proc/stat non-idle minus os.times() self+children).
+
+### Graph compute alone (`jepa-embed --time --repeat 2`, 8 query images, 32 threads)
+
+| model | dtype | GGUF | ms / image (min–max) | median |
+|---|---|---|---|---|
+| ijepa-vith14-1k | f16 | `ijepa_vith14_1k-f16.gguf` | 152.2–160.9 | 156.8 |
+| ijepa-vith14-1k | q8_0 | `ijepa_vith14_1k-q8_0.gguf` | 130.9–139.2 | 137.2 |
+| ijepa-vith14-1k | q4_k | `ijepa_vith14_1k-q4_k.gguf` | 202.9–208.4 | 205.9 |
+| lejepa-vits16 | f32 | `lejepa-vits16-pretrain-in1k-f32.gguf` | 13.0–16.0 | 13.1 |
+| lejepa-vits16 | f16 | `lejepa-vits16-pretrain-in1k-f16.gguf` | 12.6–15.7 | 12.8 |
+| lejepa-vits16 | q8_0 | `lejepa-vits16-pretrain-in1k-q8_0.gguf` | 11.2–13.6 | 11.3 |
+| lejepa-vits16 | q4_k | `lejepa-vits16-pretrain-in1k-q4_k.gguf` | 12.7–16.4 | 12.7 |
+| lewm-pusht | f32 | `lewm-pusht-f32.gguf` | 9.1–11.1 | 9.2 |
+| lewm-pusht | f16 | `lewm-pusht-f16.gguf` | 9.3–11.3 | 9.5 |
+| lewm-pusht | q8_0 | `lewm-pusht-q8_0.gguf` | 8.7–10.2 | 8.8 |
+| lewm-pusht | q4_k | `lewm-pusht-q4_k.gguf` | 10.2–11.7 | 10.3 |
+
+The same already-preprocessed image encoded twice per row, with the JPEG decode, the preprocessing and the model load all outside the number — the throughput table above contains all three, this table contains none of them.
 
 <!-- END generated -->
 
@@ -173,7 +195,15 @@ ImageNet mean/std) on PIL-decoded pixels. **jepa.cpp is given the JPEG file** an
 Imagenette with a 2 000-image gallery — comfortably the sanity bar for this dataset. Every jepa.cpp
 dtype of that model lands within **0.28 pp** of it, and f16 and q8_0 within **0.05 pp**. The same
 holds for LeJEPA ViT-S/16: 94.45 % PyTorch vs 94.22–94.55 % for jepa.cpp f32/f16/q8_0/q4_k on the
-full-train gallery. **The engine does not cost accuracy at any dtype we ship for images.**
+full-train gallery. Over those two models and both LeJEPA features — ten PyTorch/jepa.cpp
+comparisons in all — no jepa.cpp row is further than **0.28 pp** from its PyTorch row, and none
+further than **0.13 pp** at f32, f16 or q8_0. **For I-JEPA and LeJEPA the engine does not cost
+accuracy at any dtype we ship for images.**
+
+That claim is deliberately scoped to those two. The third model, LeWM, is a sanity row on a
+1 000-image query set where the encoder sits just above chance, and its top-1 wanders
+−0.4 / +1.2 pp across dtypes — the q4_k row is *1.2 pp better* than PyTorch, which is noise, not a
+result (see "LeWM is the sanity row" below).
 
 **Quantisation costs feature cosine, not decisions.** The pooled-feature cosines measured here on
 3 925 real images reproduce the numbers `docs/quantization.md` obtained on eight COCO images by
@@ -188,11 +218,24 @@ with no C++ kernel involved:
 | LeWM `emb` | 0.999961 | 0.999929 | 0.993206 | 0.994496 |
 
 Agreement to three or four decimals on every row: the eight-image quantisation study *predicts* the
-whole-dataset behaviour, and the C++ kernels add nothing measurable on top of the weight error. What
-that error buys in accuracy terms is essentially nothing: dropping LeJEPA's CLS cosine from 0.99984
-(q8_0) to 0.98873 (q4_k) costs 0.28 pp of kNN top-1 on the full gallery (94.50 → 94.22) and *gains*
-0.03 pp on the 2 000-image one (92.71 → 92.74). The reason is in the flips table: the 36 items that q4_k decides differently
-from PyTorch have a median NN margin of +0.027 against +0.136 for the query set as a whole — they
+whole-dataset behaviour. It does not predict it exactly, and the residual is worth reading, because
+it is where the input path shows up. Measured as distance from 1, the q8_0 rows sit **1.8× to 8.7×
+further from 1 than the weight-only prediction** — I-JEPA 2.26e-4 measured against 2.60e-5 predicted
+(8.7×), LeJEPA `cls` 1.57e-4 against 4.00e-5 (3.9×), LeJEPA `pooled_mean` 7.14e-5 against 2.70e-5
+(2.6×), LeWM `emb` 7.07e-5 against 3.90e-5 (1.8×) — while at q4_k, where the weight error is two
+orders of magnitude larger, measured and predicted agree to within 0.8–1.2×. That is the signature
+of a fixed floor that only becomes visible once the weight error is small enough: the JPEG decoder,
+which the f32 rows measure on its own at 1−cos = 6.3e-6 (LeWM) to 1.7e-5 (LeJEPA `cls`) with no
+quantisation involved at all (next section). So the honest statement is not "the C++ kernels add
+nothing measurable" — at q8_0 something does add roughly as much again as the weights do — but that
+what it adds is the decoder, is bounded by the f32 rows, and is two orders of magnitude below the
+q4_k weight error.
+
+What the weight error buys in accuracy terms is essentially nothing: dropping LeJEPA's CLS cosine
+from 0.99984 (q8_0) to 0.98873 (q4_k) costs 0.28 pp of kNN top-1 on the full gallery
+(94.50 → 94.22) and *gains* 0.03 pp on the 2 000-image one (92.71 → 92.74). The reason is in the
+flips table: the 36 items that q4_k decides differently from PyTorch have a median NN margin of
++0.027 against +0.136 for the query set as a whole — they
 are the items where the two top classes were already tied, and the flips split roughly evenly
 between "PyTorch was right" and "jepa.cpp was right" (20 vs 11 there, 34 vs 33 for LeJEPA `mean`
 q4_k, 17 vs 6 for I-JEPA q4_k). A k-NN decision is a rank comparison; a 1 % cosine perturbation only
@@ -218,13 +261,14 @@ bit-exact agreement.)
 
 **Gallery size matters more than dtype.** Going from 2 000 to 9 469 gallery images buys LeJEPA
 +1.6 pp on the CLS feature (92.84 → 94.45 PyTorch) and +1.9 pp on the mean feature — an order of
-magnitude more than the 0.0–0.28 pp spread across *all four* dtypes. The nearest-centroid number
+magnitude more than the 0.03–0.23 pp spread across *all four* dtypes. The nearest-centroid number
 barely moves (87.36 → 87.59) because a class mean over 200 images is already converged; the k-NN
 number keeps improving because more neighbours means a better local decision boundary. If accuracy
 matters, spend the budget on gallery coverage, not on file precision.
 
-**CLS beats mean-pooling for LeJEPA** by 2.1–2.3 pp on k-NN (94.45 vs 92.43), which is expected for a
-model trained with a CLS-level objective — and the two features are affected differently by
+**CLS beats mean-pooling for LeJEPA** by 2.0–2.3 pp on k-NN (94.45 vs 92.43 on the full-train
+gallery, 92.84 vs 90.50 on the 2 000-image one), which is expected for a model trained with a
+CLS-level objective — and the two features are affected differently by
 quantisation (q4_k agreement 99.08 % on CLS, 97.89 % on mean), because the patch-mean features are
 more tightly clustered and sit closer to the class boundary (median NN margin +0.048 against +0.136
 for CLS), so the same perturbation crosses more of them.
@@ -234,9 +278,8 @@ synthetic 224×224 renders of a planar pushing task; on Imagenette it manages 27
 a 10 % chance floor — above chance (the features are not noise) and far below a general-purpose image
 encoder, exactly as it should be. Its median NN margin is +0.012, i.e. almost every query item is a
 near-tie, which is why its agreement column is the most sensitive in the table (97.4 % at f32,
-83.4 % at q4_k) while its accuracy wanders by −0.4 / +1.2 pp. Do not read the LeWM
-agreement number as a jepa.cpp defect: its feature cosine is 0.999994 at f32/f16, the best in the
-whole table.
+83.4 % at q4_k) while its accuracy wanders by −0.4 / +1.2 pp. Do not read the LeWM agreement number
+as a jepa.cpp defect: its feature cosine is 0.999994 at f32/f16, the best in the whole table.
 
 ## Throughput
 
@@ -246,26 +289,48 @@ Two different shapes are compared and the asymmetry is deliberate:
 * **jepa-embed** encodes **one image per call** — the tool's normal mode — inside a process that is
   handed a chunk of 512 images and reloads the GGUF once per chunk; that load *is* in the number.
 
-Even so jepa.cpp is faster on the big model (I-JEPA ViT-H: 5.3–7.0 img/s vs PyTorch's 3.7, i.e.
-1.4–1.9×) and slower on the two small ones (LeJEPA 49–59 vs 70 img/s, LeWM 70–80 vs 140–158), where
-per-image fixed cost and PyTorch's batching dominate. The right conclusion is the one
-`docs/parity.md` already draws: jepa.cpp wins where the matmuls dominate and loses where launch
-overhead does; batching support would close the small-model gap.
+On the idle box the picture is much narrower than an earlier, contended version of this page
+claimed. On the big model jepa.cpp is ahead at q8_0 and f16 and **behind** at q4_k:
 
-Because the box was shared with a second 32-thread agent throughout, the wall times carry an unknown
-amount of contention — the LeJEPA f16 train pass (41.7 img/s) is visibly slower than the same work at
-f32 (53.8) and q8_0 (59.1), which is contention, not a property of f16. One relationship *was*
-re-measured in isolation, on 8 images × 2 repeats with `jepa-embed --time`, and is real:
+| I-JEPA ViT-H/14, end to end | PyTorch batch 32 | jepa.cpp f16 | jepa.cpp q8_0 | jepa.cpp q4_k |
+|---|---|---|---|---|
+| img/s (train2000 / val) | 5.51 / 5.45 | 6.16 / 6.16 | 7.08 / 7.04 | 4.77 / 4.75 |
+| vs PyTorch | 1× | 1.12× | 1.29× | 0.87× |
+
+On the two small models PyTorch wins outright: LeJEPA 67–75 img/s against 86–89 (0.75–0.86×) and
+LeWM 85–101 against 190–206 (0.41–0.53×), where per-image fixed cost and PyTorch's batching
+dominate. So the range across everything measured here is **4.8–7.1 img/s for I-JEPA** against
+PyTorch's 5.5, and the right conclusion is the one `docs/parity.md` already draws, only with a
+smaller margin than before: jepa.cpp is competitive where the matmuls dominate and loses where
+launch overhead does; batching support would close the small-model gap.
+
+The load conditions are measured, not asserted. Across the 28 timed passes the machine spent
+2 673 CPU-minutes out of idle and this benchmark's own process trees account for 2 651 of them,
+leaving 22.9 CPU-minutes — 0.26 of one core out of 96 — for everything else. (`uptime`'s load
+average cannot establish that: a back-to-back sweep of 32-thread passes pins it near 32 however idle
+the machine is. The per-pass `occupancy` block in the JSON subtracts `os.times()` self+children from
+`/proc/stat`'s non-idle time, which does establish it.) The previous version of this table was taken
+while a second 32-thread agent shared the box, which cost PyTorch I-JEPA 5.5 → 3.7 img/s and made
+LeJEPA f16 (41.7 img/s) look slower than the same work at f32 (53.8) — at 67.3 vs 67.0 img/s here,
+that gap was contention and nothing else.
+
+**The dtype comparison needs the graph-compute table, not these numbers.** End to end, JPEG decode,
+preprocessing and one GGUF load per 512-image chunk are all inside the img/s figure. Held out
+(`jepa-embed --time --repeat 2`, above):
 
 | I-JEPA ViT-H/14, graph compute | f16 | q8_0 | q4_k |
 |---|---|---|---|
-| ms / image, 32 threads | 185–188 | 165–172 | 239–243 |
+| ms / image, 32 threads (median) | 156.8 | 137.2 | 205.9 |
+| relative to f16 | 1.00× | 0.87× | **1.31×** |
 
 **q4_k is the slowest of the three** despite being the smallest file (344 MiB vs 644 q8_0 vs 1206
 f16). That is consistent with `docs/ggml-notes.md` §"llamafile": the accelerated sgemm paths measured
-there cover F32/F16/Q8_0, and the K-quants fall back to ggml's generic vec-dot. So q4_k on images is
-a **memory** win (3.5× smaller than f16), not a speed win — pick it when the model has to fit, q8_0
-when it has to be fast.
+there cover F32/F16/Q8_0, and the K-quants fall back to ggml's generic vec-dot. So q4_k on this model
+is a **memory** win (3.5× smaller than f16), not a speed win — pick it when the model has to fit,
+q8_0 when it has to be fast. The penalty is a property of the wide ViT-H matmuls, not of q4_k as
+such: on LeJEPA ViT-S/16 and LeWM ViT-Ti/14 the same table puts q4_k at 0.99× and 1.08× of f16, i.e.
+inside the noise, because those graphs are small enough that the vec-dot path is not what the clock
+is spent on.
 
 ## Reproduce
 
@@ -273,23 +338,35 @@ when it has to be fast.
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j 32 --target jepa-embed
 
-# everything: splits -> PyTorch features -> jepa.cpp features (all dtypes) -> scoring
+# everything: splits -> PyTorch features -> jepa.cpp features (all dtypes) -> graph timing -> scoring
 .venv/bin/python scripts/bench_accuracy_image.py --stage all --threads 32
 
 # or one stage / one model / one dtype at a time (features are cached under tmp/feat/, so a
 # re-run only does the missing work)
 .venv/bin/python scripts/bench_accuracy_image.py --stage torch --models ijepa-vith14-1k
 .venv/bin/python scripts/bench_accuracy_image.py --stage cpp   --models ijepa-vith14-1k --dtypes q4_k
+.venv/bin/python scripts/bench_accuracy_image.py --stage graphtime     # the graph-compute table
 .venv/bin/python scripts/bench_accuracy_image.py --stage eval          # re-score cached features
-.venv/bin/python scripts/bench_accuracy_image.py --stage all --limit 60 --dtypes f16   # 1-minute smoke test
 
-# the tables on this page
-.venv/bin/python scripts/render_accuracy_md.py
+# 1-minute smoke test.  --limit refuses to write the default --out, and caches its features under
+# their own <split>-limit60 names, so it cannot be mistaken for or mixed into a full run.
+.venv/bin/python scripts/bench_accuracy_image.py --stage all --limit 60 --dtypes f16 \
+                                                 --out tmp/smoke.json
+
+# the tables on this page, straight into it (between the BEGIN/END markers under "Results")
+.venv/bin/python scripts/render_accuracy_md.py --write docs/accuracy-image.md
 
 # the protocol on its own, for any two feature files
 .venv/bin/python scripts/knn_eval.py --gallery g.npy --gallery-labels gl.json \
                                      --query q.npy --query-labels ql.json --ref-query torch_q.npy
 ```
+
+The throughput numbers are only meaningful on an unloaded machine, so every timed pass records what
+else the box was doing: the 1/5/15-minute load average, and an `occupancy` block holding the
+CPU-seconds the whole machine spent out of idle (`/proc/stat`) against the CPU-seconds this process
+tree spent (`os.times()`).  Load average alone cannot tell "my own 32 threads" from a second
+32-thread job; the leftover foreign CPU time can.  Check `foreign_cores` in
+`tests/results/accuracy-image.json` before believing any img/s number, including the ones here.
 
 The features themselves are one `jepa-embed` call per chunk, e.g.
 
@@ -303,8 +380,9 @@ asks for `--pool none` (all 197 tokens) and reduces them in `bench_accuracy_imag
 two features. A `--pool cls,mean` (or a multi-output mode) would save the 197×-larger intermediate
 `.npy`, which is the only thing missing from the tool for this benchmark.
 
-Wall times on the box above, 32 threads, shared: PyTorch features 30 min (I-JEPA 26 of them),
-jepa.cpp features 77 min (I-JEPA 57), scoring ~2 min.
+Wall times on the box above, 32 threads, idle, one pass at a time: PyTorch features 21 min (I-JEPA
+18 of them), jepa.cpp features 66 min (I-JEPA 51), the graph-compute stage 11 s, scoring ~1 min —
+87 min for the whole sweep.
 
 ## Not measured
 

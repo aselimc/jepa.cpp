@@ -4,7 +4,7 @@
 Inference only.  Nothing is trained: the encoders are frozen, the "classifier" is a k-NN /
 nearest-centroid vote over gallery features (scripts/knn_eval.py).
 
-    scripts/bench_accuracy_image.py --stage all            # splits -> torch -> cpp -> eval
+    scripts/bench_accuracy_image.py --stage all            # splits -> torch -> cpp -> graphtime -> eval
     scripts/bench_accuracy_image.py --stage cpp   --models ijepa-vith14-1k --dtypes q4_k
     scripts/bench_accuracy_image.py --stage eval                        # re-score cached features
     scripts/bench_accuracy_image.py --stage all --limit 60 --dtypes f16 --out tmp/smoke.json
@@ -22,6 +22,9 @@ Stages
           tests/fixtures/README.md)          -> tmp/feat/<model>/torch.f32.<split>.<feat>.npy
   cpp     build/jepa-embed straight from the JPEG (its own decoder + preprocessor), one GGUF dtype
           per pass                            -> tmp/feat/<model>/cpp.<dtype>.<split>.<feat>.npy
+  graphtime  `jepa-embed --time --repeat 2` on the first few query images: encoder graph compute
+          per image with decode / preprocess / model load held out, the number that answers "is
+          q4_k faster than q8_0"                -> tests/results/accuracy-image.json "graph_time"
   eval    k-NN + centroid + agreement + feature cosine -> tests/results/accuracy-image.json
 
 Feature per model (its own convention):
@@ -41,6 +44,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -344,6 +348,45 @@ def run_cpp(name: str, dtype: str, paths: list[str], out_prefix: Path, root: Pat
 
 
 # --------------------------------------------------------------------------------------------------
+# graph-compute timing (the dtype comparison with everything else held out)
+# --------------------------------------------------------------------------------------------------
+GRAPH_RE = re.compile(r"graph compute ([0-9.]+) ms")
+
+
+def run_graph_time(name: str, dtype: str, paths: list[str], root: Path, gguf_dir: Path,
+                   threads: int, repeat: int) -> dict:
+    """`jepa-embed --time --repeat N` over a handful of images: encoder graph compute only.
+
+    The end-to-end img/s of the throughput table is dominated by JPEG decode, preprocessing and one
+    GGUF load per 512-image chunk, which is the right number for "what does the tool cost me" and
+    the wrong one for "is q4_k faster than q8_0".  This is the second number: `--time` reports
+    ggml's own compute time for each encode, `--repeat` averages it over N passes of the same
+    already-preprocessed input, and nothing else is in it."""
+    cfg = MODELS[name]
+    gguf = gguf_dir / cfg["gguf"].format(dtype=dtype)
+    if not gguf.exists():
+        raise SystemExit(f"missing {gguf}")
+    cmd = [str(root / "build" / "jepa-embed"), "-m", str(gguf)]
+    for q in paths:
+        cmd += ["-i", q]
+    cmd += ["--pool", cfg["pool"], "-t", str(threads), "--time", "--repeat", str(repeat),
+            "--print-n", "0"]
+    la0, occ = loadavg(), Occupancy()
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit(f"jepa-embed failed ({r.returncode}):\n{r.stderr[-2000:]}")
+    ms = [float(x) for x in GRAPH_RE.findall(r.stderr)]
+    if len(ms) != len(paths):
+        raise SystemExit(f"expected {len(paths)} timings, parsed {len(ms)} from jepa-embed --time")
+    return {"gguf": gguf.name, "n_images": len(ms), "repeat": repeat, "threads": threads,
+            "ms_per_image": [round(v, 1) for v in ms],
+            "ms_min": round(min(ms), 1), "ms_max": round(max(ms), 1),
+            "ms_median": round(float(np.median(ms)), 1),
+            "images": [Path(q).name for q in paths],
+            "loadavg_start": la0, "loadavg_end": loadavg(), "occupancy": occ.close()}
+
+
+# --------------------------------------------------------------------------------------------------
 # driver
 # --------------------------------------------------------------------------------------------------
 def feat_prefix(root: Path, model: str, backend: str, dtype: str, split: str, limit: int = 0) -> Path:
@@ -380,7 +423,12 @@ def main() -> None:
     ap.add_argument("--data", type=Path, default=SHARED / "data/imagenette/imagenette2-160")
     ap.add_argument("--models-dir", type=Path, default=SHARED / "models")
     ap.add_argument("--gguf-dir", type=Path, default=SHARED / "models/gguf")
-    ap.add_argument("--stage", default="all", choices=["splits", "torch", "cpp", "eval", "all"])
+    ap.add_argument("--stage", default="all",
+                    choices=["splits", "torch", "cpp", "graphtime", "eval", "all"])
+    ap.add_argument("--graph-images", type=int, default=8,
+                    help="graphtime stage: how many query images to time (default 8)")
+    ap.add_argument("--graph-repeat", type=int, default=2,
+                    help="graphtime stage: encodes per image, averaged by jepa-embed (default 2)")
     ap.add_argument("--models", default=",".join(MODELS))
     ap.add_argument("--dtypes", default="", help="restrict the cpp dtypes (comma separated)")
     ap.add_argument("--threads", type=int, default=32)
@@ -404,6 +452,8 @@ def main() -> None:
     split_dir.mkdir(parents=True, exist_ok=True)
     timing_path = root / "tmp" / ("timing.json" if not a.limit else f"timing-limit{a.limit}.json")
     timing = json.loads(timing_path.read_text()) if timing_path.exists() else {}
+    graph_path = root / "tmp" / ("graphtime.json" if not a.limit else f"graphtime-limit{a.limit}.json")
+    graph = json.loads(graph_path.read_text()) if graph_path.exists() else {}
 
     # ---- splits
     built = build_splits(a.data, a.seed, a.per_class, a.val_per_class)
@@ -420,7 +470,10 @@ def main() -> None:
         compact["note"] = (f"SMOKE RUN: every split truncated to at most {a.limit} images; the "
                            "recipe and indices above describe the full splits, not these.")
     if a.stage in ("splits", "all"):
-        (split_dir / "resolved.json").write_text(json.dumps(splits))
+        # a smoke run writes its truncated lists under their own name: tmp/splits/resolved.json is
+        # the full sweep's record and must not be silently replaced by 60-image lists
+        (split_dir / ("resolved.json" if not a.limit
+                      else f"resolved-limit{a.limit}.json")).write_text(json.dumps(splits))
         out_json.parent.mkdir(parents=True, exist_ok=True)
         (out_json.parent / "accuracy-image-splits.json").write_text(json.dumps(compact, indent=1))
         print(json.dumps({k: len(v["paths"]) for k, v in splits.items()}, indent=2))
@@ -465,6 +518,20 @@ def main() -> None:
                     timing[f"cpp|{m}|{dt}|{sp}"] = t
                     timing_path.write_text(json.dumps(timing, indent=1))
                     print(f"cpp {m} {dt} {sp}: {t['wall_s']:.1f} s, {t['img_per_s']:.2f} img/s", flush=True)
+
+    # ---- graphtime
+    if a.stage in ("graphtime", "all"):
+        for m in models:
+            cfg = MODELS[m]
+            dts = [d for d in cfg["dtypes"] if not a.dtypes or d in a.dtypes.split(",")]
+            imgs = splits[cfg["query"]]["paths"][:a.graph_images]
+            for dt in dts:
+                t = run_graph_time(m, dt, imgs, root, a.gguf_dir, a.threads, a.graph_repeat)
+                graph[f"{m}|{dt}"] = t
+                graph_path.write_text(json.dumps(graph, indent=1))
+                print(f"graph {m} {dt}: {t['ms_min']}–{t['ms_max']} ms/image "
+                      f"(median {t['ms_median']}, {t['n_images']} images x {t['repeat']} repeats)",
+                      flush=True)
 
     # ---- eval
     if a.stage in ("eval", "all"):
@@ -534,7 +601,7 @@ def main() -> None:
                          "flip_*": "of the items whose prediction differs from PyTorch's, how many PyTorch got right, "
                                    "how many jepa.cpp got right, and how many both got wrong"},
             "dataset": compact, "threads": a.threads, "limit": a.limit,
-            "timing": timing, "rows": rows,
+            "timing": timing, "graph_time": graph, "rows": rows,
         }
         out_json.parent.mkdir(parents=True, exist_ok=True)
         out_json.write_text(json.dumps(result, indent=1))
