@@ -84,6 +84,27 @@ def centroid_predict(gallery: np.ndarray, gallery_labels: np.ndarray, query: np.
     return (q @ cent.T).argmax(1).astype(np.int64)
 
 
+def nn_margin(gallery: np.ndarray, gallery_labels, query: np.ndarray, n_classes: int,
+              chunk: int = 1024) -> np.ndarray:
+    """How decided a query item is, independent of any backend: the cosine to its best gallery
+    neighbour minus the cosine to the best neighbour of any *other* class.  Near zero = the two
+    classes are tied at the top and a tiny feature perturbation can flip the vote."""
+    g = l2norm(gallery)
+    q = l2norm(query)
+    gl = np.asarray(gallery_labels, dtype=np.int64)
+    out = np.empty(q.shape[0], dtype=np.float64)
+    for s in range(0, q.shape[0], chunk):
+        sims = q[s:s + chunk] @ g.T
+        per_class = np.full((sims.shape[0], n_classes), -2.0, dtype=np.float64)
+        for c in range(n_classes):
+            m = gl == c
+            if m.any():
+                per_class[:, c] = sims[:, m].max(1)
+        srt = np.sort(per_class, axis=1)
+        out[s:s + chunk] = srt[:, -1] - srt[:, -2]
+    return out
+
+
 def pairwise_cosine(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Row-wise cosine between two equally-shaped feature matrices."""
     a = np.asarray(a, dtype=np.float64)
@@ -95,7 +116,8 @@ def pairwise_cosine(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 def evaluate(gallery: np.ndarray, gallery_labels, query: np.ndarray, query_labels,
              n_classes: int, k: int = DEFAULT_K, temp: float = DEFAULT_TEMP,
-             ref_query: np.ndarray | None = None, ref_preds=None) -> dict:
+             ref_query: np.ndarray | None = None, ref_preds=None,
+             margin: np.ndarray | None = None) -> dict:
     """Full protocol for one (backend, dtype, feature) run.  Returns a JSON-ready dict."""
     ql = np.asarray(query_labels, dtype=np.int64)
     preds = knn_predict(gallery, gallery_labels, query, n_classes, k, temp)
@@ -115,7 +137,16 @@ def evaluate(gallery: np.ndarray, gallery_labels, query: np.ndarray, query_label
         res["feat_cos_min"] = float(cos.min())
     if ref_preds is not None:
         rp = np.asarray(ref_preds, dtype=np.int64)
+        flip = preds != rp
         res["agreement"] = float((preds == rp).mean())
+        res["n_flipped"] = int(flip.sum())
+        res["flip_ref_right"] = int((rp[flip] == ql[flip]).sum())
+        res["flip_this_right"] = int((preds[flip] == ql[flip]).sum())
+        res["flip_both_wrong"] = res["n_flipped"] - res["flip_ref_right"] - res["flip_this_right"]
+        if margin is not None and flip.any():
+            res["margin_flipped_median"] = float(np.median(np.asarray(margin)[flip]))
+    if margin is not None:
+        res["margin_all_median"] = float(np.median(np.asarray(margin)))
     return res
 
 

@@ -384,7 +384,7 @@ def main() -> None:
     # ---- eval
     if a.stage in ("eval", "all"):
         sys.path.insert(0, str(HERE.parent))
-        from knn_eval import evaluate
+        from knn_eval import evaluate, nn_margin
 
         # index of the train2000 rows inside train_full (so one encode pass serves both galleries)
         full_idx = {p: i for i, p in enumerate(splits["train_full"]["paths"])}
@@ -406,12 +406,16 @@ def main() -> None:
                 ref_q = np.load(feat_path(root, m, "torch", "f32", q_split, feat))
                 for gal in cfg["galleries"]:
                     gl = np.asarray(splits[gal]["labels"])
-                    ref = evaluate(load(m, "torch", "f32", gal, feat), gl, ref_q, ql, 10, a.k, a.temp)
+                    ref_g = load(m, "torch", "f32", gal, feat)
+                    # how decided each query item is under the reference backend (see knn_eval)
+                    margin = nn_margin(ref_g, gl, ref_q, 10)
+                    ref = evaluate(ref_g, gl, ref_q, ql, 10, a.k, a.temp, margin=margin)
                     ref_preds = ref["knn_preds"]
                     rows.append(dict(model=m, backend="pytorch", dtype="f32", feature=feat,
                                      gallery=gal, n_gallery=ref["n_gallery"], n_query=ref["n_query"],
                                      knn_top1=ref["knn_top1"], centroid_top1=ref["centroid_top1"],
                                      agreement=1.0, feat_cos_mean=1.0, feat_cos_min=1.0,
+                                     margin_all_median=ref["margin_all_median"],
                                      img_per_s=timing.get(f"torch|{m}|f32|{q_split}", {}).get("img_per_s")))
                     for dt in cfg["dtypes"]:
                         qp = feat_path(root, m, "cpp", dt, q_split, feat)
@@ -420,12 +424,17 @@ def main() -> None:
                             continue
                         q = np.load(qp)
                         r = evaluate(load(m, "cpp", dt, gal, feat), gl, q, ql, 10, a.k, a.temp,
-                                     ref_query=ref_q, ref_preds=ref_preds)
+                                     ref_query=ref_q, ref_preds=ref_preds, margin=margin)
                         rows.append(dict(model=m, backend="jepa.cpp", dtype=dt, feature=feat,
                                          gallery=gal, n_gallery=r["n_gallery"], n_query=r["n_query"],
                                          knn_top1=r["knn_top1"], centroid_top1=r["centroid_top1"],
                                          agreement=r["agreement"], feat_cos_mean=r["feat_cos_mean"],
                                          feat_cos_min=r["feat_cos_min"],
+                                         n_flipped=r["n_flipped"], flip_pytorch_right=r["flip_ref_right"],
+                                         flip_jepacpp_right=r["flip_this_right"],
+                                         flip_both_wrong=r["flip_both_wrong"],
+                                         margin_flipped_median=r.get("margin_flipped_median"),
+                                         margin_all_median=r["margin_all_median"],
                                          img_per_s=timing.get(f"cpp|{m}|{dt}|{q_split}", {}).get("img_per_s")))
         result = {
             "task": "image k-NN accuracy on Imagenette (frozen features, no training)",
@@ -433,7 +442,12 @@ def main() -> None:
                          "vote": "DINO weighted vote, weight = exp(sim/temp)",
                          "centroid": "nearest L2-normalised class-mean of the L2-normalised gallery features",
                          "agreement": "fraction of query items whose kNN prediction equals PyTorch's",
-                         "feat_cos": "mean / worst per-item cosine between the jepa.cpp and PyTorch query features"},
+                         "feat_cos": "mean / worst per-item cosine between the jepa.cpp and PyTorch query features",
+                         "margin": "cosine to the best gallery neighbour minus the cosine to the best neighbour of "
+                                   "any other class, computed on the PyTorch features; near 0 = the top two classes "
+                                   "are tied and a tiny feature perturbation flips the vote",
+                         "flip_*": "of the items whose prediction differs from PyTorch's, how many PyTorch got right, "
+                                   "how many jepa.cpp got right, and how many both got wrong"},
             "dataset": compact, "threads": a.threads,
             "timing": timing, "rows": rows,
         }

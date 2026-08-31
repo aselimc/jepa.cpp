@@ -44,6 +44,21 @@ def main():
                   f"{pct(r['knn_top1'])} | {pct(r['centroid_top1'])} | {agr} | {cos} | {wcos} | {ips} |")
         print()
 
+    print("### Where the predictions differ (largest gallery of each model)\n")
+    print("| model | feature | dtype | items flipped vs PyTorch | PyTorch right | jepa.cpp right | "
+          "both wrong | median NN margin of the flipped items | median NN margin, all items |")
+    print("|---|---|---|---|---|---|---|---|---|")
+    for m in dict.fromkeys(r["model"] for r in rows):
+        big = max(r["n_gallery"] for r in rows if r["model"] == m)
+        for r in rows:
+            if r["model"] != m or r["backend"] == "pytorch" or r["n_gallery"] != big:
+                continue
+            mf = r.get("margin_flipped_median")
+            print(f"| {m} | {r['feature']} | {r['dtype']} | {r['n_flipped']} / {r['n_query']} | "
+                  f"{r['flip_pytorch_right']} | {r['flip_jepacpp_right']} | {r['flip_both_wrong']} | "
+                  f"{'—' if mf is None else f'{mf:+.4f}'} | {r['margin_all_median']:+.4f} |")
+    print()
+
     print("### Throughput (32 threads, end-to-end: JPEG decode + preprocess + encode)\n")
     print("| backend | model | dtype | split | images | wall s | img/s |")
     print("|---|---|---|---|---|---|---|")
