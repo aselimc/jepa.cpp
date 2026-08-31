@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Download the reference checkpoints jepa.cpp converts from. Everything lands in ./models (git-ignored).
-# Resumable (curl -C -). Usage: scripts/download_models.sh [all|small|ijepa|vjepa2|vjepa2-ssv2|vjepa21|lewm|lejepa]
+# Resumable (curl -C -). Usage: scripts/download_models.sh [all|small|ijepa|vjepa2|vjepa2-ssv2|vjepa21|lewm|lejepa|levjepa]
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 M="$ROOT/models"
@@ -34,4 +34,6 @@ has vjepa2-ssv2 big && { echo "== V-JEPA 2 ViT-L SSv2 classifier (1.5 GB)"
   hf facebook/vjepa2-vitl-fpc16-256-ssv2 config.json video_preprocessor_config.json model.safetensors; }
 has ijepa big && { echo "== I-JEPA ViT-H/14 IN1k (2.5 GB)"
   hf facebook/ijepa_vith14_1k config.json preprocessor_config.json model.safetensors; }
+has levjepa big && { echo "== LeVJEPA ViT-L/16 VideoMix (1.2 GB; modeling_*.py is the PyTorch reference, trust_remote_code)"
+  hf galilai-group/LeVJEPA-VideoMix-Large config.json modeling_levjepa.py configuration_levjepa.py model.safetensors README.md; }
 echo "done."

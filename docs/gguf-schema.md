@@ -13,7 +13,7 @@ All agents (converter, loader, graph builder) implement exactly this. Change it 
 | `general.source_url` | str | HF repo or download URL |
 | `general.file_type` | u32 | ggml ftype (0 = f32, 1 = f16, 7 = q8_0, ...) |
 | `jepa.schema_version` | u32 | `1` |
-| `jepa.family` | str | `ijepa` · `vjepa` · `vjepa2` · `vjepa2_1` · `hfvit` (LeJEPA-style / LeWM encoder) · `lewm` |
+| `jepa.family` | str | `ijepa` · `vjepa` · `vjepa2` · `vjepa2_1` · `levjepa` · `hfvit` (LeJEPA-style / LeWM encoder) · `lewm` |
 | `jepa.modality` | str | `image` · `video` · `image+video` |
 
 ## Encoder (`jepa.enc.*`)
@@ -36,13 +36,14 @@ All agents (converter, loader, graph builder) implement exactly this. Change it 
 | `jepa.enc.rope_interpolate` | bool | V-JEPA 2.1 `interpolate_rope`. The "pretrained grid" it rescales h/w to is **not** `img_size / patch_size`: Meta hard-codes `256 / patch_size` (16 for patch 16, 18 for patch 14) — the loader derives `train_grid_h = train_grid_w = 256 / patch_size` = `jepa.enc.rope_ref_grid` (see `src/rope3d.h`). `family == vjepa2_1` also selects the interleaved cos/sin layout (`variant = 1`); `vjepa2` uses the tiled HF layout (`variant = 0`). |
 | `jepa.enc.rope_freq_layout` | str | `tiled` (V-JEPA 2: per-axis cos/sin table is `[f_0..f_{d/2-1}, f_0..f_{d/2-1}]`, the Meta/HF quirk) · `interleaved` (V-JEPA 2.1: `[f_0,f_0,f_1,f_1,...]`, textbook RoPE). See `scripts/jepa_convert/VJEPA_NOTES.md` |
 | `jepa.enc.rope_ref_grid` | u32 | V-JEPA 2.1 only: spatial RoPE positions are rescaled `h *= (ref_grid-1)/(gh-1)` (16 for patch 16) |
-| `jepa.enc.cls_token` | bool | true for `hfvit` (DINOv2-style), false for Meta JEPAs |
+| `jepa.enc.cls_token` | bool | true for `hfvit` (DINOv2-style) and `levjepa` (the only video family with one), false for Meta JEPAs |
 | `jepa.enc.n_registers` | u32 | 0 |
 | `jepa.enc.qkv_fused` | bool | true → `attn_qkv.*` tensor with rows [q;k;v]; false → separate q/k/v |
 | `jepa.enc.modality_embed` | bool | V-JEPA 2.1 |
 | `jepa.enc.image_patch_embed` | bool | V-JEPA 2.1 separate 1×16×16 image tokenizer |
 | `jepa.enc.hier_layers` | [u32] | V-JEPA 2.1 hierarchical layer ids (per-layer norms exist for these) |
 | `jepa.enc.layer_scale` | bool | DINOv2-style `ls1/ls2` present |
+| `jepa.enc.attn_mode` | str | `full` (every existing file: the key is absent and the loader defaults to it) · `block_causal` (`levjepa`: key *j* is visible to query *i* iff `frame_id(i) >= frame_id(j)`, with the CLS row open and the CLS column closed — see the levjepa family note) |
 | `jepa.enc.proj_act` | str | `lewm` only: activation of the `enc.proj.*` MLP (`gelu_erf`) |
 
 Encoder tensors (ggml dim order is reversed from PyTorch; we store PyTorch row-major as-is, i.e. `ne[0]` = last PyTorch dim):
@@ -145,7 +146,7 @@ head.cls.weight/bias          [n_classes, embed_dim]    (no final norm: classifi
 
 ## Token order
 
-Video tokens are **T-major, then H, then W** (`i = t*gh*gw + h*gw + w`). Image tokens are H-major then W. `hfvit` prepends CLS (and registers).
+Video tokens are **T-major, then H, then W** (`i = t*gh*gw + h*gw + w`). Image tokens are H-major then W. `hfvit` and `levjepa` prepend CLS (and, for `hfvit`, registers); a prepended CLS carries no position information at all — no pos-embed row and no RoPE rotation — so the grid ids above are those of the patch tokens only, shifted by the prefix.
 
 ## Quantization rules
 
@@ -163,6 +164,35 @@ Converter dtype rule for `--ftype f16`: the quantizable set above is written as 
   checkpoint table verbatim in `enc.pos_embed`; the runtime interpolates it for other grids (as HF does).
 * No CLS token, no predictor in the HF release; pooled feature = mean over the 256 patch tokens after `enc.norm`.
 * `general.license = cc-by-nc-4.0`.
+
+### levjepa (galilai-group/LeVJEPA-VideoMix-Large)
+
+ViT-L/16 video encoder (`modeling_levjepa.py`, shipped with the weights; the file is the reference
+implementation and `trust_remote_code=True` loads it). Three things separate it from `vjepa2`, and the
+schema says all three:
+
+* **`tubelet_size = 1`** with `n_frames = 16`, so a 16×224×224 clip is `16·14·14 = 3136` patch tokens
+  in the usual T-major/H/W order.
+* **`cls_token = true`** — the first video family with one. `enc.cls_token` is prepended *after* the
+  patch embedding and receives **no position information**: there is no `enc.pos_embed` (RoPE model)
+  and RoPE skips it (`RoPEAttention.forward` rotates `q/k[..., 1:, :]`), so the runtime's cos/sin
+  tables get an identity row (cos 1, sin 0) at index 0. Total 3137 tokens. Pooled feature = CLS after
+  `enc.norm`, i.e. `last_hidden_state[:, 0]`.
+* **`attn_mode = "block_causal"`** — an additive attention mask, not an option: with full attention the
+  same weights give CLS cosine 0.945 and a worst patch token of 0.834 against the reference
+  (`archery_f16`). Key *j* is visible to query *i* iff
+  `frame_id(i) >= frame_id(j)`, where `frame_id` of a patch token is `id // (gh*gw)`; the CLS **row**
+  is fully open (it reads the whole clip) and the CLS **column** is closed to every patch query (it is
+  a read-only sink, so nothing routes last-frame information into a first-frame token). Density 53.1 %
+  at 3137 tokens. Everything else follows `vjepa2`: 3-D RoPE θ 10000 in the **tiled** layout
+  (`rope_freq_layout = tiled`; `rotate_queries_or_keys` uses Meta's `repeat(1,1,1,2)` expansion — the
+  interleaved 2.1 layout scores CLS cosine 0.841 on these weights), no `interpolate_rope`, LN eps 1e-6,
+  GELU(erf), fused qkv with bias, pre-LN, no layer-scale.
+
+The checkpoint is the EMA encoder only: no predictor, no head, no projector. `jepa.pre.*` comes from the
+model card (there is no `preprocessor_config.json`): ImageNet mean/std, short side → 224, centre crop 224,
+**bicubic**, rescale 1/255. A still image is fed as a 16-frame clip by repeating the frame, which is what
+the model card's ImageNet probe does. `general.license = cc-by-nc-4.0`.
 
 ### hfvit (OK-AI/lejepa-vits16-pretrain-in1k)
 

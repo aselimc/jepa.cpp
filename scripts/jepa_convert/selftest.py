@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Numerical self-test for the image-family converters.
+"""Numerical self-test for the converters.
 
 Runs a *numpy* forward pass using only the GGUF file (tensors + jepa.* hparams, following
 docs/gguf-schema.md and docs/architecture.md literally) and compares it with the PyTorch
@@ -10,10 +10,16 @@ the graph the C++ side has to build.
   selftest.py --gguf models/gguf/lejepa-vits16-pretrain-in1k-f32.gguf --src models/OK-AI/lejepa-vits16-pretrain-in1k
   selftest.py --gguf models/gguf/lewm-pusht-f32.gguf --src models/quentinll/lewm-pusht --lewm-src tmp/<branch>/stable-worldmodel
   selftest.py --gguf models/gguf/ijepa_vith14_1k-f16.gguf --src models/facebook/ijepa_vith14_1k --n-images 2
+  selftest.py --gguf models/gguf/levjepa-vitl16-f32.gguf --src models/galilai-group/LeVJEPA-VideoMix-Large --n-images 1
 
 Reference models: hfvit -> timm VisionTransformer (same block math as DINOv2 ViTv2, loaded from
 the safetensors); lewm -> transformers ViTModel + stable_worldmodel.wm.lewm.module (Predictor,
-Embedder, MLP) loaded from weights.pt; ijepa -> transformers IJepaModel.
+Embedder, MLP) loaded from weights.pt; ijepa -> transformers IJepaModel; levjepa -> the
+`modeling_levjepa.py` that ships with the weights, via AutoModel(trust_remote_code=True).
+
+The levjepa branch feeds a still image as the 16-frame clip the model card prescribes (the frame
+repeated along T) and runs the video graph: tubelet-1 patchify, CLS prepended after the patch
+embedding, 3-D RoPE in the tiled layout with an identity row for CLS, and the block-causal mask.
 """
 from __future__ import annotations
 
@@ -174,6 +180,86 @@ def encoder_forward(m: Model, img: np.ndarray):
     return layer_norm(x, m.get("enc.norm.weight"), m.get("enc.norm.bias"), eps)
 
 
+# ----------------------------------------------------------------------------- levjepa video graph
+# The three deltas against the V-JEPA 2 video encoder (docs/gguf-schema.md "levjepa"):
+#   1. CLS prepended after the patch embedding,
+#   2. RoPE skips it -- the cos/sin tables get an identity row (cos 1, sin 0) at index 0,
+#   3. block-causal attention mask.
+# Everything else (tubelet patchify, tiled 3-D RoPE, pre-LN blocks) is the shared video graph, so
+# the primitives come from vjepa2_numpy_ref rather than being written a second time.
+def block_causal_mask(gt: int, gh: int, gw: int, n_prefix: int = 1) -> np.ndarray:
+    """[N, N] bool, True = "query (row) may attend key (column)".
+
+    Patch query i sees patch key j iff frame_id(i) >= frame_id(j) (bidirectional inside a temporal
+    slot, causal across slots).  The prefix (CLS) row is fully open and its column is closed to
+    every patch query -- a read-only sink, so no future information is routed through it.
+    """
+    tpf = gh * gw
+    frame = np.arange(gt * tpf) // tpf
+    patch = frame[:, None] >= frame[None, :]
+    if not n_prefix:
+        return patch
+    n = gt * tpf + n_prefix
+    full = np.zeros((n, n), dtype=bool)
+    full[:n_prefix, :] = True
+    full[n_prefix:, n_prefix:] = patch
+    return full
+
+
+def levjepa_encoder_forward(m: Model, clip: np.ndarray) -> np.ndarray:
+    """clip: [C, T, H, W] already normalised.  Returns [1 + gt*gh*gw, D] after enc.norm."""
+    sys.path.insert(0, str(HERE))   # works whether this file is run as a script or imported as a module
+    from vjepa2_numpy_ref import apply_rope, patchify as patchify3d, rope_positions, rope_tables
+
+    hp = m.hp
+    D = hp["jepa.enc.embed_dim"]
+    P = hp["jepa.enc.patch_size"]
+    tub = hp["jepa.enc.tubelet_size"]
+    n_head = hp["jepa.enc.n_head"]
+    eps = hp["jepa.enc.ln_eps"]
+    act = act_fn(hp["jepa.enc.act"])
+    hd = D // n_head
+    C, T, H, W = clip.shape
+    gt, gh, gw = T // tub, H // P, W // P
+
+    x = linear(patchify3d(clip, tub, P), m.get("enc.patch_embed.weight"), m.get("enc.patch_embed.bias"))
+    n_prefix = 1 if hp["jepa.enc.cls_token"] else 0
+    if n_prefix:
+        x = np.concatenate([m.get("enc.cls_token")[None], x], 0)
+
+    pt, ph, pw = rope_positions(np.arange(gt * gh * gw), gh, gw)
+    cos, sin = rope_tables(pt, ph, pw, hd, hp["jepa.enc.rope_theta"], hp["jepa.enc.rope_freq_layout"])
+    if n_prefix:   # identity rotation for the prefix rows: cos 1, sin 0
+        cos = np.concatenate([np.ones((n_prefix, hd), np.float32), cos], 0)
+        sin = np.concatenate([np.zeros((n_prefix, hd), np.float32), sin], 0)
+
+    mask = None
+    if hp.get("jepa.enc.attn_mode", "full") == "block_causal":
+        mask = block_causal_mask(gt, gh, gw, n_prefix)
+
+    N = x.shape[0]
+    for i in range(hp["jepa.enc.n_layer"]):
+        b = f"enc.blk.{i}."
+        h = layer_norm(x, m.get(b + "ln1.weight"), m.get(b + "ln1.bias"), eps)
+        qkv = linear(h, m.get(b + "attn_qkv.weight"), m.get(b + "attn_qkv.bias"))
+        q = qkv[:, :D].reshape(N, n_head, hd).transpose(1, 0, 2)
+        k = qkv[:, D:2 * D].reshape(N, n_head, hd).transpose(1, 0, 2)
+        v = qkv[:, 2 * D:].reshape(N, n_head, hd).transpose(1, 0, 2)
+        q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        att = (q @ k.transpose(0, 2, 1)) / math.sqrt(hd)
+        if mask is not None:
+            att = np.where(mask[None], att, -np.inf)
+        att = att - att.max(-1, keepdims=True)
+        att = np.exp(att)
+        att /= att.sum(-1, keepdims=True)
+        o = (att @ v).transpose(1, 0, 2).reshape(N, D)
+        x = x + linear(o, m.get(b + "attn_out.weight"), m.get(b + "attn_out.bias"))
+        h = layer_norm(x, m.get(b + "ln2.weight"), m.get(b + "ln2.bias"), eps)
+        x = x + linear(act(linear(h, m.get(b + "ffn_up.weight"), m.get(b + "ffn_up.bias"))),
+                       m.get(b + "ffn_down.weight"), m.get(b + "ffn_down.bias"))
+    return layer_norm(x, m.get("enc.norm.weight"), m.get("enc.norm.bias"), eps)
+
+
 def mlp2(m: Model, prefix: str, x: np.ndarray, act):
     return linear(act(linear(x, m.get(prefix + ".0.weight"), m.get(prefix + ".0.bias"))),
                   m.get(prefix + ".2.weight"), m.get(prefix + ".2.bias"))
@@ -286,6 +372,20 @@ def ref_ijepa(src: Path, m: Model):
     return run
 
 
+def ref_levjepa(src: Path, m: Model):
+    """The vendored modeling_levjepa.py, loaded the way the model card does."""
+    import torch
+    from transformers import AutoModel
+
+    net = AutoModel.from_pretrained(str(src), trust_remote_code=True, dtype=torch.float32).eval()
+
+    def run(clip):   # clip [C, T, H, W] -> [1 + N_patches, D]
+        with torch.no_grad():
+            out = net(pixel_values=torch.from_numpy(clip)[None])
+        return out.last_hidden_state[0].numpy()
+    return run
+
+
 def ref_lewm(src: Path, m: Model, lewm_src: Path | None):
     import torch
     from transformers import ViTConfig, ViTModel
@@ -386,6 +486,18 @@ def main(argv=None) -> int:
             ours, ref = encoder_forward(m, img), run(img)
             ok &= report(f"{f.name} all tokens", ours, ref, tol)
             ok &= report(f"{f.name} mean-pooled", ours.mean(0), ref.mean(0), tol)
+    elif fam == "levjepa":
+        # The model card's still-image path: the frame repeated along T into a clip of n_frames.
+        run = ref_levjepa(src, m)
+        n_frames = m.hp["jepa.enc.n_frames"]
+        for f in load_images(args.n_images):
+            img = preprocess(m, f)                       # [C, H, W]
+            clip = np.repeat(img[:, None], n_frames, axis=1)   # [C, T, H, W]
+            ours, ref = levjepa_encoder_forward(m, clip), run(clip)
+            ok &= report(f"{f.name} all tokens", ours, ref, tol)
+            ok &= report(f"{f.name} CLS (pooler_output)", ours[0], ref[0], tol)
+            cos = (ours * ref).sum(-1) / (np.linalg.norm(ours, axis=-1) * np.linalg.norm(ref, axis=-1) + 1e-30)
+            print(f"  {'per-token cosine':40s} min={cos.min():.7f} median={np.median(cos):.7f}")
     elif fam == "lewm":
         run_enc, run_proj, run_pred = ref_lewm(src, m, Path(args.lewm_src) if args.lewm_src else None)
         files = load_images(max(args.n_images, m.hp["jepa.pred.n_frames"]))

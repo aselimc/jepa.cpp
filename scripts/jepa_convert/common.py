@@ -77,6 +77,7 @@ HPARAM_TYPES: dict[str, str] = {
     "jepa.enc.image_patch_embed": BOOL,
     "jepa.enc.hier_layers": AU32,
     "jepa.enc.layer_scale": BOOL,
+    "jepa.enc.attn_mode": STR,        # levjepa: "full" | "block_causal" (absent = full)
     "jepa.enc.proj_act": STR,          # lewm: activation of the enc.proj.* MLP
     # predictor
     "jepa.pred.kind": STR,

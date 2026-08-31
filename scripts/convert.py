@@ -7,6 +7,7 @@ Examples
   scripts/convert.py --family lewm  --src models/quentinll/lewm-pusht --out models/gguf/lewm-pusht-f32.gguf
   scripts/convert.py --family vjepa2   --src models/facebook/vjepa2-vitl-fpc64-256
   scripts/convert.py --family vjepa2_1 --src models/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt
+  scripts/convert.py --family levjepa --src models/galilai-group/LeVJEPA-VideoMix-Large --ftype f32
 
 Default output name (when --out is omitted):
   <repo>/models/gguf/<basename of --src, extension stripped>-<ftype>.gguf
@@ -17,8 +18,8 @@ Default output name (when --out is omitted):
 position tables, tokens, adaLN, action embed) as F32.  Q8_0 and friends are produced from an
 f32/f16 file by tools/jepa-quantize, never here.
 
-vjepa2 / vjepa2_1 are standalone modules (scripts/jepa_convert/vjepa2.py, vjepa2_1.py) that
-depend only on `gguf`; this CLI dispatches to them if they are present.
+vjepa2 / vjepa2_1 / levjepa are standalone modules (scripts/jepa_convert/vjepa2.py, vjepa2_1.py,
+levjepa.py) that depend only on `gguf`; this CLI dispatches to them if they are present.
 """
 from __future__ import annotations
 
@@ -31,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from jepa_convert.common import FTYPES, default_output_path, log  # noqa: E402
 
-FAMILIES = ("ijepa", "hfvit", "lewm", "vjepa2", "vjepa2_1")
+FAMILIES = ("ijepa", "hfvit", "lewm", "vjepa2", "vjepa2_1", "levjepa")
 LOCAL_FAMILIES = ("ijepa", "hfvit", "lewm")
 
 
