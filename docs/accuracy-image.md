@@ -295,10 +295,10 @@ claimed. On the big model jepa.cpp is ahead at q8_0 and f16 and **behind** at q4
 | I-JEPA ViT-H/14, end to end | PyTorch batch 32 | jepa.cpp f16 | jepa.cpp q8_0 | jepa.cpp q4_k |
 |---|---|---|---|---|
 | img/s (train2000 / val) | 5.51 / 5.45 | 6.16 / 6.16 | 7.08 / 7.04 | 4.77 / 4.75 |
-| vs PyTorch | 1× | 1.12× | 1.29× | 0.87× |
+| vs PyTorch, same split | 1× | 1.12–1.13× | 1.29× | 0.87× |
 
-On the two small models PyTorch wins outright: LeJEPA 67–75 img/s against 86–89 (0.75–0.86×) and
-LeWM 85–101 against 190–206 (0.41–0.53×), where per-image fixed cost and PyTorch's batching
+On the two small models PyTorch wins outright: LeJEPA 67–75 img/s against 86–89 (0.75–0.87×) and
+LeWM 85–101 against 190–206 (0.42–0.53×), where per-image fixed cost and PyTorch's batching
 dominate. So the range across everything measured here is **4.8–7.1 img/s for I-JEPA** against
 PyTorch's 5.5, and the right conclusion is the one `docs/parity.md` already draws, only with a
 smaller margin than before: jepa.cpp is competitive where the matmuls dominate and loses where
@@ -389,7 +389,8 @@ Wall times on the box above, 32 threads, idle, one pass at a time: PyTorch featu
 * **I-JEPA f32 in jepa.cpp** — skipped for budget. `docs/parity.md` measures cosine 1.000000 and
   `rel_max` 7.9e-5 against PyTorch on the stored input for `ijepa_vith14_1k-f32.gguf`, and the f16
   row here is already within 0.05 pp of PyTorch, so an f32 row would only re-measure the JPEG-decoder
-  floor described above, out of a 2.4 GB file (3.7× q8_0) and ~18 min of encoding.
+  floor described above, out of a 2.4 GB file (3.7× q8_0) and at least the 16 min the f16 pass over
+  the same 5 925 images took.
 * **q4_0, q5_k, q6_k** — the shipped GGUFs exist, but `docs/quantization.md` already orders them by
   pooled-feature cosine, and this page shows that ordering does not translate into a k-NN gap worth
   another 1–2 h of encoding.
