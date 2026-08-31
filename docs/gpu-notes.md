@@ -1,0 +1,434 @@
+# GPU (CUDA) feasibility for jepa.cpp
+
+**Status: audit only.** Nothing in `src/`, `tools/` or the build system has been changed. This document
+records (1) what ggml's CUDA backend can and cannot run *at jepa.cpp's exact shapes and strides*,
+(2) measured ggml-CUDA throughput on this box next to the CPU numbers of `docs/ggml-notes.md`,
+(3) a measured PyTorch-GPU baseline for the same models, and (4) the implementation plan and effort
+estimate a CUDA port would need. Read `docs/architecture.md` and `docs/ggml-notes.md` first — this
+document assumes the graph they describe.
+
+Everything read-only was checked against the pinned ggml submodule, commit `36da5713`, in
+`ggml/src/ggml-cuda/`. File and function names are given so each claim can be re-checked.
+
+## 0. Box
+
+| | |
+|---|---|
+| GPU | 2 × NVIDIA RTX 4500 Ada Generation, 24 GB each, compute capability **8.9** (Ada Lovelace) |
+| Driver | 580.173.02, CUDA runtime 13.0 |
+| Toolkit | `/usr/local/cuda`, `nvcc` release 13.0, V13.0.88 |
+| CPU (for the CPU columns) | AMD Ryzen Threadripper PRO 7995WX, 96 cores / 192 threads, AVX-512, 251 GB |
+| ggml | submodule `36da5713` (v0.22.0), `GGML_CUDA=ON`, `GGML_NATIVE=ON` → `CMAKE_CUDA_ARCHITECTURES=native` = `89` |
+| Vulkan | loader `libvulkan1` 1.3.275 + the NVIDIA ICD are installed; **`glslc` / `SPIRV-Headers` are not** |
+
+RTX 4500 Ada paper peak: ~24 TFLOP/s FP32, ~48 TFLOP/s FP16 with FP32 accumulate on the tensor
+cores (~96 with FP16 accumulate), ~192 TOP/s INT8, 432 GB/s of GDDR6 ECC bandwidth. Those are the
+ceilings the measured numbers below should be read against.
+
+## 1. Op coverage
+
+Every op jepa.cpp's graphs emit, checked against `ggml_backend_cuda_device_supports_op`
+(`ggml/src/ggml-cuda/ggml-cuda.cu:4867`) **with the tensor shapes and strides our builders actually
+produce** — a bare "CUDA has a `mul` kernel" is not the question; the question is whether the
+`supports_op` predicate says yes for *our* tensor, because a `no` makes `ggml_backend_sched` cut the
+graph and shuttle the tensor across PCIe.
+
+The full op list comes from `grep -oh 'ggml_[a-z0-9_]*(' src/*.cpp src/*.h`; `ggml_get_rows` is in the
+brief but jepa.cpp never emits it (it gathers rows on the host in `predict_masked`, `jepa_encode_*`).
+
+### 1.1 Verdict table
+
+| op (as jepa.cpp emits it) | where | CUDA kernel | `supports_op` verdict | evidence |
+|---|---|---|---|---|
+| `mul_mat` F32 weight × F32 acts | every linear | `ggml_cuda_mul_mat_cublas` (compute F32) | **yes** | `ggml-cuda.cu:4926` type switch: `GGML_TYPE_F32` |
+| `mul_mat` F16 weight × F32 acts | every linear | cuBLAS (**compute F16 unless `GGML_PREC_F32`**) or `mmf` | **yes**, see §1.3 | `ggml-cuda.cu:4928`; `ggml_cuda_mul_mat_cublas:1623` |
+| `mul_mat` Q8_0 / Q4_0 / Q4_K × F32 | quantized files | `mmq` (INT8 tensor cores) or `mmvq` | **yes** | `ggml-cuda.cu:4931/4934/4938`; `mmq.cu` |
+| `mul_mat` on a permuted view (naive attn) | `jepa_build_attention` naive path | generic | **yes** — only `nb[0] == type_size` is required | `ggml-cuda.cu:4922` |
+| `mul_mat` with `ne[3] > 1` (batching) | batched encoder | cuBLAS batched | **yes** | same switch; `ne[2]*ne[3]` handled |
+| `flash_attn_ext` head_dim **64 / 80**, F16 or F32 K/V, no mask | every encoder block | MMA-F16 (`fattn-mma-f16.cuh`) | **yes** | `fattn.cu:388` `switch (K->ne[0])` lists 40/64/72/80/96/112/128/192/256/320/512/576 |
+| `flash_attn_ext` head_dim **32** | **V-JEPA 2 / 2.1 predictors** | — | **NO** → `BEST_FATTN_KERNEL_NONE` | `fattn.cu:437` `default: return BEST_FATTN_KERNEL_NONE`; 32 is not in the switch |
+| `flash_attn_ext` `N_q = 1` (attentive-pool head) | `jepa_build_head` | vec kernel | **yes** | `fattn.cu:461`, `Q->ne[1]==1 && cc >= ADA` |
+| `flash_attn_ext` + F16 mask (LeWM / AC) | `jepa_build_lewm` | MMA-F16 | **yes** (mask must be F16 and `ne[2] == 1`) | `fattn.cu:451`; `launch_fattn` asserts `mask->type == F16` |
+| `flash_attn_ext` batched over `ne[3]` | batched encoder | any | **yes** (`Q->ne[3]` is a grid dimension) | `fattn-common.cuh:1085` `ntiles_dst … * Q->ne[3]` |
+| `soft_max_ext` (naive path, no mask / F16 mask) | `jepa_build_attention` naive | `softmax.cu` | **yes** (unconditional) | `ggml-cuda.cu:5228` `case GGML_OP_SOFT_MAX: return true` |
+| `norm` eps 1e-6 / 1e-12 | every LN | `norm.cu` | **yes** — but see §1.4, **different formula from the CPU** | `ggml-cuda.cu:5192` `ggml_is_contiguous_rows` |
+| `gelu_erf` | every FFN | `op_gelu_erf` = `0.5x(1+erff(x/√2))` | **yes** (needs `ggml_is_contiguous(src0)`, ours is) | `unary.cu:24`; `ggml-cuda.cu:4890` |
+| `silu` | LeWM action embed | `unary.cu` | **yes** | `ggml-cuda.cu:4886` |
+| `add` / `mul` (incl. `[D,N] ⊕ [D]` broadcast, strided src) | everywhere | `binbcast.cu` | **yes**, F32/F16 only | `ggml-cuda.cu:5215`; `binbcast.cu:201` has a contiguous fast path and a general strided path |
+| `scale_bias` (`ggml_scale` with bias) | rope masks, LeWM adaLN | `scale.cu` reads both `op_params[0..1]` | **yes** | `ggml-cuda.cu:5205` `case GGML_OP_SCALE: return true`; `scale.cu:6` `dst = scale*x + bias` |
+| `concat` dim 1 (CLS / registers) | `jepa_build_encoder_image` | `concat.cu` | **yes** (non-quantized, 4-byte type) | `ggml-cuda.cu:5030` |
+| `cont` of a permuted view | naive attn, LeWM adaLN split | `cpy.cu` generic dup | **yes** (unconditional) | `ggml-cuda.cu:5224` `case GGML_OP_CONT: return true` |
+| `cast` F32→F16 of a permuted view | flash K/V cast | `cpy.cu` | **yes** | `ggml-cuda.cu:4995` `F32 ↔ F16` |
+| `view` / `reshape` / `permute` / `transpose` | everywhere | no kernel (metadata) | **yes** | `ggml-cuda.cu:5197` |
+| `repeat_4d` (mask tokens, rope masks) | predictor, rope | `unary`/`repeat` | **yes** (F32/F16) | `ggml-cuda.cu:5016` |
+| `arange` (rope pair mask) | `jepa_rope3d_apply` | `arange.cu` | **yes** | `ggml-cuda.cu:5274` |
+| **`roll` on the fused-qkv view** | `jepa_rope3d_apply`, ×2 per q, ×2 per k, every block | `roll.cu` (contiguous-only kernel) | **NO** — `ggml_is_contiguous(src[0])` is **false** for `ggml_view_3d(qkv, …)` | `ggml-cuda.cu:5236`; `roll.cu:14` indexes `src[d3*ne00*ne01*ne02 + …]`, i.e. assumes full contiguity |
+| `roll` on a **contiguous** tensor | (the fix, §2) | `roll.cu` | **yes** | same |
+
+### 1.2 The two ops that would split the graph, and where they sit
+
+Only two entries are `NO`, and their positions are the whole story.
+
+1. **`ggml_roll` on the q/k views — per layer, twice per q and twice per k.** This is the
+   catastrophic one. `jepa_build_qkv` hands the RoPE hook a `ggml_view_3d` into the fused
+   `[3D, N]` qkv projection, whose `nb[2] = qkv->nb[1] = 3·D·4` while `ne[0]·ne[1]·4 = D·4` — so
+   `ggml_is_contiguous` is false and the CUDA `roll` is rejected. `ggml_backend_sched` would then
+   run `roll` on the CPU, which means copying the whole `qkv` tensor device→host and the two rolled
+   copies host→device, **four transfers per block, 24 (ViT-L) or 32 (ViT-H) blocks per forward**.
+   At the 64-frame ViT-L shape `qkv` is `3·1024·8192·4 B = 100 MB`, so one block costs of order
+   0.4 GB of PCIe traffic; the encoder would move ~10 GB per clip and be several times *slower*
+   than the CPU path. `ggml_backend_sched` would also cut the 24-block graph into ~100 splits,
+   destroying kernel-launch batching and any CUDA-graph capture.
+   **This is a per-layer split = disaster, and it is the single blocking issue.** §2 fixes it.
+
+2. **`flash_attn_ext` at head_dim 32 — the V-JEPA 2 / 2.1 masked predictors.** One split per
+   predictor block, 12 blocks. Bad, but the predictor is a much smaller graph and there is a clean
+   in-graph fallback (§3), so this is a *policy* decision, not a blocker.
+
+Everything else — patch embed, every LN, every linear, the FFN, the attention of the encoders,
+CLS/register concat, the modality vector, `cast`, `cont`, the attentive-pool head, the whole LeWM
+predictor — is CUDA-resident. Once §2 lands, an encoder forward is **one split**: upload the patch
+rows and the RoPE tables, run, download `[D, N]`.
+
+### 1.3 `mul_mat` precision: cuBLAS picks F16 compute for F16 weights
+
+`ggml_cuda_mul_mat_cublas` (`ggml-cuda.cu:1623`) sets `compute_type = src0->type` and only falls back
+to F32 when `dst->op_params[0] == GGML_PREC_F32`. jepa.cpp never calls `ggml_mul_mat_set_prec`, so an
+**f16 GGUF would run every projection as an HGEMM with F16 accumulation on the GPU**, where the CPU
+path accumulates in F32 (`docs/ggml-notes.md` §5 measures F16 mul_mat at 3.0e-4 max rel err on CPU;
+F16 accumulation over a 1024-long reduction is worse). Quantized weights take the `mmq` path
+(INT8 tensor cores, INT32 accumulate, F32 rescale) and are unaffected. F32 weights compute in F32.
+
+**Consequence for the port:** call `ggml_mul_mat_set_prec(t, GGML_PREC_F32)` on every `mul_mat` in
+`jepa_build_linear` when the backend is a GPU (it is a no-op on CPU — `docs/ggml-notes.md` §6), or
+accept a measurably wider f16 error band on GPU. Cost is measured in §5.
+
+### 1.4 `ggml_norm`: CUDA uses the numerically weaker variance formula
+
+- CPU (`ggml-cpu/ops.cpp:3733`): two-pass **centred** variance, `ggml_vec_cvar_f32(n, y, x, mean)`.
+- CUDA (`ggml-cuda/norm.cu:19-32`): one-pass `var = E[x²] − mean²`.
+
+The one-pass form suffers catastrophic cancellation when `mean² ≈ E[x²]`, i.e. when a row has a
+large DC offset relative to its spread. `docs/architecture.md` records that I-JEPA ViT-H activations
+reach ~2e4; at that magnitude `E[x²] ≈ 4e8` in float32 has ~7 significant digits and the subtraction
+can eat most of them. This is a **backend-intrinsic parity difference that no jepa.cpp flag can turn
+off**. Measured in §5.3.
+
+### 1.5 `flash_attn_ext`: there is no F32 K/V on CUDA
+
+`jepa.cpp`'s K/V policy (`jepa_context_kv_type`) picks **F32 K/V for f32 model files**, because
+`docs/architecture.md` measured that the F16 cast alone costs ~3 digits of worst-token cosine on
+I-JEPA ViT-H. On CUDA that policy has no effect:
+
+- `ggml_cuda_flash_attn_ext_get_alloc_size` / `launch_fattn` (`fattn.cu:533`, `fattn-common.cuh:1022`)
+  set `need_f16_K = need_f16_V = true` for both the MMA and the tile kernels, and for the vec kernel
+  `need_f16_K = (K->type == GGML_TYPE_F32)`. In every case an F32 K or V is **converted to F16 into a
+  scratch buffer before the kernel runs**.
+- `ggml_flash_attn_ext_set_prec(t, GGML_PREC_F32)` is *also* a no-op on CUDA: `grep -n GGML_PREC ggml-cuda/fattn*` returns nothing;
+  only `mul_mat` reads it. The MMA kernel's KQ accumulator is F32 (`T_C_KQ = tile<…, float>`), but the
+  **PV accumulator is `half2`** for most `(DKQ, DV, ncols)` configurations (`fattn-mma-f16.cuh:1034/1042/1085/…`).
+
+So on CUDA, flash attention is F16-K/V, F16-PV-accumulate, always. The escape hatch is the **naive
+path** (`--no-flash`): `mul_mat + soft_max_ext + cont` is fully F32 on CUDA and fully supported. For
+I-JEPA (N=256) and the small image models that costs almost nothing; for a 18 432-token clip the
+score matrix is 15.3 GB and does not fit in 24 GB, so f32-parity-on-GPU is an image-model-only
+option. §6 turns this into a policy.
+
+## 2. RoPE portability plan
+
+### 2.1 What the current apply emits
+
+`jepa_rope3d_apply` (`src/rope3d.cpp:129`) builds, per call:
+
+| # | node | CUDA |
+|---|---|---|
+| 1 | `ggml_arange(0, 2, 1)` → `[2]` | yes |
+| 2 | `ggml_repeat_4d(m01, 2, D/2, 1, 1)` | yes |
+| 3 | `ggml_reshape_1d(…, D)` (view) | yes |
+| 4 | `ggml_scale_bias(m_odd, 1, −1)` → `m_evn` | yes |
+| 5 | `ggml_mul(sin_t, m_evn)` → `s_e` | yes |
+| 6 | `ggml_mul(sin_t, m_odd)` → `s_o` | yes |
+| 7 | **`ggml_roll(x, −1, 0,0,0)`** | **NO** (x is the strided qkv view) |
+| 8 | **`ggml_roll(x, +1, 0,0,0)`** | **NO** |
+| 9 | `ggml_mul(x, cos_t)` | yes |
+| 10–11 | `ggml_mul(x_next, s_e)`, `ggml_add` | yes |
+| 12–13 | `ggml_mul(x_prev, s_o)`, `ggml_add` | yes |
+
+13 nodes, called twice per block (q and k) — the `video_graph_nodes` comment in `src/jepa.cpp:452`
+already budgets "2×13 RoPE".
+
+### 2.2 The brief's suggestion, checked
+
+Hoisting the three tables to the host (`cos`, `sin·even-mask-negated`, `sin·odd-mask`) removes nodes
+1–6, i.e. **`arange`, `repeat_4d`, `reshape`, `scale_bias` and two `mul`s**. It does **not** remove
+the two `ggml_roll`s, because the rolls act on `x`, not on the tables — so on its own it does not
+make the chain CUDA-resident. It is still worth doing (7 fewer nodes per call, ~340 fewer nodes in a
+24-block graph) and the repo already lists it as a candidate ("rope3d sin-mask hoisting (<5 %)").
+
+### 2.3 What actually makes the chain CUDA-resident
+
+Two changes, both small:
+
+**(a) make `x` contiguous.** `ggml_roll`'s CUDA kernel is contiguous-only, so insert one
+`ggml_cont` when `x` is a view. On the GPU this is a pure bandwidth copy of `D·N·4` bytes (33.5 MB
+at the 64-frame ViT-L shape → ~0.15 ms per call at 432 GB/s, ~7 ms for a whole 24-block encoder).
+Note the copy is *not* wasted: the current CPU graph materialises the same bytes inside `roll`.
+
+**(b) express the pair swap as one `roll` over a length-2 axis.** The rotation only needs
+`swap(x)[j] = x[j ^ 1]`. On a contiguous `[D, H, N]` tensor that is exactly
+`ggml_roll(ggml_reshape_2d(x, 2, D/2·H·N), 1, 0, 0, 0)` — rolling an axis of length 2 by 1 *is* the
+pair swap, with no wrap-around artefacts to mask away. One host table then suffices:
+
+```
+sin_signed[j] = (j even) ? −sin[j] : +sin[j]
+out           = x·cos + swap(x)·sin_signed
+```
+
+which expands to `out[2k] = x[2k]·C[2k] − x[2k+1]·S[2k]` and
+`out[2k+1] = x[2k+1]·C[2k+1] + x[2k]·S[2k+1]` — the same products, in the same order, as today. The
+only difference against the current expression is that today's chain also adds an exact `0.0` term
+per lane (the masked-out half of each roll), and adding `+0.0` to a finite float is exact. **The
+refactor is bit-identical for finite inputs**; verified in §5.4.
+
+Resulting node list — 5 nodes, all CUDA:
+
+| # | node | CUDA |
+|---|---|---|
+| 1 | `ggml_cont(x)` (skipped when `x` is already contiguous) | yes |
+| 2 | `ggml_reshape_2d(xc, 2, D/2·H·N)` (view) | yes |
+| 3 | `ggml_roll(…, 1, 0,0,0)` | yes |
+| 4–5 | `ggml_mul(xc, cos_t)`, `ggml_mul(sw, sins_t)`, `ggml_add` | yes |
+
+### 2.4 Proposed signature change
+
+```diff
+ // src/rope3d.h
+-// cos/sin tables for the full grid: row-major [N, head_dim] …
++// cos / signed-sin tables for the full grid: row-major [N, head_dim].
++// sin_out carries the SIGN of the rotation already folded in:
++//     sin_out[r*D + j] = (j even) ? -sin(angle) : +sin(angle)
++// so jepa_rope3d_apply is one pair-swap plus two multiplies and an add (docs/gpu-notes.md §2).
+ void jepa_rope3d_tables(const jepa_rope3d_params & p, std::vector<float> & cos_out, std::vector<float> & sin_out);
+ void jepa_rope3d_tables_ids(const jepa_rope3d_params & p, const int32_t * ids, int n_ids,
+                             std::vector<float> & cos_out, std::vector<float> & sin_out);
+
+-//   sin_t  : F32 [head_dim, 1, N]
++//   sin_t  : F32 [head_dim, 1, N]  (the SIGNED table above)
+-// Runs on the CPU backend via ggml_backend / ggml_gallocr (stock ops only: arange, repeat, scale, roll, mul, add).
++// Backend-agnostic: cont (only if x is a view) + roll + 2 mul + add. Every node has a CUDA kernel.
+ struct ggml_tensor * jepa_rope3d_apply(struct ggml_context * ctx, struct ggml_tensor * x,
+                                        struct ggml_tensor * cos_t, struct ggml_tensor * sin_t);
+```
+
+The **public signature does not change** — only the meaning of the `sin` table's sign, which is
+private to `rope3d.{h,cpp}` and its two callers. Optionally add a `bool signed_sin` parameter to the
+table builders so `tests/test-ops.cpp` can keep checking the raw table against
+`tests/vectors/rope3d/`.
+
+### 2.5 Call sites and diff size
+
+| file | change |
+|---|---|
+| `src/rope3d.cpp` | negate the even lanes of `sin_out` at the end of `rope3d_build` (2 lines); rewrite `jepa_rope3d_apply` (16 lines → ~8) |
+| `src/rope3d.h` | comment/contract update only (no signature change) |
+| `src/jepa.cpp` | **none** — `jepa_build_encoder_video` passes the tables through the `qk_hook` unchanged |
+| `src/predictor.cpp` | **none** — same |
+| `src/lewm.cpp` | **none** — LeWM has no 3-D RoPE |
+| `tests/test-ops.cpp` | the table-vs-golden check (lines 184–190, 227) needs either a sign flip on the expected even lanes or the `signed_sin=false` flag; the `jepa_rope3d_apply` check (line 108) is unchanged and must still pass bit-exactly |
+
+**Estimated diff: ~40 changed lines across 3 files, plus ~15 in the test.** This is the smallest
+change in the whole port and it is worth landing *on CPU first*, independently of any GPU work: it
+removes ~340 nodes from a ViT-L video graph and is bit-identical.
+
+## 3. head_dim 32 — the V-JEPA 2 / 2.1 predictor
+
+**Is head_dim 32 supported by any CUDA flash-attention path?** No.
+`ggml_cuda_get_best_fattn_kernel` (`fattn.cu:355-438`) switches on `K->ne[0]` over
+`{40, 64, 72, 80, 96, 112, 128, 192, 256, 320, 512, 576}` and returns `BEST_FATTN_KERNEL_NONE` in
+`default:`. 32 is not there — not for the MMA kernel (`fattn.cu:118` switches on 64/80/96/112/128/192/256/320/512/576),
+not for the vec kernel (`FATTN_VEC_CASES_ALL_D` instantiates only 64/128/256), not for the tile
+kernel. `ggml_cuda_flash_attn_ext_supported` therefore returns false and `supports_op` says no.
+
+This hits `jepa.pred.head_dim = 32` (V-JEPA 2 predictor: 384-d, 12 heads; V-JEPA 2.1: same,
+`docs/architecture.md` "Predictor head_dim is 32 → d = 10 per axis"). The encoders are unaffected
+(head_dim 64 for ViT-L/B, 80 for I-JEPA ViT-H).
+
+**Fallbacks, in order of preference:**
+
+1. **Naive attention on the GPU** — set `opts.attn.flash = false` for the masked predictor when the
+   backend is CUDA. `mul_mat + soft_max_ext + cont(permute(v))` are all CUDA-supported (§1.1), so
+   the predictor stays one split and fully resident. Cost is the score matrix: `4·N²·H` bytes with
+   H = 12, i.e. **201 MB at N = 2048, 1.02 GB at N = 4608**, 3.2 GB at 8192, 16.3 GB at 18 432. The
+   first three fit comfortably in 24 GB; the largest does not leave room for weights and is the one
+   shape where the predictor would have to stay on the CPU or be chunked over query blocks.
+   `docs/ggml-notes.md` §3 shows the naive path is ~7–9× slower than flash *on CPU at head_dim 32*;
+   on the GPU the ratio is much smaller because the naive path is two dense GEMMs, which is exactly
+   what the hardware is good at. Measured in §5.2.
+2. **Per-layer CPU split** — what `ggml_backend_sched` would do by default. 12 splits per predictor
+   call plus the `[hd, N, H]` q/k/v round trips. Strictly worse than (1) and it must be avoided by
+   *explicitly* choosing the naive path, not left to the scheduler.
+3. Pad head_dim 32 → 64 with zeros. Doubles the attention FLOPs, adds two pad/slice ops per block
+   and changes nothing about the numerics of the softmax (padded lanes contribute 0 to the dot
+   product). Mentioned for completeness; option (1) is simpler and faster.
+
+Note the LeWM predictor (head_dim 64, N = 3 frames) *is* supported, and the attentive-pool head
+(head_dim 64/80, `N_q = 1`) takes the vec kernel. Both, however, lose their **F32 K/V** mitigation
+on CUDA (§1.5) — `src/lewm.cpp:57` and `src/jepa.cpp:534` explicitly set `GGML_TYPE_F32` for exactly
+the reason that ggml's CPU one-chunk kernel rounds q and the PV accumulator to F16; on CUDA the K/V
+are down-converted regardless, so those two comments become CPU-only statements.
+
+## 4. Scratch CUDA build
+
+*(filled in §5 — see `tmp/gpu-probe/` in this worktree for the driver and CMake project)*
+
+## 5. Measured
+
+*(pending the shared-box sentinel; see the final report)*
+
+## 6. Implementation plan
+
+### 6.1 `src/jepa-internal.h` / `src/jepa.cpp` — backend selection
+
+Today `jepa_context` owns exactly one backend (`ggml_backend_cpu_init()`), one `ggml_gallocr_t`, and
+`jepa_model` keeps a second CPU backend purely as the weight-buffer owner. The port keeps that
+shape — **one backend, no `ggml_backend_sched`** — because §1 shows the graph is fully CUDA-resident
+after the §2 fix. `ggml_backend_sched` is the wrong tool here: it exists to *partition* a graph, and
+a partitioned jepa.cpp graph is a bug, not a feature. Using a single backend also makes any split a
+loud failure (`ggml_backend_graph_compute` returns an error) instead of a silent 10× slowdown.
+
+```diff
+ struct jepa_context_params {
+     int  n_threads;
+     bool use_flash_attn;
+     ...
++    int  gpu_device;      // -1 = CPU (default), >= 0 = the n-th GPU device from the ggml registry
+ };
+```
+
+```diff
+ struct jepa_model {
+-    ggml_backend_t        backend = nullptr;   // CPU backend used for weight storage
++    ggml_backend_t        backend = nullptr;   // backend the weights live on
+     ggml_backend_buffer_t buf_w   = nullptr;
++    bool                  is_gpu  = false;
+ };
+ struct jepa_context {
+-    ggml_backend_t      backend = nullptr;   // CPU backend (compute)
++    ggml_backend_t      backend = nullptr;   // compute backend (CPU or CUDA); must match model->backend
++    bool                is_gpu  = false;
+ };
+```
+
+1. **Device discovery.** `ggml_backend_load_all()` at load time, then
+   `ggml_backend_dev_get(i)` filtered on `GGML_BACKEND_DEVICE_TYPE_GPU`; `--gpu N` selects the N-th.
+   No CUDA header is needed in jepa.cpp — the registry API in `ggml-backend.h` is backend-agnostic,
+   so the same code would light up Vulkan/Metal/ROCm if those were built.
+2. **Weight allocation.** `jepa_model_load` currently allocates `buf_w` on the CPU backend and
+   `memcpy`s from the mmapped GGUF. On GPU it must `ggml_backend_alloc_ctx_tensors(ctx_w, backend)`
+   and `ggml_backend_tensor_set` each tensor from the file. The device buffer must be sized before
+   the first tensor: ViT-H f32 is 2.4 GB, ViT-L f32 1.3 GB — all our files fit in 24 GB with room
+   for a 64-frame graph. **The model must be loaded onto the device it will run on**; a
+   `jepa_context` whose `gpu_device` differs from the model's must be rejected, not silently split.
+3. **Transfer points.** Exactly three, all already funnelled through helpers:
+   `ggml_backend_tensor_set(inp, …)` for the host-side patchify output (`jepa_encode_image`,
+   `jepa_encode_video`), `ggml_backend_tensor_set(cos_t/sin_t, …)` for the RoPE tables, and
+   `ggml_backend_tensor_get(y, …)` for `[D, N]` out. No change needed — `ggml_backend_tensor_set/get`
+   already do the H2D/D2H copy. The one thing to add is a **pinned host staging buffer** for the
+   patch rows (100 MB at 64f ViT-L): `ggml_backend_dev_host_buffer_type` gives pinned memory and
+   roughly doubles H2D bandwidth.
+4. **`jepa_graph_compute`.** Unchanged: `ggml_backend_graph_compute` already synchronises. The
+   `last_compute_ms` wall clock stays meaningful.
+5. **K/V dtype policy on GPU.** `jepa_context_kv_type` should return `GGML_TYPE_F16` unconditionally
+   when `is_gpu` (§1.5) and log once if the user asked for `JEPA_KV_F32`, because the request cannot
+   be honoured. The honest F32 path on GPU is `--no-flash`, which should be documented as
+   "image-model / short-clip only" with the `4·N²·H`-byte score matrix spelled out.
+6. **Predictor attention on GPU.** `src/predictor.cpp` must force `opts.attn.flash = false` when
+   `is_gpu` and `head_dim_eff() == 32` (§3), with a one-line log. Leaving `flash = true` there is a
+   silent 12-split-per-call trap.
+7. **`ggml_mul_mat_set_prec(GGML_PREC_F32)`** in `jepa_build_linear` when `is_gpu` (§1.3) — one line,
+   and it is a no-op on CPU so it can be unconditional.
+
+### 6.2 Tools
+
+`--gpu N` (default: none, i.e. CPU) on `jepa-embed`, `jepa-classify`, `jepa-worldmodel`, `jepa-bench`;
+`jepa-info` gains a `--devices` listing (`ggml_backend_dev_name/description/memory`). `jepa-bench`
+should print the device in its `--md` / `--json` header so `docs/benchmarks.md` can grow GPU rows
+without ambiguity. `--threads` keeps meaning CPU threads and becomes irrelevant (but not an error)
+under `--gpu`. `jepa-quantize` stays CPU-only.
+
+### 6.3 Build system
+
+```cmake
+option(JEPA_CUDA "Build with the ggml CUDA backend" OFF)
+if (JEPA_CUDA)
+  set(GGML_CUDA ON CACHE BOOL "" FORCE)
+endif()
+```
+
+Nothing else: jepa.cpp links `ggml`, and `GGML_CUDA=ON` pulls `ggml-cuda` into that target. The
+`GGML_NATIVE=ON` we already set makes `CMAKE_CUDA_ARCHITECTURES=native`, which is right for a
+from-source project and wrong for a distributed binary — a release build should set an explicit
+list. **CI story:** GitHub-hosted runners have no NVIDIA GPU, so CI can only *compile* the CUDA
+backend (`-DJEPA_CUDA=ON` with `CMAKE_CUDA_ARCHITECTURES=89-virtual` and the CUDA toolkit action)
+and run the CPU tests; correctness on GPU has to be a manual/self-hosted job. A cheap middle ground
+is a `test-backend` binary that runs every jepa.cpp graph on both backends and compares — it costs
+nothing on a CPU-only runner (it skips) and is the thing a self-hosted runner would run.
+
+### 6.4 Parity implications
+
+| model / dtype | CPU class today | expected GPU class | why |
+|---|---|---|---|
+| f32 image (LeJEPA, LeWM, I-JEPA) with flash | every token cos ≥ 0.9999, `rel_max` ≤ REL(N) | **drops to the f16-K/V class** | no F32 K/V on CUDA (§1.5) |
+| f32 image with `--no-flash` | — | should hold the f32 class, modulo `ggml_norm` (§1.4) | naive path is F32 end to end on CUDA |
+| f32 video (ViT-L 16f/64f) | cos 1.000000, `rel_max` 7.5e-4 / 1.2e-3 | f16-K/V class; `--no-flash` not affordable above ~4 608 tokens | 15.3 GB score matrix at 18 432 |
+| f16 anything | mean ≥ 0.9999, worst ≥ 0.99 | **wider unless `GGML_PREC_F32` is set on every mul_mat** (§1.3) | cuBLAS HGEMM |
+| q8_0 / q4_* | as `docs/parity.md` | comparable; `mmq` is INT8×INT8→INT32 like the CPU dot | same quantisation, different reduction order |
+| I-JEPA ViT-H, any dtype | — | watch `ggml_norm` (§1.4) — the ~2e4 activations are exactly its bad case | one-pass variance |
+
+The practical recommendation is that `tests/test-parity.cpp`'s `POLICY` table would need a
+**backend dimension**, not just family × file-type: the GPU rows of the f32 tier cannot meet the CPU
+f32 thresholds with flash attention on. That is a real cost of the port and should be decided before
+any code is written.
+
+### 6.5 Multi-GPU
+
+**Ignore it for the compute path.** Both cards are the same model on the same box, and a ViT forward
+is a single dependency chain — tensor-parallel splitting inside ggml means `ggml_backend_sched` with
+peer copies per layer, which is the same disease as §1.2. The right multi-GPU story for an inference
+engine of this shape is **two independent streams**: one `jepa_model` + `jepa_context` per device,
+each processing different clips. That falls out of `--gpu N` for free and needs no engine work
+beyond making `jepa_model_load` device-aware. Document it; do not implement a scheduler.
+
+### 6.6 Vulkan as a secondary target
+
+Not worth it as a second target *on this box*, and not worth it soon:
+
+- **It cannot be built here today.** `ggml/src/ggml-vulkan/CMakeLists.txt:9,14` requires
+  `find_package(Vulkan COMPONENTS glslc REQUIRED)` and `find_package(SPIRV-Headers CONFIG REQUIRED)`.
+  The box has the loader (`libvulkan1` 1.3.275) and the NVIDIA ICD but neither `glslc` (shaderc) nor
+  the Vulkan/SPIRV headers, so `-DGGML_VULKAN=ON` fails at configure time. Adding them is
+  `apt install glslc libvulkan-dev spirv-headers` — a prerequisite, not a blocker.
+- **On NVIDIA it is strictly slower than CUDA** and its `ggml_vk_supports_op` coverage for
+  `flash_attn_ext` is narrower (it needs the `coopmat`/`coopmat2` extensions for the fast path).
+- **Its value is portability**, i.e. AMD and Intel GPUs and Apple-less non-CUDA boxes. That is a real
+  goal for a "runs anywhere in plain C++" project, but it is a *third* milestone, after CUDA works
+  and after the §2 refactor has proven that the graph is backend-clean. The good news from §1 is
+  that the §2 refactor is what makes *any* backend viable — nothing in it is CUDA-specific.
+
+### 6.7 Effort, in reviewable chunks
+
+| # | chunk | files | est. |
+|---|---|---|---|
+| 1 | **RoPE table refactor** (§2) — signed sin table, one-`roll` apply, `ggml_cont` for views. Bit-identical, CPU-only change, ships on its own value. | `src/rope3d.{h,cpp}`, `tests/test-ops.cpp` | ~55 lines, **0.5 d** |
+| 2 | **Backend plumbing** — `gpu_device` param, device discovery, device weight allocation, `jepa_context`/`jepa_model` pairing check, `jepa-info --devices`. | `include/jepa.h`, `src/jepa-internal.h`, `src/jepa.cpp`, `src/jepa-gguf.cpp`, `tools/jepa-info.cpp` | ~250 lines, **1.5 d** |
+| 3 | **GPU numeric policy** — `ggml_mul_mat_set_prec` in `jepa_build_linear`, K/V policy override + log, predictor naive-attention override, `--no-flash` documentation. | `src/jepa.cpp`, `src/predictor.cpp` | ~40 lines, **0.5 d** |
+| 4 | **Tools + build** — `--gpu N` on four tools, `JEPA_CUDA` option, pinned staging buffer, bench header records the device. | `tools/*.cpp`, `CMakeLists.txt` | ~150 lines, **1 d** |
+| 5 | **Backend-parity test** — `tests/test-backend.cpp` running every graph on CPU and GPU and comparing; `POLICY` gains a backend dimension in `test-parity`. | `tests/`, `CMakeLists.txt` | ~350 lines, **1.5 d** |
+| 6 | **Measure + document** — GPU rows in `docs/benchmarks.md` and `docs/parity.md`, a GPU section in the README, torch-GPU baselines. | `docs/`, `scripts/bench_all.sh` | **1 d** |
+
+**Total ≈ 6 developer-days** for a CUDA backend that is honest about its numerics, plus whatever the
+parity-policy decision (§6.4) costs in discussion. Chunk 1 is worth doing regardless of the outcome.
+
+## 7. Go / no-go
+
+*(filled in with the measurements)*
