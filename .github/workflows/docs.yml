@@ -25,6 +25,9 @@ jobs:
       - run: pip install -r docs/requirements.txt
       - run: python scripts/gen_api_md.py --check   # docs/api.md must match include/jepa.h
       - run: mkdocs build
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true   # turns GitHub Pages on for the repo if it is not yet enabled
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
