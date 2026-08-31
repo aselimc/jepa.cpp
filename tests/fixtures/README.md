@@ -12,8 +12,7 @@ scripts/compare.py OUT_DIR tests/fixtures/ref/<model>   # jepa.cpp output vs ref
 `dump_reference.py` needs the project venv (`.venv`, torch CPU + transformers + av + pillow + timm + einops), the
 checkpoints from `scripts/download_models.sh` under `models/`, and for `vjepa2_1-vitb-384` a clone of
 `facebookresearch/vjepa2` at `tmp/vjepa2-src` (cloned automatically if absent). For `lejepa-vits16` the model directory
-must also contain the `hf_src/` package of the HF repo (its `modelling_vitv2.py` imports it; `download_models.sh` does not
-fetch it yet). Use `--root` to point at another checkout; caches go to `<root>/tmp/hf-home` and `<root>/tmp/torch-home`.
+must also contain the `hf_src/` package of the HF repo (its `modelling_vitv2.py` imports it). Use `--root` to point at another checkout; caches go to `<root>/tmp/hf-home` and `<root>/tmp/torch-home`.
 Everything runs in float32 eval mode, 32 threads (`--threads`), no autocast.
 
 ## media/
