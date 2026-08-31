@@ -359,7 +359,31 @@ about 24 k lines, plus 71 `template-instances/*.cu` for the flash-attention and 
 resolves `CMAKE_CUDA_ARCHITECTURES` to `native` → the single arch `89`, so this is the cheapest
 faithful build available. Measured build time and any CUDA-13/compute-8.9 diagnostics are in §5.
 
-*(measurements pending the shared-box sentinel)*
+### 4.1 It builds clean
+
+```
+cmake -S tmp/gpu-probe -B tmp/build-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON
+cmake --build tmp/build-cuda -j8
+```
+
+| | |
+|---|---|
+| configure | 4.5 s; `Found CUDAToolkit … 13.0.88`, `CUDA compiler … NVIDIA 13.0.88 with host compiler GNU 13.3.0` |
+| architectures | `Using CMAKE_CUDA_ARCHITECTURES=89-real CMAKE_CUDA_ARCHITECTURES_NATIVE=89-real` |
+| build | **171 s** wall at `-j8`, 178 ninja targets |
+| diagnostics | **zero warnings, zero errors** (`grep -ci warning build.log` → 0) |
+| `libggml-cuda.so` | **45.0 MB** for the single arch 89 |
+| `libggml-cpu.so` / `libggml-base.so` | 1.4 MB / 0.9 MB |
+| whole build tree | 114 MB |
+
+**No CUDA-13 or compute-8.9 problems at all.** Two non-fatal notices worth knowing: `ccache not found`
+(would cut rebuild time a lot) and `Could NOT find NCCL … performance for multiple CUDA GPUs will be
+suboptimal`, which is irrelevant under the multi-GPU stance in §6.5.
+
+The 45 MB CUDA shared object is the real distribution cost: it is 30× the CPU backend, for one
+architecture. A binary that shipped `75-virtual;80-virtual;86-real;89-real;90-virtual` would be
+several times that. For a project whose pitch is "plain C/C++ on ggml", `JEPA_CUDA=OFF` **must** stay
+the default (§6.3).
 
 ## 5. Measured
 
@@ -427,7 +451,269 @@ Two things to take from this table:
   jepa.cpp-CUDA that only reached half of torch's throughput would be a 10–21× improvement on the
   fastest thing the project can do today.
 
-*(ggml-CUDA rates and the resulting forecast: below, once the build finishes)*
+### 5.1 `mul_mat` — CUDA vs CPU
+
+`Y = mul_mat(W, X)`, `W = [1024 x 4096]` (a ViT-L `ffn_up`), `X = [1024, N]` F32 — the same shape
+`docs/ggml-notes.md` S5 benches on the CPU. Best of 20 (CUDA) / 3 (CPU, 32 threads); the error column
+is CUDA vs the CPU backend on the *same weight bytes*, i.e. the kernel difference alone, not
+quantisation.
+
+| W type | N | CUDA ms | **CUDA GFLOP/s** | CPU 32t ms | CPU GFLOP/s | CUDA vs CPU max rel | min cos |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| f32 | 256 | 0.055 | 38 823 | 0.99 | 2 180 | 3.17e-04 | 1.0000000 |
+| f32 | 2048 | 0.290 | 59 310 | 7.86 | 2 185 | 3.19e-04 | 1.0000000 |
+| f32 | 8192 | 1.095 | **62 744** | 31.46 | 2 185 | 3.28e-04 | 1.0000000 |
+| f16 | 256 | 0.047 | 45 758 | 0.72 | 2 992 | 4.55e-03 | 0.9999984 |
+| f16 | 2048 | 0.260 | **66 034** | 5.25 | 3 271 | 4.58e-03 | 0.9999984 |
+| f16 | 8192 | 1.229 | 55 905 | 20.60 | 3 336 | 4.53e-03 | 0.9999984 |
+| q8_0 | 256 | 0.040 | 54 051 | 0.58 | 3 727 | 5.15e-04 | 0.9999998 |
+| q8_0 | 2048 | 0.175 | **98 066** | 8.42 | 2 040 | 5.37e-04 | 0.9999998 |
+| q8_0 | 8192 | 0.767 | 89 570 | 30.22 | 2 274 | 6.25e-04 | 0.9999996 |
+| q4_0 | 2048 | 0.176 | **97 458** | 9.11 | 1 885 | 4.84e-04 | 0.9999998 |
+| q4_0 | 8192 | 0.751 | 91 497 | 32.64 | 2 105 | 6.00e-04 | 0.9999997 |
+| q4_K | 2048 | 0.185 | **93 019** | 9.64 | 1 783 | 1.35e-02 | 0.9991882 |
+| q4_K | 8192 | 0.778 | 88 294 | 38.05 | 1 806 | 1.39e-02 | 0.9991175 |
+
+**Three findings, one of them a correction to S1.3.**
+
+1. **ggml's "F32" matmul on CUDA is actually TF32.** 62.7 TFLOP/s is *above* this card's 47.7 TFLOP/s
+   FP32 ceiling, and the error against the CPU is **3.2e-04** — far too large for real FP32 (which
+   would be ~1e-7) and exactly right for TF32's 10-bit mantissa. The cause is not the compute type:
+   ggml passes the legacy algo enum `CUBLAS_GEMM_DEFAULT_TENSOR_OP` to every `cublasGemmEx` /
+   `cublasGemmStridedBatchedEx` (`ggml-cuda.cu:1559/1575/1613`) and never calls `cublasSetMathMode`,
+   and that enum permits TF32 for `CUBLAS_COMPUTE_32F`.
+   **`ggml_mul_mat_set_prec(GGML_PREC_F32)` does not help** — it only forces `compute_type` to
+   `GGML_TYPE_F32`, which is already the case for an F32 weight, so the `--prec-f32` run reproduces
+   the f32 rows to the digit (38 915 / 59 306 / 62 625 GFLOP/s, rel 3.17e-04). **There is no way to
+   get a true-F32 `mul_mat` out of ggml-CUDA from jepa.cpp.** Torch is in the same regime by
+   *choice* (`torch.backends.cuda.matmul.allow_tf32` defaults to `False`, and S5.5 confirms it ran
+   at 13.8 TFLOP/s, i.e. real FP32); ggml is in it by accident.
+2. **`GGML_PREC_F32` transforms f16 accuracy and is nearly free at scale.** With `--prec-f32` the f16
+   rows go from **4.55e-03 to 2.57e-05** max rel error (177x better) and min cos 0.9999984 to
+   1.0000000, at 28 704 / 52 067 / 61 138 GFLOP/s — i.e. **-37 % at N=256, -21 % at N=2048, +9 % at
+   N=8192**. For anything but the shortest sequence it is close to free. This is the single cheapest
+   accuracy fix in the whole port.
+3. **The quantized types are the *fastest* path on CUDA** — 88-98 TFLOP/s, above f16 and f32 — and
+   q4_K is level with q8_0. That is the inversion S1.3 predicted: on the CPU `docs/benchmarks.md` has
+   q4_k *slower* than q8_0 (ViT-H 198 vs 129 ms) because llamafile's sgemm covers only F32/F16/Q8_0.
+
+Speed-up over the 32-thread CPU at N=2048: f32 **27x**, f16 **20x**, q8_0 **48x**, q4_K **52x**.
+
+### 5.2 `flash_attn_ext` — CUDA vs CPU, and the head_dim-32 fallback
+
+No mask, `GGML_PREC_F32` requested (a no-op on CUDA, S1.5). Best of 10 (CUDA) / 2 (CPU, 32 threads).
+`GFLOP/s` counts `4*N^2*D*H`.
+
+| head_dim | n_head | N | K/V | shape | CUDA ms | **CUDA GFLOP/s** | CPU 32t ms | rel vs CPU | min cos |
+|---:|---:|---:|---|---|---:|---:|---:|---:|---:|
+| 64 | 16 | 2 048 | f16 | ViT-L 16f@256 | 0.268 | 64 143 | 10.1 | 5.25e-03 | 0.9999903 |
+| 64 | 16 | 8 192 | f16 | ViT-L 64f@256 | 3.890 | **70 669** | 159.9 | 1.09e-02 | 0.9999572 |
+| 64 | 12 | 4 608 | f16 | 2.1 ViT-B 16f@384 | 0.939 | 69 498 | 40.1 | 9.85e-03 | 0.9999800 |
+| 64 | 12 | 18 432 | f16 | 2.1 ViT-B 64f@384 | 20.379 | 51 213 | 639.0 | 1.53e-02 | 0.9999122 |
+| 80 | 16 | 256 | f16 | I-JEPA ViT-H@224 | 0.028 | 11 872 | 0.6 | 9.51e-04 | 0.9999994 |
+| 64 | 16 | 2 048 | **f32** | ViT-L 16f@256 | 0.291 | 59 045 | 9.7 | 5.21e-03 | 0.9999903 |
+| 64 | 16 | 8 192 | **f32** | ViT-L 64f@256 | 4.194 | 65 542 | 154.6 | 1.08e-02 | 0.9999572 |
+| 64 | 12 | 18 432 | **f32** | 2.1 ViT-B 64f@384 | 19.996 | 52 193 | 626.0 | 1.53e-02 | 0.9999116 |
+| 80 | 16 | 256 | **f32** | I-JEPA ViT-H@224 | 0.034 | 9 904 | 0.5 | 1.08e-03 | 0.9999993 |
+| 32 | 12 | 2 048 / 4 096 | f16 **or** f32 | V-JEPA 2 predictor | **UNSUPPORTED** | – | – | – | – |
+
+* **35-40x faster than the CPU** on every production encoder shape, running at 51-71 TFLOP/s. The
+  small I-JEPA case (N=256) only reaches 11.9 TFLOP/s — 11 GFLOP of work is too little to fill the
+  GPU, which is exactly why I-JEPA's 3 % attention share (S5.0) does not matter.
+* **F32 K/V buys nothing, exactly as S1.5 predicted from the source.** Same error to three digits
+  (5.21e-03 vs 5.25e-03) and, if anything, *slower* (the extra F32-to-F16 conversion pass). This is
+  the measured proof that `JEPA_KV_F32` cannot be honoured on CUDA.
+* The CUDA error is ~10x the CPU's. `docs/ggml-notes.md` S3 measures CPU flash with F16 K/V at
+  rel <= 1.3e-3 and per-row cosine >= 0.9999995; CUDA lands at rel 5.2e-3-1.5e-2 and min cos
+  0.99991-0.99999. That is the F16 PV accumulator (`T_C_VKQ = tile<..., half2>`, S1.5), and unlike
+  the `mul_mat` case there is **no flag to turn it off**.
+
+**The head_dim-32 fallback, measured.** Naive F32 attention (`mul_mat + soft_max_ext + cont`) at the
+predictors' real row counts (N = context + target):
+
+| head_dim | n_head | N | shape | CUDA ms | CUDA GFLOP/s | CPU 32t ms | rel vs CPU | min cos | CUDA graph buffer |
+|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
+| 32 | 12 | 1 152 | 2.1 ViT-B image predictor | 0.799 | 2 551 | 5.3 | 6.69e-04 | 0.9999994 | 0.06 GiB |
+| 32 | 12 | 4 096 | ViT-L 16f predictor | 8.623 | 2 989 | 57.4 | 6.49e-04 | 0.9999993 | **0.76 GiB** |
+| 32 | 12 | 9 216 | 2.1 ViT-B 16f predictor | 43.979 | 2 966 | – | – | – | **3.82 GiB** |
+| 64 | 16 | 2 048 | (ViT-L encoder, for reference) | 2.913 | 5 898 | 26.6 | 7.42e-04 | 0.9999995 | 0.27 GiB |
+| 80 | 16 | 256 | (I-JEPA encoder, for reference) | 0.041 | 8 238 | 1.0 | 4.09e-04 | 0.9999997 | 0.01 GiB |
+
+It **works, fits, and is accurate** (rel 6.5e-04, min cos 0.9999993 — *better* than flash, because it
+is genuinely F32 end to end), but it runs at only **~3 TFLOP/s, 23x below flash at head_dim 64**.
+So the predictor is the weak spot of a CUDA port: 12 layers x 8.6 ms = ~103 ms of attention for the
+ViT-L 16-frame predictor against 452 ms on the CPU — a **4-7x win, not the 20x the encoders get**.
+The 3.82 GiB buffer at N=9216 is fine on a 24 GB card; the 64-frame 2.1 shape (N=36 864, 65 GB)
+remains out of reach and must stay on the CPU or be chunked over query blocks.
+
+### 5.3 `ggml_norm`: how bad the one-pass variance actually is
+
+`ggml_norm(x, 1e-6)` on `[1280, 256]` (a ViT-H row width), rows drawn as `N(mean, stdev)`, compared
+against a double-precision two-pass reference.
+
+| row mean | row stdev | mean/sigma | CPU vs double | **CUDA vs double** | min cos (CUDA) |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 1 | 0 | 9.18e-08 | 1.38e-07 | 1.0000000 |
+| 0 | 30 | 0 | 9.18e-08 | 1.38e-07 | 1.0000000 |
+| 1 | 1 | 1 | 9.18e-08 | 1.84e-07 | 1.0000000 |
+| 100 | 1 | 100 | 1.19e-06 | **8.94e-04** | 1.0000000 |
+| 100 | 30 | 3.3 | 9.18e-08 | 1.24e-06 | 1.0000000 |
+| 2 000 | 1 | 2 000 | 2.91e-05 | **5.70e+00** | 1.0000000 |
+| 2 000 | 30 | 67 | 9.64e-07 | 3.96e-04 | 1.0000000 |
+| 20 000 | 1 | 20 000 | 3.05e-04 | **7.99e-01** | 0.9999984 |
+| 20 000 | 30 | 667 | 9.82e-06 | 4.05e-02 | 1.0000000 |
+
+The failure is governed by **|row mean| / row sigma**, not by absolute magnitude: at a ratio of ~1 the
+two backends agree to 1e-7; at 100 the CUDA error is 8.9e-4; at 2 000 the output is **numerically
+destroyed** (relative error 5.7).
+
+**And cosine cannot see it.** A wrong variance is a *per-row scale factor*, which leaves cosine
+similarity at 1.0000000 in every row above. jepa.cpp's parity gates are cosine-dominated
+(`docs/parity.md` "Thresholds"); only `rel_max` would catch this, and only in the tiers that gate on
+it. That is worth knowing regardless of whether the port happens.
+
+**What this audit did *not* establish** is whether real ViT residual streams ever reach a mean/sigma
+ratio where it matters. `docs/architecture.md` records I-JEPA ViT-H *activations* reaching ~2e4, but
+that is a max element, not a row mean, and a row with large elements has a large sigma too — the
+`mean 20 000, sigma 30` row (ratio 667, error 4.05e-02) is the realistic worst case and the `mean 0`
+rows are the realistic typical case. Settling this needs a dump of real pre-LN rows, which would
+have meant changing `src/`, outside this audit's scope. **It is a required pre-flight check for
+chunk 3 of S6.7.**
+
+### 5.4 The RoPE chain: 193 splits vs 1, and bit-identical
+
+`jepa_rope3d_apply` applied to q and k of L layers, on the real non-contiguous qkv view. "current" is
+`src/rope3d.cpp` as it stands; "hoisted" is the brief's three-table suggestion **plus** a `ggml_cont`;
+"proposed" is S2.3 (two tables, one pair-swap roll). `sched` is `ggml_backend_sched` over
+`{CUDA, CPU}`.
+
+| N | L | chain | CPU 32t | **CUDA-only** | sched | **splits** |
+|---:|---:|---|---:|---:|---:|---:|
+| 2 048 | 24 | current | 7.0 ms | — | 10.2 ms | **193** |
+| 2 048 | 24 | hoisted | 22.1 ms | 8.194 ms | 8.181 ms | **1** |
+| 2 048 | 24 | proposed | 32.5 ms | **5.118 ms** | 5.175 ms | **1** |
+| 8 192 | 6 | current | 8.1 ms | — | 21.3 ms | **49** |
+| 8 192 | 6 | hoisted | 26.0 ms | 18.129 ms | 17.973 ms | **1** |
+| 8 192 | 6 | proposed | 40.9 ms | **13.360 ms** | 13.323 ms | **1** |
+
+* **193 splits** for 24 layers is 8 per layer — the four rejected rolls plus the copies around them,
+  exactly the per-layer fragmentation S1.2 predicted. Both fixes collapse it to **1**.
+* **Bit-identical, on both backends.** `max abs 0.000e+00`, `min cos 1.0000000` for hoisted-vs-current
+  and proposed-vs-current on the CPU, *and* for proposed-CUDA-vs-current-CPU. The numpy proof in
+  S2.3 holds in ggml, in float32, on the GPU.
+* The isolated CPU columns look alarming (7.0 to 32.5 ms) but are an **artefact of this
+  microbenchmark**: all 48 chains read one shared `qkv` tensor that stays hot in cache, so adding a
+  `ggml_cont` per chain looks far more expensive than it is. In the **full encoder**, where each
+  layer computes its own qkv, the real cost is (ViT-L, N=2048, f16, 32 threads):
+
+  | chain | CPU 32t | CUDA | correct on CUDA? |
+  |---|---:|---:|---|
+  | current | **736.8 ms** | 36.9 ms | **NO — see below** |
+  | hoisted | 757.9 ms (+2.9 %) | 37.8 ms | yes |
+  | proposed | 777.5 ms (+5.5 %) | **34.4 ms** | yes |
+
+  So the refactor costs **3-5 % of CPU encoder time**, not 4x. The `hoisted` variant is the cheaper
+  of the two on CPU and the `proposed` variant the faster on CUDA; either is acceptable, and the
+  `hoisted` one is the smaller change (it keeps today's two ne0-wide rolls, which the CPU kernel
+  likes, and only moves the masks to the host).
+
+**A trap worth the whole audit: a single CUDA backend does not check `supports_op`.**
+`ggml_backend_cuda_graph_compute` just calls `ggml_cuda_compute_forward` per node
+(`ggml-cuda.cu:4181`) and only logs when *that* returns false; `ggml_cuda_op_roll` dispatches happily
+and its kernel reads the strided view **as if it were contiguous**. `ggml_backend_cuda_device_supports_op`
+is wired only into the device interface, which **only `ggml_backend_sched` consults**. So the
+`current` chain on a single CUDA backend produces no error, no warning, and a **wrong answer**:
+
+```
+enc --rope-current --verify : verify vs CPU: max abs 3.494e-02 (rel 7.373e-03), min cos 0.9999600
+enc --rope         --verify : verify vs CPU: max abs 7.401e-03 (rel 1.560e-03), min cos 0.9999982
+```
+
+Note the failure would **pass jepa.cpp's f16 parity gate** (mean >= 0.9999, worst >= 0.99). And
+because this synthetic encoder has random weights — giving near-uniform attention that is insensitive
+to corrupted q/k — 0.99996 is a *lower bound* on the real error, not an estimate of it. Consequence
+for S6.1: a single-backend design **must validate its own graph** against
+`ggml_backend_dev_supports_op` at build time. That is ~15 lines and it is not optional.
+
+### 5.5 Synthetic encoder forward, CUDA vs CPU
+
+A full pre-LN ViT stack built from ggml ops — LN, fused qkv, RoPE (proposed), flash attention, output
+projection, LN, FFN with `gelu_erf` — with random weights of the right shapes. It omits the patch
+embedding (one extra `mul_mat`) and the position table, so it should read slightly *faster* than the
+real encoder. Best of 5 (CUDA) / 2 (CPU 32 threads). K/V F16 unless stated.
+
+| model | N | weights | **CUDA ms** | CUDA GFLOP/s | jepa.cpp CPU 32t (`docs/benchmarks.md`) | **speed-up** |
+|---|---:|---|---:|---:|---:|---:|
+| ViT-L | 2 048 | f32 | 40.7 | 40 571 | 941.3 | 23x |
+| ViT-L | 2 048 | f16 | **35.1** | 47 046 | 820.7 | **23x** |
+| ViT-L | 2 048 | q8_0 | 31.5 | 52 302 | 794.1 | 25x |
+| ViT-L | 2 048 | q4_K | 32.3 | 51 115 | 1 096.1 | 34x |
+| ViT-L | 8 192 | f32 | 269.0 | 42 912 | 7 020.1 | 26x |
+| ViT-L | 8 192 | f16 | **270.2** | 42 728 | 6 388.1 | **24x** |
+| ViT-L | 8 192 | q8_0 | 245.0 | 47 130 | 6 482.4 | 26x |
+| ViT-L | 8 192 | q4_K | 246.3 | 46 872 | 7 405.5 | 30x |
+| ViT-B | 576 | f16 | 2.9 | 37 581 | 60.3 | 21x |
+| ViT-B | 4 608 | f16 | 38.2 | 40 956 | 853.5 | 22x |
+| ViT-B | 18 432 | f16 | 397.0 | 39 435 | 9 036.1 | 23x |
+| ViT-H | 256 | f32 | 10.8 | 30 945 | 174.4 | 16x |
+| ViT-H | 256 | f16 | **7.2** | 45 936 | 147.0 | **20x** |
+| ViT-H | 256 | q8_0 | 6.8 | 48 882 | 129.1 | 19x |
+
+**The synthetic graph is a faithful proxy.** Run on the CPU backend it gives 778.8 ms for ViT-L
+N=2048 f16 against the 820.7 ms `docs/benchmarks.md` measures for the real thing (-5 %), and 129.4 ms
+for ViT-H N=256 f16 against 147.0 (-12 %) — the residual being the patch embed and pos-embed it
+omits. So the CUDA column can be compared to the published CPU rows directly.
+
+Variants:
+
+| variant | ViT-H N=256 f16 | ViT-L N=2048 f16 | note |
+|---|---:|---:|---|
+| baseline | 7.2 ms | 35.1 ms | |
+| `+ GGML_PREC_F32` on every mul_mat | **15.1 ms** (2.1x) | **43.7 ms** (1.25x) | the accuracy fix of S5.1 |
+| `+ GGML_PREC_F32`, q8_0 weights | – | 31.9 ms (vs 31.5, **free**) | quantized skips cuBLAS |
+| F32 weights, F32 K/V | 10.7 ms (vs 10.8 F16 K/V) | – | K/V dtype is a no-op, S5.2 |
+| naive attention instead of flash | 11.2 ms (vs 10.7) — **~free** | 98.0 ms (2.8x), 0.30 GiB | the F32-parity escape hatch |
+
+Two useful consequences: **`GGML_PREC_F32` costs 2.1x on the short-sequence ViT-H but only 1.25x on
+ViT-L and nothing at all on quantized weights**; and **the naive attention path is essentially free at
+I-JEPA's 256 tokens**, so `--no-flash` really is a viable f32-accuracy mode for the image models
+(S6.4), while at 2 048 tokens it costs 2.8x.
+
+### 5.6 Forecast, and the honest ratio against torch-GPU
+
+The S5.5 column *is* the forecast — it is a measured ggml-CUDA forward of the right shape, so no
+extrapolation is needed. Adding the transfers of S6.1.3 (~7 ms at the largest shape, less elsewhere)
+and the patch embed (~2-5 % of the matmul work):
+
+| model / shape | jepa.cpp CPU 32t today | **forecast jepa.cpp-CUDA (f16)** | torch-GPU fp16 | **ggml / torch** |
+|---|---:|---:|---:|---:|
+| I-JEPA ViT-H, 224^2 | 147.0 ms | **~7.5 ms** | 5.57 ms | 1.35x slower (**74 %**) |
+| V-JEPA 2 ViT-L, 16f@256 | 820.7 ms | **~37 ms** | 29.56 ms | 1.25x slower (**80 %**) |
+| V-JEPA 2 ViT-L, 64f@256 | 6 388.1 ms | **~280 ms** | 150.03 ms | 1.87x slower (**54 %**) |
+| V-JEPA 2.1 ViT-B, 16f@384 | 853.5 ms | ~40 ms | – | – |
+| V-JEPA 2.1 ViT-B, 64f@384 | 9 036.1 ms | ~405 ms | – | – |
+| V-JEPA 2 ViT-L predictor, 16f | 452 ms | **~105 ms** | – | (naive attention, S5.2) |
+
+**The honest ratio is 54-80 % of PyTorch**, i.e. jepa.cpp-CUDA would be 1.25-1.9x slower than
+`VJEPA2Model` on the same card — and **20-26x faster than jepa.cpp as it exists today**.
+
+Where the remaining gap is, at the 64-frame ViT-L shape: the measured component rates (S5.1, S5.2)
+predict `4948/55.9 + 6597/70.7 = 88 + 93 = 182 ms`, against 270 ms measured. The missing ~88 ms is
+everything that is neither a GEMM nor an attention: 48 unfused LayerNorms (S1.6), `gelu_erf` over
+`[4096, 8192]` twice per layer, the per-layer F32-to-F16 K/V casts, and the RoPE. **That is where a
+second round of optimisation would go**, and the `{NORM, MUL, ADD}` fusion of S1.6 is the first item
+on that list. It also explains the shape of the ratio column: the gap is smallest where matmuls
+dominate (I-JEPA, ViT-L 16f) and widest where the long-sequence overheads pile up (ViT-L 64f).
+
+### 5.7 Measurement conditions
+
+The batching agent's sentinel appeared at 22:17 and every number above was taken after it, on an
+otherwise idle box. `uptime` load average: **1.79 before the build**, 10.06 at the start of the
+measurement sweep and 13.99 at its end (the sweep's own CPU-backend comparison runs at 32 threads are
+most of that). GPU 0 only (`CUDA_VISIBLE_DEVICES=0` for the torch runs; the ggml probe selects
+device 0 explicitly), both cards otherwise idle at 13-14 W. Build capped at `-j8` throughout.
+Raw outputs: `tmp/results/{ops,norm,mm,mm-prec32,fa,rope,rope-enc,enc,torch-gpu}.txt` and
+`tmp/results/torch-gpu.json` in this worktree.
 
 ## 6. Implementation plan
 
