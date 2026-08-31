@@ -3,7 +3,7 @@
 
 The GGUF is read with the python `gguf` package, every quantized tensor is dequantized
 (`gguf.quants.dequantize`: Q8_0 / Q4_0 / Q4_1 / Q5_0 / Q5_1 / Q4_K / Q5_K / Q6_K / ...), and the numpy forward of
-`scripts/jepa_convert/selftest.py` (ijepa / hfvit / lewm) or `scripts/jepa_convert/vjepa2_numpy_ref.py`
+`scripts/jepa_convert/selftest.py` (ijepa / hfvit / lewm / levjepa) or `scripts/jepa_convert/vjepa2_numpy_ref.py`
 (vjepa2 / vjepa2_1) is run on the *stored* `input` tensors of a reference set written by `scripts/dump_reference.py`.
 The outputs are compared with `scripts/compare.py` metrics (per-token cosine mean / min, max-abs, rel_max, rel_fro,
 top-1 / top-5 for logits).  The numbers therefore isolate the weight-quantization error: the same math in f32,
@@ -12,6 +12,7 @@ the same preprocessed pixels, only the weights differ.
   gguf_dequant_selftest.py --gguf models/gguf/lejepa-vits16-pretrain-in1k-q8_0.gguf --ref tests/fixtures/ref/lejepa-vits16
   gguf_dequant_selftest.py --gguf models/gguf/ijepa_vith14_1k-q4_k.gguf --ref tests/fixtures/ref/ijepa-vith14-1k --samples 2
   gguf_dequant_selftest.py --gguf models/gguf/vjepa2_1-vitb-384-q8_0.gguf --ref tests/fixtures/ref/vjepa2_1-vitb-384 --samples coco_000000000139
+  gguf_dequant_selftest.py --gguf models/gguf/levjepa-vitl16-q8_0.gguf --ref tests/fixtures/ref/levjepa-vitl16 --samples archery_f16
 
 Exit status 1 if any compared tensor has a worst per-token cosine below --min-cos (default 0.999, the Q8_0 threshold
 of docs/architecture.md) or, when --max-rel is given, a rel_max above it.  --json writes all rows plus the per-tensor
@@ -52,6 +53,7 @@ import selftest  # noqa: E402  (scripts/jepa_convert/selftest.py: Model + numpy 
 
 IMAGE_FAMILIES = ("ijepa", "hfvit", "lewm")
 VIDEO_FAMILIES = ("vjepa2", "vjepa2_1")
+LEVJEPA_FAMILY = "levjepa"   # the video graph plus a CLS row and the block-causal mask
 
 
 # ----------------------------------------------------------------------------- forward passes per family
@@ -94,6 +96,14 @@ def run_image_family(m: selftest.Model, sample: dict, ref_dir: Path) -> dict[str
             out["act_emb"] = selftest.mlp2(m, "pred.action_embed", action[None], aact)[0]
             out["pred_next"] = selftest.lewm_predictor_forward(m, emb[:1], action[None])[-1]  # T = 1, end to end
     return out
+
+
+def run_levjepa(m: "selftest.Model", sample: dict, ref_dir: Path) -> dict[str, np.ndarray]:
+    """levjepa: the stored NCTHW clip through selftest.levjepa_encoder_forward (CLS + block-causal)."""
+    tens = sample["tensors"]
+    x = np.load(ref_dir / tens["input"]["file"]).astype(np.float32)[0]     # [C, T, H, W]
+    enc = selftest.levjepa_encoder_forward(m, x)
+    return {"last_hidden_state": enc, "cls": enc[0], "pooled_mean": enc[1:].mean(0)}
 
 
 def run_video_family(kv: dict, W: dict, sample: dict, ref_dir: Path, vref) -> dict[str, np.ndarray]:
@@ -168,7 +178,7 @@ def main(argv=None) -> int:
     if fam in VIDEO_FAMILIES:
         import vjepa2_numpy_ref as vref  # noqa: F811
         kv, W = vref.load_gguf(args.gguf)  # dequantizes every tensor once
-    elif fam not in IMAGE_FAMILIES:
+    elif fam not in IMAGE_FAMILIES and fam != LEVJEPA_FAMILY:
         raise SystemExit(f"family {fam} not supported")
     print(f"weights loaded / dequantized in {time.time() - t0:.1f}s")
 
@@ -178,6 +188,8 @@ def main(argv=None) -> int:
         t1 = time.time()
         if fam in IMAGE_FAMILIES:
             outs = run_image_family(m, s, args.ref)
+        elif fam == LEVJEPA_FAMILY:
+            outs = run_levjepa(m, s, args.ref)
         else:
             outs = run_video_family(kv, W, s, args.ref, vref)
         dt = time.time() - t1

@@ -1,4 +1,4 @@
-# Parity — image ViT encoders (I-JEPA, LeJEPA/hfvit, LeWM) and video encoders (V-JEPA 2 / 2.1)
+# Parity — image ViT encoders (I-JEPA, LeJEPA/hfvit, LeWM) and video encoders (V-JEPA 2 / 2.1, LeVJEPA)
 
 *Raw measurement report — the curated view is [Benchmarks → Accuracy](accuracy.md).*
 
@@ -15,8 +15,8 @@ build/test-parity models/gguf/<model>.gguf tests/fixtures/ref/<ref> --threads 32
 build/test-predictor --lewm  models/gguf/<lewm>.gguf   --ref tests/fixtures/ref/lewm-pusht --threads 32
 build/test-predictor --vjepa2 models/gguf/<vjepa2>.gguf --ref tests/fixtures/ref/<ref> --samples archery_f16 --threads 32
 ctest --test-dir build                                           # parity-lejepa-vits16, parity-lewm-pusht, (re-run cmake once GGUFs + refs exist — tests register at configure time)
-                                                                 # parity-vjepa2_1-vitb-384-images, predictor-lewm,
-                                                                 # predictor-vjepa2, batch, ops, attn, backend — 9 tests, ~22 s
+                                                                 # parity-vjepa2_1-vitb-384-images, parity-levjepa-vitl16-clip,
+                                                                 # predictor-lewm, predictor-vjepa2, batch, ops, attn, backend — 10 tests, ~32 s
                                                                  # (`backend` skips with exit 0 unless the build has a GPU; see "Parity on a GPU")
 ```
 
@@ -61,7 +61,7 @@ All 9 image files **PASS** on both passes (18 file×pass combinations) against t
 — the strict ones: every token ≥ 0.9999 at f32, token-map mean ≥ 0.9999 with worst ≥ 0.99 at f16, and
 mean ≥ 0.98 with pooled/CLS/emb ≥ 0.999 at q8_0. Raw per-sample JSON: `test-parity ... --json`.
 
-## Results — video encoders (V-JEPA 2 / V-JEPA 2.1)
+## Results — video encoders (V-JEPA 2 / V-JEPA 2.1 / LeVJEPA)
 
 Same protocol; the stored `input` is 5-D (`NTCHW` for the HF V-JEPA 2 dumps, `NCTHW` for V-JEPA 2.1 —
 `test-parity` reads the layout from the manifest and transposes) and is fed as **one clip**: the whole
@@ -175,6 +175,68 @@ Practical consequence, in one line: **use f16 (or q8_0) for pooled features, ret
 classification — they are indistinguishable from f32 there; use f32 if you consume individual V-JEPA 2
 ViT-L tokens** (dense/per-token work). V-JEPA 2.1 ViT-B is much more forgiving (worst token 0.97 at f16,
 0.83 at q8_0).
+
+### LeVJEPA ViT-L/16 — CLS, block-causal attention, tubelet 1
+
+`levjepa-vitl16` is the fourth video encoder and the only one with a CLS token. A 16-frame 224²
+clip is `1 + 16·14·14 = 3137` rows: the CLS first, then the patch tokens T-major. The CLS carries no
+position at all (no table row, and the RoPE cos/sin tables get an identity row for it), and attention
+runs under the block-causal mask — bidirectional inside a temporal slot, causal across slots, CLS row
+open and CLS column closed — which is 53.1 % of the `3137 × 3137` grid. The feature this model is used
+through is `cls` = `pooler_output`; `pooled` (the mean over the 3136 patch tokens) is reported as well.
+
+Both fixture clips (archery, bowling) and both still images run in one `test-parity` process per file;
+the images take the model card's path of repeating the frame 16 times, so they exercise the same graph
+at the same 3137 rows.
+
+| model | ftype | sample set | tokens | cos mean | cos med | cos min | rel_max | cls | pooled | ms/clip t=32 | tokens/s | PyTorch t=32 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| levjepa-vitl16 | **f32** | 2 clips × 16 f | 3137 | 1.000000 | 1.000000 | 1.000000 | **8.3e-06** | 1.000000 | 1.000000 | 1907 / 1661 | 1889 | 1774 |
+| levjepa-vitl16 | **f32** | 2 still images | 3137 | 1.000000 | 1.000000 | 1.000000 | **7.7e-06** | 1.000000 | 1.000000 | 1685 / 1684 | 1862 | 1730 |
+| levjepa-vitl16 | f16 | 2 clips × 16 f | 3137 | 0.999998 | 0.999999 | 0.999820 | 3.5e-03 | 1.000000 | 1.000000 | 1824 / 1542 | 2034 | 1774 |
+| levjepa-vitl16 | f16 | 2 still images | 3137 | 1.000000 | 1.000000 | 0.999976 | 1.1e-03 | 1.000000 | 1.000000 | 1520 / 1540 | 2037 | 1730 |
+| levjepa-vitl16 | q8_0 | 2 clips × 16 f | 3137 | 0.999789 | 0.999937 | 0.991409 | 2.5e-02 | 0.999996 | 0.999997 | 1733 / 1609 | 1950 | 1774 |
+| levjepa-vitl16 | q8_0 | 2 still images | 3137 | 0.999809 | 0.999868 | 0.996157 | 1.9e-02 | 0.999989 | 0.999982 | 1675 / 1627 | 1928 | 1730 |
+| levjepa-vitl16 | q4_0 | 2 clips × 16 f | 3137 | 0.997971 | 0.998157 | 0.983584 | 3.7e-02 | 0.999612 | 0.999716 | 1775 / 1610 | 1949 | 1774 |
+| levjepa-vitl16 | q4_0 | 2 still images | 3137 | 0.998385 | 0.998464 | 0.993149 | 3.3e-02 | 0.999601 | 0.999548 | 1646 / 1633 | 1922 | 1730 |
+| levjepa-vitl16 | q4_k | 2 clips × 16 f | 3137 | 0.997277 | 0.998313 | 0.957464 | 5.9e-02 | 0.999622 | 0.999749 | 2145 / 1935 | 1621 | 1774 |
+| levjepa-vitl16 | q4_k | 2 still images | 3137 | 0.997031 | 0.997502 | 0.962741 | 4.7e-02 | 0.999457 | 0.999219 | 1928 / 1918 | 1635 | 1730 |
+
+Worst sample of the group per row; `ms/clip` is the two samples of the group in run order and
+`tokens/s` uses the second (the first clip of a process pays for paging the weights in — 1907 → 1661 ms
+at f32). All five files **PASS**, on the stored input and on our own preprocessing alike, and the two
+passes agree to the last digit reported: the fixtures store the sampled frames, our preprocessor
+reproduces the reference pixels bit for bit (input max abs 0.0, 100 % of values equal), so this family
+has no decoder floor at all. `PyTorch t=32` is the mean `timing_s.forward_s` of the group in the
+manifest; re-timed as a loop (1 warmup + 5 forwards, same box, same clip) the reference is 1904 ms
+median / 1883 ms minimum, so f16 at 32 threads is 1.2× PyTorch. The f16 file was also timed at **96
+threads**, one run:
+
+| model | ftype | sample set | tokens | ms/clip t=96 | tokens/s |
+|---|---|---|---|---|---|
+| levjepa-vitl16 | f16 | 2 clips × 16 f | 3137 | 1478 / 881 | 3559 |
+
+i.e. 1.75× the 32-thread throughput and 2.1× PyTorch on the same box. Peak RSS: 1371 MiB (f32),
+816 MiB (f16), 527 MiB (q8_0), 390 MiB (q4_0), 395 MiB (q4_k).
+
+**This family has no low-cosine token tail.** Where V-JEPA 2 ViT-L f16 drops individual tokens to 0.51,
+LeVJEPA f16 keeps *every one* of its 3137 tokens above 0.9998 on all four samples (`tokens < 0.999`:
+0 of 3137), and q8_0 puts at most 100 tokens below 0.999 with none below 0.99. The mechanism from the
+V-JEPA 2 discussion above — F16 activations amplified by low-variance tokens — is present but has
+nothing to bite on here: the reference row norms of this encoder sit in a narrow band (worst-token
+norm 29.9 against a sample mean of 29.5 on bowling q8_0), i.e. there is no degenerate low-norm cluster.
+The practical reading is the opposite of V-JEPA 2 ViT-L's: f16 is a per-token-grade configuration for
+this model, and q8_0 is a pooled-feature-grade one.
+
+Below 8 bits the token map does open up — q4_0 puts ~2900 of 3137 tokens under 0.999 and q4_k reaches a
+worst token of 0.957 — while the CLS feature holds at 0.9995 or better. Both stay in the advisory tier
+(`test-parity` prints the note), and the recommendation is the project's usual one: q8_0 is the lowest
+parity-grade quantisation.
+
+Isolating the weights from the graph, `scripts/gguf_dequant_selftest.py` runs the same numpy forward on
+the dequantized GGUF at f32 activations (archery_f16, worst token / CLS): q8_0 0.999961 / 0.999999,
+q4_0 0.991279 / 0.999795, q4_k 0.994180 / 0.999862. The gap to the C++ q8_0 row (0.999428) is the F16
+activation rounding inside ggml's quantized `mul_mat`, exactly as for the other video families.
 
 ## Results — predictors (masked V-JEPA 2 / 2.1 predictor, LeWM world model)
 
@@ -305,7 +367,8 @@ digit in every one of the 20 rows, which is what one expects of load-independent
 `test-parity` judges two classes of tensor separately, and does it **per family**: the long low-cosine
 tail described above is a property of the V-JEPA 2 *video* encoders at f16/q8_0 — the image ViTs
 (I-JEPA, LeJEPA/hfvit, LeWM) reproduce the reference on every token at every dtype, so they keep the
-hard bars. The table below is the CPU half of the `POLICY` table of `tests/test-parity.cpp`, which prints the
+hard bars. LeVJEPA is judged with the video rows and needs none of the slack they give: it clears them
+by two to three digits in every tier (previous section). The table below is the CPU half of the `POLICY` table of `tests/test-parity.cpp`, which prints the
 row it used in its header line; the GPU half is under "Parity on a GPU" below.
 
 | family class | tier | token map (`last_hidden_state`) | derived (`pooled_mean`, `pooled`, `cls`, `emb`, `logits`) |
@@ -313,7 +376,7 @@ row it used in its header line; the GPU half is under "Parity on a GPU" below.
 | image (`ijepa`, `hfvit`, `lewm`) | f32 | mean & worst token ≥ 0.9999, `rel_max` ≤ REL(N) | ≥ 0.9999, `rel_max` ≤ REL(N) |
 | image | f16 | **mean ≥ 0.9999**, worst ≥ 0.99 | ≥ 0.9995 |
 | image | q8 (≥ 8 bits/weight) | mean ≥ 0.98 | mean ≥ 0.999, worst row ≥ 0.98 |
-| video (`vjepa2`, `vjepa2_1`) | f32 | mean & median & worst ≥ 0.9999, `rel_max` ≤ REL(N) | ≥ 0.9999, `rel_max` ≤ REL(N) |
+| video (`vjepa2`, `vjepa2_1`, `levjepa`) | f32 | mean & median & worst ≥ 0.9999, `rel_max` ≤ REL(N) | ≥ 0.9999, `rel_max` ≤ REL(N) |
 | video | f16 | **median ≥ 0.999**, mean ≥ 0.99 | ≥ 0.9995 |
 | video | q8 | **median ≥ 0.99**, mean ≥ 0.95 | ≥ 0.995 |
 | either | low-bit (< 8 bits/weight) | *reported, not gated* | ≥ 0.99 |
@@ -459,8 +522,13 @@ Worst sample per file, stored-input pass, all fixture samples. `derived` names t
 | vjepa2_1-vitb-384 | f16 | 4 | 4608 | 0.999951 | 0.999985 | 0.9769 | 5.1e-02 | pooled_mean 0.999999 | 5.2e-04 |
 | vjepa2_1-vitb-384 | q8_0 | 4 | 4608 | 0.999073 | 0.999568 | 0.8396 | 1.3e-01 | pooled_mean 0.999983 | 1.3e-03 |
 | vjepa2_1-vitb-384 | q4_k | 4 | 4608 | 0.978335 | 0.984305 | 0.6029 | 2.7e-01 | pooled_mean 0.997691 | 1.1e-02 |
+| levjepa-vitl16 | f32 | 4 | 3137 | 0.999996 | 0.999998 | 0.9999 | 4.1e-03 | cls 0.999999 | 6.4e-04 |
+| levjepa-vitl16 | f16 | 4 | 3137 | 0.999996 | 0.999998 | 0.9999 | 4.1e-03 | cls 0.999999 | 6.6e-04 |
+| levjepa-vitl16 | q8_0 | 4 | 3137 | 0.999785 | 0.999864 | 0.9914 | 2.3e-02 | pooled_mean 0.999982 | 2.3e-03 |
+| levjepa-vitl16 | q4_0 | 4 | 3137 | 0.997961 | 0.998148 | 0.9836 | 3.8e-02 | pooled_mean 0.999547 | 8.6e-03 |
+| levjepa-vitl16 | q4_k | 4 | 3137 | 0.994222 | 0.997310 | 0.8844 | 1.6e-01 | cls 0.999343 | 1.8e-02 |
 
-**22 of the 24 files PASS.** The two that do not — `lejepa-vits16-q4_k` (derived `cls` 0.9851 against
+**27 of the 29 files PASS.** The two that do not — `lejepa-vits16-q4_k` (derived `cls` 0.9851 against
 the low-bit tier's 0.99) and `vjepa2-vitl-fpc16-256-ssv2-q4_k` (`logits` 0.9781, `pooled` 0.9807) —
 **fail on the CPU too, identically**: q4_k below 8 bits per weight is not a parity configuration for
 these two models and `docs/quantization.md` already says so. Every q4_k row is otherwise a *pass on
@@ -474,6 +542,17 @@ tail (`cos min` 0.35), which is *not* a GPU effect — the CPU f16 rows in the v
 the same 0.51/0.60 and the f32 CPU rows do not, because the tail comes from rounding activations to
 F16 inside an f16 `mul_mat`. On the GPU the f32 file behaves like the f16 one (0.3549 vs 0.3557),
 which is the same statement as "there is no f32 tier here", measured end to end.
+
+LeVJEPA is the family whose GPU rows come out *better* than its CPU ones at f32/f16 (worst token
+0.9999 against the CPU f16's 0.99982), and its q4_k row is the one place where the backend matters:
+0.8844 on the GPU against 0.9575 on the CPU, `rel_max` 1.6e-1 against 5.9e-2, with the CLS feature
+still at 0.9993. That row also carries the practical answer to the one open question this family
+raised — the block-causal mask had never been exercised on a CUDA *flash* kernel before (LeWM's
+causal predictor takes the naive head-32 path). It needs no padding at this ggml commit: the MMA
+kernel wraps mask rows with `fastmodulo(j0 + j, ne01)` and clamps the key axis of the final tile
+against `k_VKQ_sup`, so an unpadded `[3137, 3137]` F16 buffer is read correctly. Graph validation —
+mandatory on a GPU — accepts every node, and the measured agreement with PyTorch settles it: a
+silently dropped mask would read 0.945 on the CLS, not 1.000000.
 
 ### Results — predictors on CUDA0
 

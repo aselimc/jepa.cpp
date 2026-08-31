@@ -44,6 +44,9 @@ Measurement sessions (one `bench_all.sh` invocation each):
 | 32 | 1 + 3 | 2026-08-31 11:32 UTC | 2026-08-31 11:37 UTC | 0.04 → 30.84 | official re-sweep, idle box (previous agents finished) |
 | 32 | 1 + 3 | 2026-08-31 11:39 UTC | 2026-08-31 11:42 UTC | 3.24 → 30.08 | q4_0/q4_k encoder rows only (size/speed trade-off), idle box |
 | 96 | 1 + 3 | 2026-08-31 11:44 UTC | 2026-08-31 11:46 UTC | 3.14 → 65.00 | the single budgeted 96-thread session, idle box |
+| 32 | 1 + 3 | 2026-08-31 23:02 UTC | 2026-08-31 23:03 UTC | 1.41 → 10.16 | levjepa f32/f16/q8_0 encoder, idle box |
+| 96 | 1 + 3 | 2026-08-31 23:05 UTC | 2026-08-31 23:05 UTC | 1.81 → 9.35 | levjepa 96-thread row, idle box |
+| 32 | 1 + 3 | 2026-08-31 23:13 UTC | 2026-08-31 23:13 UTC | 0.82 → 7.80 | levjepa q4_0/q4_k encoder rows, idle box |
 
 The 1-minute load average is recorded per session, before the first run and after the last (out of 192 hardware threads; a session's own run contributes its thread count, which is what the end-of-session figure mostly is). Every session here started on an **idle** box — the highest starting load average is 3.24 — so `ms mean` is a fair figure and `ms min` sits within a per cent or two of it.
 
@@ -64,6 +67,12 @@ The 1-minute load average is recorded per session, before the first run and afte
 | lejepa-vits16-pretrain-in1k | q8_0 | 224x224 | 197 | 32 | 11.3 | 11.2 | 17379 | 22.6 | **15.4** | 1.36x |
 | lejepa-vits16-pretrain-in1k | q4_k | 224x224 | 197 | 32 | 12.9 | 12.8 | 15301 | 22.6 | **15.4** | 1.20x |
 | lejepa-vits16-pretrain-in1k | q4_0 | 224x224 | 197 | 32 | 12.0 | 11.9 | 16411 | 22.6 | **15.4** | 1.28x |
+| levjepa-vitl16 | f32 | 16f 224x224 | 3 137 | 32 | 1519.5 | 1512.0 | 2065 | **1752** | 1735 | 1.15x |
+| levjepa-vitl16 | f16 | 16f 224x224 | 3 137 | 32 | 1496.2 | 1479.9 | 2097 | **1752** | 1735 | 1.17x |
+| levjepa-vitl16 | f16 | 16f 224x224 | 3 137 | 96 | 894.7 | 882.2 | 3506 | **1752** | 1735 | 1.96x |
+| levjepa-vitl16 | q8_0 | 16f 224x224 | 3 137 | 32 | 1547.3 | 1508.4 | 2027 | **1752** | 1735 | 1.13x |
+| levjepa-vitl16 | q4_k | 16f 224x224 | 3 137 | 32 | 1874.6 | 1851.4 | 1673 | **1752** | 1735 | 0.93x |
+| levjepa-vitl16 | q4_0 | 16f 224x224 | 3 137 | 32 | 1551.0 | 1536.7 | 2023 | **1752** | 1735 | 1.13x |
 | lewm-pusht | f32 | 224x224 | 257 | 32 | 9.2 | 9.2 | 28022 | **16.8**<sup>lewm</sup> | 16.0 | 1.83x |
 | lewm-pusht | f16 | 224x224 | 257 | 32 | 9.8 | 9.7 | 26356 | **16.8**<sup>lewm</sup> | 16.0 | 1.72x |
 | lewm-pusht | q8_0 | 224x224 | 257 | 32 | 9.1 | 8.9 | 28212 | **16.8**<sup>lewm</sup> | 16.0 | 1.84x |
@@ -114,6 +123,7 @@ PyTorch baseline = `timing_s.forward_s` over the reference samples with the same
 |---|---|---:|---|---:|---:|---:|---|
 | ijepa_vith14_1k | `ijepa-vith14-1k` | 1 | coco_000000000139, … (8 samples) | 331.8 | 263 | 250 | median (cold first sample) |
 | lejepa-vits16-pretrain-in1k | `lejepa-vits16` | 1 | coco_000000000139, … (8 samples) | 72.2 | 22.6 | 15.4 | median (cold first sample) |
+| levjepa-vitl16 | `levjepa-vitl16` | 16 | archery_f16, bowling_f16, coco_000000000139, coco_000000000285 | 1682.3 | 1752 | 1735 | mean |
 | lewm-pusht | `lewm-pusht` | 1 | coco_000000000139, coco_000000000285 | 17.5 | 16.8 | 16.0 | mean |
 | lewm-pusht | `lewm-pusht` | 3 | seq | 20.9 | 20.9 | – | mean |
 | vjepa2-vitl-fpc16-256-ssv2 | `vjepa2-vitl-fpc16-256-ssv2` | 16 | archery_f16, bowling_f16 | 1056.0 | 1051 | 1046 | mean |
@@ -132,6 +142,7 @@ A frame group is matched to an encoder row by frame count, so a sample that is n
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | ijepa_vith14_1k | 224x224 | 256 | 1468 | 1741 | 1983 | 1295 | 1826 | 2264 |
 | lejepa-vits16-pretrain-in1k | 224x224 | 197 | 15019 | 15383 | 17379 | 15301 | 16411 | – |
+| levjepa-vitl16 | 16f 224x224 | 3 137 | 2065 | 2097 | 2027 | 1673 | 2023 | 3506 |
 | lewm-pusht | 224x224 | 257 | 28022 | 26356 | 28212 | 24561 | 28243 | – |
 | vjepa2-vitl-fpc16-256-ssv2 | 16f 256x256 | 2 048 | 2171 | 2489 | 2582 | 1874 | 2400 | 3629 |
 | vjepa2-vitl-fpc64-256 | 16f 256x256 | 2 048 | 2176 | 2495 | 2579 | 1868 | 2425 | 3614 |
@@ -146,6 +157,7 @@ A frame group is matched to an encoder row by frame count, so a sample that is n
 |---|---|---:|---:|---:|---:|---:|---:|
 | ijepa_vith14_1k | 224x224 | 256 | 174 | 147 | 129 | 1.19x | 1.14x |
 | lejepa-vits16-pretrain-in1k | 224x224 | 197 | 13.1 | 12.8 | 11.3 | 1.02x | 1.13x |
+| levjepa-vitl16 | 16f 224x224 | 3 137 | 1519 | 1496 | 1547 | 1.02x | 0.97x |
 | lewm-pusht | 224x224 | 257 | 9.2 | 9.8 | 9.1 | 0.94x | 1.07x |
 | vjepa2-vitl-fpc16-256-ssv2 | 16f 256x256 | 2 048 | 943 | 823 | 793 | 1.15x | 1.04x |
 | vjepa2-vitl-fpc64-256 | 16f 256x256 | 2 048 | 941 | 821 | 794 | 1.15x | 1.03x |
@@ -162,6 +174,7 @@ Quantisation buys memory, not reliably time. The matmuls do get faster (`docs/gg
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | ijepa_vith14_1k | 224x224 | 256 | 1206 | 344 | 28 % | 147 | 140 | 198 | 1.05x | 0.71x |
 | lejepa-vits16-pretrain-in1k | 224x224 | 197 | 42 | 13 | 31 % | 12.8 | 12.0 | 12.9 | 1.07x | 0.93x |
+| levjepa-vitl16 | 16f 224x224 | 3 137 | 579 | 166 | 29 % | 1496 | 1551 | 1875 | 0.96x | 0.83x |
 | lewm-pusht | 224x224 | 257 | 38 | 15 | 41 % | 9.8 | 9.1 | 10.5 | 1.07x | 0.87x |
 | vjepa2-vitl-fpc16-256-ssv2 | 16f 256x256 | 2 048 | 717 | 205 | 29 % | 823 | 853 | 1093 | 0.96x | 0.78x |
 | vjepa2-vitl-fpc64-256 | 16f 256x256 | 2 048 | 622 | 178 | 29 % | 821 | 844 | 1096 | 0.97x | 0.77x |
@@ -177,6 +190,7 @@ q4 is a **memory** win and, at best, time-neutral: the weights fall to 28–41 %
 | model | ftype | mode | shape | tokens | ms t=32 | ms t=96 | speedup |
 |---|---|---|---|---:|---:|---:|---:|
 | ijepa_vith14_1k | f16 | encoder | 224x224 | 256 | 147 | 113 | 1.30x |
+| levjepa-vitl16 | f16 | encoder | 16f 224x224 | 3 137 | 1496 | 895 | 1.67x |
 | vjepa2-vitl-fpc16-256-ssv2 | f16 | encoder | 16f 256x256 | 2 048 | 823 | 564 | 1.46x |
 | vjepa2-vitl-fpc16-256-ssv2 | f16 | head | 16f 256x256 | 2 048 | 99.0 | 67.1 | 1.48x |
 | vjepa2-vitl-fpc16-256-ssv2 | f16 | predictor | 16f 256x256 | 2 048 | 341 | 208 | 1.64x |
@@ -203,6 +217,12 @@ Tripling the threads never triples the throughput: the 32-thread runs already sa
 | lejepa-vits16-pretrain-in1k | f32 | 224x224 | 32 | 13.1 | 14.0 | -6.6 % |
 | lejepa-vits16-pretrain-in1k | f16 | 224x224 | 32 | 12.7 | 13.4 | -5.2 % |
 | lejepa-vits16-pretrain-in1k | q8_0 | 224x224 | 32 | 11.2 | 12.6 | -11.0 % |
+| levjepa-vitl16 | f32 | 16f 224x224 | 32 | 1512 | 1661 | -9.0 % |
+| levjepa-vitl16 | f16 | 16f 224x224 | 32 | 1480 | 1542 | -4.0 % |
+| levjepa-vitl16 | f16 | 16f 224x224 | 96 | 882 | 881 | +0.1 % |
+| levjepa-vitl16 | q8_0 | 16f 224x224 | 32 | 1508 | 1609 | -6.3 % |
+| levjepa-vitl16 | q4_k | 16f 224x224 | 32 | 1851 | 1935 | -4.3 % |
+| levjepa-vitl16 | q4_0 | 16f 224x224 | 32 | 1537 | 1610 | -4.6 % |
 | lewm-pusht | f32 | 224x224 | 32 | 9.2 | 10.3 | -11.1 % |
 | lewm-pusht | f16 | 224x224 | 32 | 9.7 | 10.7 | -9.6 % |
 | lewm-pusht | q8_0 | 224x224 | 32 | 8.9 | 9.7 | -8.7 % |
@@ -237,6 +257,11 @@ Tripling the threads never triples the throughput: the 32-thread runs already sa
 | lejepa-vits16-pretrain-in1k | q8_0 | 224x224 | 23 | 33 | 22 |
 | lejepa-vits16-pretrain-in1k | q4_k | 224x224 | 13 | 23 | 10 |
 | lejepa-vits16-pretrain-in1k | q4_0 | 224x224 | 13 | 23 | 10 |
+| levjepa-vitl16 | f32 | 16f 224x224 | 1156 | 1335 | 547 |
+| levjepa-vitl16 | f16 | 16f 224x224 | 579 | 779 | 276 |
+| levjepa-vitl16 | q8_0 | 16f 224x224 | 310 | 490 | 147 |
+| levjepa-vitl16 | q4_k | 16f 224x224 | 166 | 348 | 96 |
+| levjepa-vitl16 | q4_0 | 16f 224x224 | 166 | 354 | 86 |
 | lewm-pusht | f32 | 224x224 | 69 | 79 | 37 |
 | lewm-pusht | f16 | 224x224 | 38 | 47 | 23 |
 | lewm-pusht | q8_0 | 224x224 | 23 | 33 | 14 |
@@ -337,4 +362,4 @@ Worst case for the predictor: context = target = **every** token, i.e. a sequenc
 
 ---
 
-Generated by `scripts/gen_benchmarks_md.py` from 74 runs in `tmp/bench`. Cross-check against `docs/parity.md` (same graphs, real fixture inputs) and `docs/quantization.md` (accuracy per dtype).
+Generated by `scripts/gen_benchmarks_md.py` from 80 runs in `tmp/bench`. Cross-check against `docs/parity.md` (same graphs, real fixture inputs) and `docs/quantization.md` (accuracy per dtype).

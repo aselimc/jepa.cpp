@@ -33,6 +33,7 @@ BASELINES = {
     "vjepa2_1-vitb-384":           {"ref": "vjepa2_1-vitb-384",           "scope": "encoder"},
     "vjepa2-vitl-fpc16-256-ssv2":  {"ref": "vjepa2-vitl-fpc16-256-ssv2",  "scope": "encoder+attentive pooler+classifier", "fn": "ssv2"},
     "vjepa2-vitl-fpc64-256":       {"ref": "vjepa2-vitl-fpc64-256",       "scope": "encoder+predictor", "fn": "fpc64"},
+    "levjepa-vitl16":              {"ref": "levjepa-vitl16",              "scope": "encoder"},
 }
 # A speedup is only printed where the reference forward is the same work as our encoder.
 COMPARABLE = {"encoder", "encoder+projector+1-frame predictor"}
@@ -69,6 +70,10 @@ PARITY_REQUIRED = [
     ("vjepa2_1-vitb-384",           "f16", 16, 32),
     ("vjepa2_1-vitb-384",           "q8_0", 1, 32),
     ("vjepa2_1-vitb-384",           "q8_0", 16, 32),
+    ("levjepa-vitl16",              "f32", 16, 32),
+    ("levjepa-vitl16",              "f16", 16, 32),
+    ("levjepa-vitl16",              "q8_0", 16, 32),
+    ("levjepa-vitl16",              "f16", 16, 96),
 ]
 
 FTYPE_ORDER = {"f32": 0, "f16": 1, "q8_0": 2, "q6_k": 3, "q5_k": 4, "q5_1": 5, "q5_0": 6,
