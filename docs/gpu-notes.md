@@ -209,8 +209,24 @@ out           = x·cos + swap(x)·sin_signed
 which expands to `out[2k] = x[2k]·C[2k] − x[2k+1]·S[2k]` and
 `out[2k+1] = x[2k+1]·C[2k+1] + x[2k]·S[2k+1]` — the same products, in the same order, as today. The
 only difference against the current expression is that today's chain also adds an exact `0.0` term
-per lane (the masked-out half of each roll), and adding `+0.0` to a finite float is exact. **The
-refactor is bit-identical for finite inputs**; verified in §5.4.
+per lane (the masked-out half of each roll), and adding `+0.0` to a finite float is exact.
+
+**The refactor is bit-identical for finite inputs.** Checked in float32 against the current
+expression (`np.array_equal` → `True`, max abs diff `0.0`), together with the claim that rolling a
+length-2 axis by 1 is exactly the pair swap:
+
+```python
+D, H, N = 64, 4, 7
+x, cos, sin = (rng.standard_normal(s).astype(np.float32) for s in [(N,H,D), (N,D), (N,D)])
+m_odd = np.array([j % 2 for j in range(D)], np.float32); m_evn = m_odd - 1.0
+cur = x*cos[:,None,:] + np.roll(x,-1,-1)*(sin*m_evn)[:,None,:] + np.roll(x,1,-1)*(sin*m_odd)[:,None,:]
+sgn = np.where(np.arange(D) % 2 == 0, -1.0, 1.0).astype(np.float32)
+sw  = x.reshape(N,H,D//2,2)[..., ::-1].reshape(N,H,D)          # == np.roll(x.reshape(-1,2),1,-1)
+new = x*cos[:,None,:] + sw*(sin*sgn)[:,None,:]
+assert np.array_equal(cur.astype(np.float32), new.astype(np.float32))
+```
+
+Re-confirmed end to end on both backends in §5.4.
 
 Resulting node list — 5 nodes, all CUDA:
 
