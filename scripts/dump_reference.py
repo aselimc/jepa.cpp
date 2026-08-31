@@ -15,6 +15,7 @@ Models (NAME):
   vjepa2-vitl-fpc64-256       HF VJEPA2Model (encoder + default predictor pass)
   vjepa2-vitl-fpc16-256-ssv2  HF VJEPA2ForVideoClassification (attentive pooler + linear head)
   vjepa2_1-vitb-384           Meta code path (torch.hub, local clone of facebookresearch/vjepa2)
+  levjepa-vitl16              LeVJEPAModel via trust_remote_code  (galilai-group/LeVJEPA-VideoMix-Large)
   all                         every model above, in this order
 
 Paths default to the repository this script lives in (models/, tests/fixtures/media, tests/fixtures/ref,
@@ -41,9 +42,12 @@ MODEL_DIRS = {
     "vjepa2-vitl-fpc64-256": "facebook/vjepa2-vitl-fpc64-256",
     "vjepa2-vitl-fpc16-256-ssv2": "facebook/vjepa2-vitl-fpc16-256-ssv2",
     "vjepa2_1-vitb-384": "vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt",
+    "levjepa-vitl16": "galilai-group/LeVJEPA-VideoMix-Large",
 }
-DEFAULT_N_IMAGES = {"ijepa-vith14-1k": 8, "lejepa-vits16": 8, "lewm-pusht": 2, "vjepa2_1-vitb-384": 2}
-DEFAULT_FRAMES = {"vjepa2-vitl-fpc64-256": [64, 16], "vjepa2-vitl-fpc16-256-ssv2": [16], "vjepa2_1-vitb-384": [16]}
+DEFAULT_N_IMAGES = {"ijepa-vith14-1k": 8, "lejepa-vits16": 8, "lewm-pusht": 2, "vjepa2_1-vitb-384": 2,
+                    "levjepa-vitl16": 2}
+DEFAULT_FRAMES = {"vjepa2-vitl-fpc64-256": [64, 16], "vjepa2-vitl-fpc16-256-ssv2": [16], "vjepa2_1-vitb-384": [16],
+                  "levjepa-vitl16": [16]}
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 VJEPA2_SRC_URL = "https://github.com/facebookresearch/vjepa2"
@@ -778,6 +782,106 @@ def dump_vjepa2_1(a) -> None:
     w.finish(load_s)
 
 
+# --------------------------------------------------------------------------------------------------
+# LeVJEPA ViT-L/16 (custom architecture shipped with the weights, trust_remote_code)
+# --------------------------------------------------------------------------------------------------
+LEVJEPA_RESIZE_NOTE = (
+    "no preprocessor_config.json ships with this checkpoint, so the pipeline is the model card's: short side -> 224 "
+    "keeping aspect (long side = int(224*long/short)), centre crop 224, /255, ImageNet mean/std. The resampler used "
+    "here is torchvision.transforms.v2.functional.resize(BICUBIC, antialias=True) on the uint8 CHW tensor rounded back "
+    "to uint8 -- the same reference resampler the other jepa.cpp fixtures use and the one src/preprocess.cpp targets. "
+    "The model card's notebook uses PIL BICUBIC instead; the two differ by at most one uint8 level on a fraction of a "
+    "percent of pixels (docs/parity.md quotes the measured effect on token cosine).")
+
+
+def levjepa_frames_to_tensor(frames, resize_short: int, crop: int):
+    """uint8 THWC frames -> normalised NCTHW float32 [1, 3, T, crop, crop]."""
+    import numpy as np
+    import torch
+    import torchvision.transforms.v2.functional as F
+
+    t = torch.from_numpy(np.ascontiguousarray(frames)).permute(0, 3, 1, 2)      # T C H W, uint8
+    t = F.resize(t, [resize_short], interpolation=F.InterpolationMode.BICUBIC, antialias=True)
+    t = F.center_crop(t, [crop, crop])
+    x = t.float() / 255.0
+    x = (x - torch.tensor(IMAGENET_MEAN)[None, :, None, None]) / torch.tensor(IMAGENET_STD)[None, :, None, None]
+    return x.permute(1, 0, 2, 3)[None].contiguous()                              # 1 C T H W
+
+
+def dump_levjepa(a) -> None:
+    import numpy as np
+    import torch
+    from PIL import Image
+    from transformers import AutoModel
+
+    name = "levjepa-vitl16"
+    d = a.models_dir / MODEL_DIRS[name]
+    t0 = time.time()
+    model = AutoModel.from_pretrained(d, trust_remote_code=True, dtype=torch.float32).eval()
+    load_s = time.time() - t0
+    cfg = model.config
+    enc = model.encoder
+    crop = int(cfg.img_size)
+    n_frames = int(cfg.num_frames)
+    grid = crop // int(cfg.patch_size)
+    w = RefWriter(
+        a.out / name, name, d, hf_id="galilai-group/LeVJEPA-VideoMix-Large",
+        code="modeling_levjepa.py + configuration_levjepa.py from the same HF repo (trust_remote_code=True)",
+        hparams={"embed_dim": cfg.embed_dim, "n_layer": cfg.depth, "n_head": cfg.num_heads,
+                 "ffn_dim": int(cfg.embed_dim * cfg.mlp_ratio), "patch_size": cfg.patch_size,
+                 "tubelet_size": cfg.tubelet_size, "img_size": crop, "n_frames": n_frames,
+                 "ln_eps": enc.blocks[0].norm1.eps, "act": "gelu_erf",
+                 "qkv_bias": enc.blocks[0].attn.qkv.bias is not None, "cls_token": True, "n_registers": 0,
+                 "pos_type": "rope3d", "rope_theta": 10000.0, "rope_interpolate": False,
+                 "rope_freq_layout": "tiled",
+                 "rope_dims_per_axis": [enc.blocks[0].attn.d_dim, enc.blocks[0].attn.h_dim, enc.blocks[0].attn.w_dim],
+                 "attn_mode": cfg.attn_mode, "layer_scale": False,
+                 "n_tokens": 1 + (n_frames // cfg.tubelet_size) * grid * grid},
+        preprocessing={
+            "description": LEVJEPA_RESIZE_NOTE,
+            "resize": {"shortest_edge": crop, "resample": "bicubic", "antialias": True, "on_dtype": "uint8"},
+            "center_crop": crop, "rescale": 1 / 255, "mean": IMAGENET_MEAN, "std": IMAGENET_STD,
+            "frame_sampling": "idx = round(linspace(0, T_total-1, n)) over all decoded frames (PyAV rgb24); indices "
+                              "stored per sample. A still image is turned into a clip by repeating the frame n times, "
+                              "which is what the model card prescribes.",
+            "resampling_note": LEVJEPA_RESIZE_NOTE},
+        outputs={"frames_u8": "the sampled RGB frames fed to the preprocessor, THWC uint8 (image samples: the one frame "
+                              "repeated n_frames times, so the stored input and our own preprocessing describe the same clip)",
+                 "input": "normalised pixels, layout NCTHW (batch, channels, frames, H, W) — LeVJEPAModel takes NCTHW directly",
+                 "last_hidden_state": "LeVJEPAModel last_hidden_state[0]: [1+N, 1024], CLS first then t-major/h/w patch "
+                                      "tokens, after the final LayerNorm",
+                 "cls": "pooler_output = last_hidden_state[:, 0], the feature this model is used through",
+                 "pooled_mean": "mean over the patch tokens (CLS excluded)"},
+    )
+
+    def run(sample_name, media, rgb, timing, **extra):
+        t = time.time()
+        x = levjepa_frames_to_tensor(rgb, crop, crop)
+        pre = time.time() - t
+        t = time.time()
+        with torch.inference_mode():
+            out = model(pixel_values=x)
+        fwd = time.time() - t
+        lhs = out.last_hidden_state[0]
+        timing.update(preprocess_s=round(pre, 4), forward_s=round(fwd, 4))
+        w.add(sample_name, media,
+              {"frames_u8": (rgb, "THWC uint8"), "input": (x, "NCTHW"),
+               "last_hidden_state": (lhs, "[1+N_tokens, D] CLS first, then t-major,h,w"),
+               "cls": (lhs[0], "[D]"), "pooled_mean": (lhs[1:].mean(0), "[D]")},
+              timing, **extra)
+
+    for clip, n, fr, idx, fps, n_total, dec in _clip_samples(a, a.frames):
+        run(f"{clip.stem}_f{n}", clip.name, fr, {"decode_s": round(dec, 4)},
+            frames=n, frame_indices=idx, n_frames_total=n_total, fps=fps,
+            frame_size_hw=[int(fr.shape[1]), int(fr.shape[2])], path="video")
+    # the still-image path of the model card: one frame repeated n_frames times
+    for p in list_images(a.media_dir, a.n_images):
+        im = Image.open(p).convert("RGB")
+        fr = np.repeat(np.asarray(im, dtype=np.uint8)[None], n_frames, axis=0)
+        run(p.stem, p.name, fr, {}, frames=n_frames, image_size_hw=[im.height, im.width], path="image")
+    w.finish(load_s)
+
+
 DUMPERS = {
     "ijepa-vith14-1k": dump_ijepa,
     "lejepa-vits16": dump_lejepa,
@@ -785,6 +889,7 @@ DUMPERS = {
     "vjepa2-vitl-fpc64-256": dump_vjepa2,
     "vjepa2-vitl-fpc16-256-ssv2": dump_vjepa2_ssv2,
     "vjepa2_1-vitb-384": dump_vjepa2_1,
+    "levjepa-vitl16": dump_levjepa,
 }
 
 

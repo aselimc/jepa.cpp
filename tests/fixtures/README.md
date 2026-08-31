@@ -12,7 +12,8 @@ scripts/compare.py OUT_DIR tests/fixtures/ref/<model>   # jepa.cpp output vs ref
 `dump_reference.py` needs the project venv (`.venv`, torch CPU + transformers + av + pillow + timm + einops), the
 checkpoints from `scripts/download_models.sh` under `models/`, and for `vjepa2_1-vitb-384` a clone of
 `facebookresearch/vjepa2` at `tmp/vjepa2-src` (cloned automatically if absent). For `lejepa-vits16` the model directory
-must also contain the `hf_src/` package of the HF repo (its `modelling_vitv2.py` imports it). Use `--root` to point at another checkout; caches go to `<root>/tmp/hf-home` and `<root>/tmp/torch-home`.
+must also contain the `hf_src/` package of the HF repo (its `modelling_vitv2.py` imports it); `levjepa-vitl16` loads
+the `modeling_levjepa.py` / `configuration_levjepa.py` that ship next to its weights (`trust_remote_code=True`). Use `--root` to point at another checkout; caches go to `<root>/tmp/hf-home` and `<root>/tmp/torch-home`.
 Everything runs in float32 eval mode, 32 threads (`--threads`), no autocast.
 
 ## media/
@@ -55,7 +56,7 @@ baseline for speed comparisons in `docs/parity.md`.
 
 ## Per-model tensors
 
-Token order is always t-major, then h, then w (images: h-major then w); `hfvit`-style models put CLS first.
+Token order is always t-major, then h, then w (images: h-major then w); `hfvit`-style models and `levjepa` put CLS first.
 
 | model | samples | tensors (shape) |
 |---|---|---|
@@ -65,6 +66,7 @@ Token order is always t-major, then h, then w (images: h-major then w); `hfvit`-
 | `vjepa2-vitl-fpc64-256` | archery/bowling x {64, 16} frames | `frames_u8` [T,H,W,3] uint8 · `input` [1,T,3,256,256] **NTCHW** · `last_hidden_state` [T/2·256, 1024] · `pooled_mean` [1024] · `predictor_last_hidden_state` [T/2·256, 1024] (default masks: full context, predict every token) |
 | `vjepa2-vitl-fpc16-256-ssv2` | archery/bowling x 16 frames | `frames_u8` · `input` [1,16,3,256,256] · `last_hidden_state` [2048,1024] · `pooled` [1024] (attentive-pooler output = classifier input, via forward hook) · `logits` [174] · `top5_idx` [5] int64; `labels` (id2label) in the manifest |
 | `vjepa2_1-vitb-384` | archery x 16 frames + 2 images | `frames_u8` · `input` [1,3,16,384,384] **NCTHW** (video) / [1,3,1,384,384] (image path: `patch_embed_img` + `img_mod_embed`) · `last_hidden_state` [4608,768] / [576,768] = `norms_block[-1](x)` (the encoder's default inference output) · `pooled_mean` [768] |
+| `levjepa-vitl16` | archery/bowling x 16 frames + 2 images | `frames_u8` [16,H,W,3] uint8 · `input` [1,3,16,224,224] **NCTHW** · `last_hidden_state` [3137,1024] = [CLS; 16·14·14 patches] after the final LN · `cls` [1024] (= `pooler_output`, the feature this model is used through) · `pooled_mean` [1024] (mean of the 3136 patch tokens). The two image samples take the model card's still-image path: `frames_u8` is the one decoded frame **repeated 16 times**, so the stored input and our own preprocessing describe the same clip |
 
 ## Preprocessing actually applied (also in each manifest)
 
@@ -80,6 +82,7 @@ re-implementation to 2.4e-7, whereas PIL resampling differs by up to 1.8e-2 (1-2
 | `lewm-pusht` | resize to exactly 224x224 (aspect not kept), bilinear; x/255; ImageNet mean/std (upstream trains/evals on 224x224 renders, so the resize only exists to feed COCO images) |
 | `vjepa2-*` | `VJEPA2VideoProcessor`: per frame, short side -> 292 = int(256*256/224), bilinear; center crop 256; x/255; ImageNet mean/std; output [B,T,3,H,W] |
 | `vjepa2_1-vitb-384` | same processor with crop 384 (short side -> 438), then permuted to [B,3,T,H,W]; images are 1-frame videos |
+| `levjepa-vitl16` | no processor ships with the checkpoint: per frame, short side -> 224, **bicubic**; center crop 224; x/255; ImageNet mean/std; output [B,3,T,H,W]. The model card's notebook uses PIL BICUBIC instead of the torchvision resampler used here — measured on `archery_f16`, 99.599 % of the normalised values are bit-identical, the largest difference is 2.02 uint8 levels and exactly 1 value of 2 408 448 is off by more than one level, worth a worst-token cosine of 0.999984 (median 1.000000, CLS 1.000000) through the encoder |
 
 Frame sampling for clips: all frames decoded with PyAV (`rgb24`), then `idx = round(linspace(0, T_total-1, n))`; the indices are
 stored per sample so the C++ side can be fed `frames_u8` directly (there is no video decoder in jepa.cpp).
