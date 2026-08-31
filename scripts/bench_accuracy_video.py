@@ -228,7 +228,7 @@ def stage_torch(a) -> None:
 # stage: cpp  (jepa.cpp pooled-mean features through the batch driver)
 # --------------------------------------------------------------------------------------------
 def _stamp_load(stats_json: Path, la0: list[float], occ: "Occupancy") -> None:
-    """Merge the load conditions around a jepa-embed-clips call into the stats JSON it wrote."""
+    """Merge the load conditions around a jepa-embed --frames-list call into the stats JSON it wrote."""
     o = occ.close()
     if not stats_json.exists():
         return
@@ -245,7 +245,7 @@ def stage_cpp(a) -> None:
     if not gguf.exists():
         sys.exit(f"missing {gguf}")
     out = work / f"{name}-{dt}.npy"
-    cmd = [str(ROOT / "build" / "jepa-embed-clips"), "-m", str(gguf), "-l", str(work / "clips.txt"),
+    cmd = [str(ROOT / "build" / "jepa-embed"), "-m", str(gguf), "--frames-list", str(work / "clips.txt"),
            "-o", str(out), "--pool", "mean", "-t", str(THREADS), "--json", str(work / f"{name}-{dt}.json")]
     print(" ".join(cmd), flush=True)
     t0, la0, occ = time.time(), loadavg(), Occupancy()
@@ -303,7 +303,7 @@ def stage_ssv2_cpp(a) -> None:
     gguf = shared("models/gguf") / f"{SSV2_MODEL}-{a.dtype}.gguf"
     if not gguf.exists():
         sys.exit(f"missing {gguf}")
-    cmd = [str(ROOT / "build" / "jepa-embed-clips"), "-m", str(gguf), "-l", str(lst),
+    cmd = [str(ROOT / "build" / "jepa-embed"), "-m", str(gguf), "--frames-list", str(lst),
            "-o", str(work / f"ssv2-{a.dtype}-feats.npy"), "--logits", str(work / f"ssv2-{a.dtype}-logits.npy"),
            "-t", str(THREADS), "--json", str(work / f"ssv2-{a.dtype}.json")]
     print(" ".join(cmd), flush=True)
@@ -800,10 +800,10 @@ def render_md(p: dict, cj: dict) -> str:
             f"({min(c for _, c in cs)/t:.2f}–{max(c for _, c in cs)/t:.2f}x)" for lbl, t, cs in sp)
           + ". **Neither side is charged a per-clip model load, and neither batches.** The PyTorch "
           "loop keeps one `VJEPA2Model` resident and starts its timer after `from_pretrained` "
-          "returns; `build/jepa-embed-clips` mmaps the GGUF once and then walks the whole 405-clip "
-          "list inside that one process (`tools/jepa-embed` *would* reload per clip, which is why "
-          "the driver exists). Both do their own preprocessing per clip, and both run one clip per "
-          "forward.\n")
+          "returns; `jepa-embed --frames-list` mmaps the GGUF once and then walks the whole "
+          "405-clip list inside that one process. Both do their own preprocessing per clip, and both "
+          "run one clip per forward: a V-JEPA 2 clip is already 2048-18432 tokens, so jepa.cpp keeps "
+          "one graph per clip there and batches only the image families.\n")
         po = (p.get("pytorch_predictor_overhead") or {})
         if po:
             A("The PyTorch rows pass `skip_predictor=True`. `VJEPA2Model.forward` otherwise also "
@@ -836,10 +836,6 @@ def render_md(p: dict, cj: dict) -> str:
     A("git submodule update --init ggml")
     A("cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release")
     A("cmake --build build -j 32 --target jepa-embed jepa-classify jepa-info")
-    A("# batch driver (out-of-tree; see the note below)")
-    A("g++ -O2 -std=c++17 -I include -I src -I third_party -I ggml/include \\")
-    A("    scripts/jepa_embed_clips.cpp build/libjepa.a -L build/ggml/src \\")
-    A("    -lggml -lggml-base -lggml-cpu -Wl,-rpath,$PWD/build/ggml/src -o build/jepa-embed-clips")
     A("")
     A("PY=.venv/bin/python                     # torch 2.13 CPU, transformers 5.16, av, numpy")
     A("export HF_HOME=$PWD/tmp/hf-home TORCH_HOME=$PWD/tmp OMP_NUM_THREADS=32")
@@ -889,14 +885,12 @@ def render_md(p: dict, cj: dict) -> str:
     A("Every stage writes into `tmp/accuracy-video/` (git-ignored) and can be re-run alone; "
       "`lists` fixes the clip order once in `tmp/accuracy-video/clips.json`, which every feature "
       "`.npy` is indexed by, and `tmp/frames/index.json` records the sampled frame indices per clip.\n")
-    A("`build/jepa-embed-clips` exists because `tools/jepa-embed` takes one `--frames-npy` per "
-      "process: a 405-clip sweep would re-load the weights 405 times and write 405 one-row `.npy` "
-      "files. The driver links `libjepa` directly and does exactly what `jepa-embed --frames-npy F "
-      "--pool mean` does per clip — same `jepa_preprocess_frames_rgb`, `jepa_encode`, "
-      "`jepa_pool_mean` — verified bit-for-bit on `v_Archery_g01_c04` "
-      "(both print `|x| = 48.7494`, first four components "
-      "`-0.18624, -0.27707, 0.20074, -0.71871`). What `jepa-embed` is missing for this job is a "
-      "`--frames-list`/multi-clip mode with one `[n_clips, D]` output.\n")
+    A("`jepa-embed --frames-list list.txt` walks a whole clip list in one process — one model "
+      "load, one `jepa_context`, one `[n_clips, D]` `.npy` in list order, `--logits` for the "
+      "attentive-pool head and `--json` for the timings. It replaced the out-of-tree "
+      "`jepa-embed-clips` driver this benchmark used to need (removed); the features it writes "
+      "are bit-identical to that driver's and to `jepa-embed --frames-npy F --pool mean` per "
+      "clip.\n")
     return "\n".join(L)
 
 

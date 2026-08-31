@@ -14,7 +14,10 @@
 //
 // Modes:
 //   encoder      the encoder graph on one item at the model's native crop (video: --frames frames,
-//                default min(jepa.enc.n_frames, 16)); --batch B puts B items through one call.
+//                default min(jepa.enc.n_frames, 16)); --batch B puts B items through one call, and
+//                for the image families that is a single graph carrying them on the batch dimension
+//                (jepa_context_set_max_batch is raised to B so no chunking happens inside). The
+//                reported ms is the whole call; `ms/item` next to it is that divided by B.
 //   head         encoder once, then the attentive-pool head R times (requires jepa.head).
 //   predictor    encoder once, then the masked predictor with context = target = every token.
 //   lewm-step    one LeWM predictor call over jepa.pred.n_frames frames.
@@ -48,7 +51,7 @@ static void usage(const char * a0) {
         "  --mode M          encoder (default) | head | predictor | lewm-step | lewm-rollout\n"
         "  --frames N        frames per item (video models; default min(jepa.enc.n_frames, 16))\n"
         "  --size HxW        input crop (default: the model's jepa.enc.img_size square)\n"
-        "  --batch B         items per encoder call (default 1)\n"
+        "  --batch B         items per encoder call (default 1); image families put all B through ONE graph\n"
         "  --threads L       thread count, or a comma-separated list to sweep (default: all cores)\n"
         "  --repeat R        measured runs (default 3)\n"
         "  --warmup W        unmeasured runs before them (default 1)\n"
@@ -143,10 +146,17 @@ static double tokens_per_s(const run & r) {
     return r.ms.mean > 0 ? 1000.0 * (double) r.tokens / r.ms.mean : 0.0;
 }
 
+// The timed graph covers r.units items (encoder --batch B) or steps (rollout); this is its cost each.
+static double ms_per_unit(const run & r) {
+    return r.units > 0 ? r.ms.mean / (double) r.units : r.ms.mean;
+}
+
 static void print_human(const run & r) {
-    printf("%-26s %-5s %-13s %-15s t=%-3d %9.2f ms (min %9.2f) %8.0f tok/s %6.0f MiB\n",
+    printf("%-26s %-5s %-13s %-15s t=%-3d %9.2f ms (min %9.2f) %8.0f tok/s %6.0f MiB",
            r.model_name.c_str(), r.ftype.c_str(), r.mode.c_str(), r.shape.c_str(), r.threads,
            r.ms.mean, r.ms.min, tokens_per_s(r), (double) r.peak_rss / (1024.0 * 1024.0));
+    if (r.units > 1) printf("  %8.2f ms/item", ms_per_unit(r));
+    printf("\n");
 }
 
 static void print_md(const run & r, bool header) {
@@ -195,6 +205,7 @@ static bool write_json(const std::string & path, const std::vector<run> & runs) 
         fprintf(f, "\"tokens\": %lld, \"units\": %lld, ", (long long) r.tokens, (long long) r.units);
         fprintf(f, "\"ms_mean\": %.4f, \"ms_min\": %.4f, \"ms_max\": %.4f, ", r.ms.mean, r.ms.min, r.ms.max);
         fprintf(f, "\"wall_ms_mean\": %.4f, \"wall_ms_min\": %.4f, ", r.wall.mean, r.wall.min);
+        fprintf(f, "\"ms_per_unit\": %.4f, ", ms_per_unit(r));
         fprintf(f, "\"encoder_ms\": %.4f, \"tokens_per_s\": %.2f, ", r.enc_ms, tokens_per_s(r));
         fprintf(f, "\"load_ms\": %.2f, \"weight_bytes\": %zu, \"peak_rss_bytes\": %zu",
                 r.load_ms, r.weight_bytes, r.peak_rss);
@@ -400,6 +411,7 @@ int main(int argc, char ** argv) {
 
         if (mode == "encoder") {
             if (batch > 1) r.shape += " x" + std::to_string(batch);
+            jepa_context_set_max_batch(ctx, batch);   // all B items in one graph, no internal chunking
             const jepa_input in = { x.data(), batch, 3, T, H, W };
             for (int i = 0; i < warmup + repeat && !failed; i++) {
                 jepa_output enc = {};

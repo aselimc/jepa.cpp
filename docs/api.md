@@ -4,7 +4,7 @@
 
 The whole public surface is this one header: C linkage, opaque handles (`jepa_model`, `jepa_context`), plain structs, `malloc`-returned buffers freed with `jepa_free`. Typical flow: `jepa_model_load` → `jepa_context_new` → `jepa_preprocess_*` → `jepa_encode` → `jepa_pool_*` / `jepa_head` / `jepa_predict*` / `jepa_lewm_*`.
 
-**Functions (55):** `jepa_context_default_params` · `jepa_context_free` · `jepa_context_last_compute_ms` · `jepa_context_n_threads` · `jepa_context_new` · `jepa_encode` · `jepa_free` · `jepa_head` · `jepa_head_ex` · `jepa_lewm_action_dim` · `jepa_lewm_n_frames` · `jepa_lewm_predict` · `jepa_lewm_project` · `jepa_lewm_project_rows` · `jepa_lewm_rollout` · `jepa_load_image_rgb` · `jepa_model_embed_dim` · `jepa_model_family` · `jepa_model_file_type` · `jepa_model_file_type_name` · `jepa_model_free` · `jepa_model_has_cls` · `jepa_model_has_head` · `jepa_model_has_predictor` · `jepa_model_has_projector` · `jepa_model_img_size` · `jepa_model_label` · `jepa_model_load` · `jepa_model_n_bytes` · `jepa_model_n_classes` · `jepa_model_n_frames` · `jepa_model_n_head` · `jepa_model_n_layer` · `jepa_model_n_prefix_tokens` · `jepa_model_n_registers` · `jepa_model_name` · `jepa_model_patch_size` · `jepa_model_tubelet_size` · `jepa_pool_cls` · `jepa_pool_mean` · `jepa_predict` · `jepa_predict_ex` · `jepa_predict_mod` · `jepa_preprocess_default_params` · `jepa_preprocess_frames_rgb` · `jepa_preprocess_frames_rgb_ex` · `jepa_preprocess_image_file` · `jepa_preprocess_image_rgb` · `jepa_preprocess_image_rgb_ex` · `jepa_print_system_info` · `jepa_resize_antialias_u8` · `jepa_softmax` · `jepa_token_grid` · `jepa_top_k` · `jepa_version`
+**Functions (58):** `jepa_context_default_params` · `jepa_context_free` · `jepa_context_last_batch` · `jepa_context_last_compute_ms` · `jepa_context_max_batch` · `jepa_context_n_threads` · `jepa_context_new` · `jepa_context_set_max_batch` · `jepa_encode` · `jepa_free` · `jepa_head` · `jepa_head_ex` · `jepa_lewm_action_dim` · `jepa_lewm_n_frames` · `jepa_lewm_predict` · `jepa_lewm_project` · `jepa_lewm_project_rows` · `jepa_lewm_rollout` · `jepa_load_image_rgb` · `jepa_model_embed_dim` · `jepa_model_family` · `jepa_model_file_type` · `jepa_model_file_type_name` · `jepa_model_free` · `jepa_model_has_cls` · `jepa_model_has_head` · `jepa_model_has_predictor` · `jepa_model_has_projector` · `jepa_model_img_size` · `jepa_model_label` · `jepa_model_load` · `jepa_model_n_bytes` · `jepa_model_n_classes` · `jepa_model_n_frames` · `jepa_model_n_head` · `jepa_model_n_layer` · `jepa_model_n_prefix_tokens` · `jepa_model_n_registers` · `jepa_model_name` · `jepa_model_patch_size` · `jepa_model_tubelet_size` · `jepa_pool_cls` · `jepa_pool_mean` · `jepa_predict` · `jepa_predict_ex` · `jepa_predict_mod` · `jepa_preprocess_default_params` · `jepa_preprocess_frames_rgb` · `jepa_preprocess_frames_rgb_ex` · `jepa_preprocess_image_file` · `jepa_preprocess_image_rgb` · `jepa_preprocess_image_rgb_ex` · `jepa_print_system_info` · `jepa_resize_antialias_u8` · `jepa_softmax` · `jepa_token_grid` · `jepa_top_k` · `jepa_version`
 
 ## Types and handles
 
@@ -229,4 +229,22 @@ int jepa_lewm_predict(jepa_context * ctx, const float * embs, const float * acti
 //   out     : [n_steps, embed_dim], caller-allocated.
 int jepa_lewm_rollout(jepa_context * ctx, const float * embs, int n_seed,
                       const float * actions, int n_steps, float * out);
+
+// ======================================================================================
+// APPEND-ONLY: encoder batching (src/jepa.cpp).
+// ======================================================================================
+
+// How many image items (`n_batch * n_frames` slices of one jepa_input) the encoder folds into ONE
+// ggml graph. The items stay independent — they live on the graph's batch dimension, so attention
+// never mixes them — and the output rows are the same, in the same (batch, frame) order, as the
+// one-graph-per-item path; f32 is bit-identical (tests/test-batch.cpp gates this).
+// Only the image families (ijepa / hfvit / lewm) batch; V-JEPA 2 / 2.1 still run one clip per graph.
+//   n <= 0 : restore the default (32, or $JEPA_MAX_BATCH when the context was created)
+//   n == 1 : the old per-item path — the debug switch (`jepa-embed --no-batch`, `JEPA_MAX_BATCH=1`)
+// Inputs larger than n are encoded in ceil(n_items / n) graphs, so this caps memory, not batch size.
+void jepa_context_set_max_batch(jepa_context * ctx, int n);
+int  jepa_context_max_batch(const jepa_context * ctx);
+// Items in the last graph the encoder built (1 unless batching kicked in) — for tools that report
+// per-item timings from jepa_context_last_compute_ms().
+int  jepa_context_last_batch(const jepa_context * ctx);
 ```

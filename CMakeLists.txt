@@ -99,6 +99,35 @@ if(JEPA_BUILD_TESTS)
                        --samples archery_f16 --threads 8)
     endif()
   endif()
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-batch.cpp)
+    add_executable(test-batch tests/test-batch.cpp)
+    target_link_libraries(test-batch PRIVATE jepa)
+    target_include_directories(test-batch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    # batched encoder graph == per-item path, bit for bit at f32. Registered only with the
+    # (git-ignored) small GGUFs present; the fixture JPEGs are in the repo. ~11 s at 8 threads.
+    set(_batch_args "")
+    foreach(_g lejepa-vits16-pretrain-in1k-f32.gguf lewm-pusht-f32.gguf)
+      if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/${_g})
+        list(APPEND _batch_args --image ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/${_g})
+      endif()
+    endforeach()
+    # ViT-H at f16 covers the quantized-weight mul_mat path; 4 images keep it inside the time budget
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/ijepa_vith14_1k-f16.gguf)
+      list(APPEND _batch_args --images 4 --image ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/ijepa_vith14_1k-f16.gguf)
+    endif()
+    # V-JEPA 2.1 clip path: two clips as n_batch=2 against two single calls (4 frames = 1152 tokens)
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/vjepa2_1-vitb-384-f16.gguf AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2_1-vitb-384/bowling_f16.frames_u8.npy)
+      list(APPEND _batch_args --video ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/vjepa2_1-vitb-384-f16.gguf
+                              --clip-frames 4
+                              --clip ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2_1-vitb-384/archery_f16.frames_u8.npy
+                              --clip ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2_1-vitb-384/bowling_f16.frames_u8.npy)
+    endif()
+    if(_batch_args)
+      add_test(NAME batch COMMAND test-batch --media ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/media
+                                  --threads 8 --images 8 ${_batch_args})
+    endif()
+  endif()
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-ops.cpp)
     add_executable(test-ops tests/test-ops.cpp)
     target_link_libraries(test-ops PRIVATE jepa)
