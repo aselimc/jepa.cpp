@@ -334,6 +334,8 @@ is spent on.
 
 ## Reproduce
 
+Datasets first: `scripts/download_datasets.sh` fetches Imagenette-160 and the UCF101 subset into `data/` (~400 MB, git-ignored).
+
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j 32 --target jepa-embed

@@ -23,6 +23,8 @@ converter module per family, the `JepaWriter` helpers (sincos tables, qkv fusing
 f16 dtype rule), and `selftest.py`, a numpy forward pass driven straight from a GGUF that serves as the
 executable spec the C++ graph builder must match.
 
+**[`../scripts/jepa_convert/VJEPA_NOTES.md`](../scripts/jepa_convert/VJEPA_NOTES.md)** — the V-JEPA 2 / 2.1 tensor maps and the 3-D RoPE derivation (tiled vs interleaved cos/sin layouts, `interpolate_rope`) cited by `docs/gguf-schema.md`, `docs/architecture.md` and `docs/parity.md`.
+
 **[`../tests/fixtures/README.md`](../tests/fixtures/README.md)** — the parity fixtures: which media files
 (8 COCO images, 6 Kinetics-mini clips), how `dump_reference.py` produces the PyTorch golden `.npy` dumps,
 and the per-model tensor list each `ref/<model>/manifest.json` carries.
@@ -71,3 +73,5 @@ and V-JEPA 2.1 ViT-B/384: k-NN and nearest-centroid top-1, per-clip agreement wi
 fidelity over all 405 clips, and an SSv2-head fidelity section that scores 105 independent 174-way argmaxes
 against PyTorch's. Includes the per-clip disagreement forensics and the measured load conditions of every
 timed pass. Machine-readable twin: `../tests/results/accuracy-video.json`.
+
+The accuracy benchmarks need the datasets from `scripts/download_datasets.sh` (Imagenette-160 and the UCF101 subset, ~400 MB into `data/`).

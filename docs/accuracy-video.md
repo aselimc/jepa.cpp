@@ -103,6 +103,8 @@ Within jepa.cpp the dtype barely moves the clock — V-JEPA 2 ViT-L/16 (fpc64-25
 
 ## Reproduce
 
+Datasets first: `scripts/download_datasets.sh` fetches Imagenette-160 and the UCF101 subset into `data/` (~400 MB, git-ignored).
+
 ```bash
 export PATH=$HOME/.local/bin:$PATH
 git submodule update --init ggml

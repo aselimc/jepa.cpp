@@ -175,7 +175,7 @@ scored as *agreement with PyTorch's argmax* (SSv2 labels are meaningless on UCF 
 
 ### Which dtype to ship
 
-From `docs/quantization.md` (weight-only study: GGUF dequantised in Python, pushed through the numpy
+From `docs/quantization.md`, refined by the engine-level measurements in `docs/parity.md` (dense per-token V-JEPA 2 ViT-L → f32) and `docs/accuracy-video.md` (SSv2 head → f16) (weight-only study: GGUF dequantised in Python, pushed through the numpy
 reference graph) confirmed by the two k-NN benchmarks above.
 
 | use | type | evidence |
