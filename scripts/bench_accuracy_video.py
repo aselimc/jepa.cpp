@@ -245,7 +245,7 @@ def stage_cpp(a) -> None:
     if not gguf.exists():
         sys.exit(f"missing {gguf}")
     out = work / f"{name}-{dt}.npy"
-    cmd = [str(ROOT / "build" / "jepa-embed"), "-m", str(gguf), "--frames-list", str(work / "clips.txt"),
+    cmd = [str(ROOT / "build" / "jepa-embed"), "-m", str(gguf), "--batch", "1", "--frames-list", str(work / "clips.txt"),
            "-o", str(out), "--pool", "mean", "-t", str(THREADS), "--json", str(work / f"{name}-{dt}.json")]
     print(" ".join(cmd), flush=True)
     t0, la0, occ = time.time(), loadavg(), Occupancy()
@@ -303,7 +303,7 @@ def stage_ssv2_cpp(a) -> None:
     gguf = shared("models/gguf") / f"{SSV2_MODEL}-{a.dtype}.gguf"
     if not gguf.exists():
         sys.exit(f"missing {gguf}")
-    cmd = [str(ROOT / "build" / "jepa-embed"), "-m", str(gguf), "--frames-list", str(lst),
+    cmd = [str(ROOT / "build" / "jepa-embed"), "-m", str(gguf), "--batch", "1", "--frames-list", str(lst),
            "-o", str(work / f"ssv2-{a.dtype}-feats.npy"), "--logits", str(work / f"ssv2-{a.dtype}-logits.npy"),
            "-t", str(THREADS), "--json", str(work / f"ssv2-{a.dtype}.json")]
     print(" ".join(cmd), flush=True)

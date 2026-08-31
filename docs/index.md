@@ -64,6 +64,11 @@ against parity.md's independent timings. Machine-readable twin:
 attention accuracy and wall time, memory behaviour, this box's matmul throughput per dtype, and the
 gotchas collected on the way. Read it before adding an op.
 
+**[gpu-notes.md](gpu-notes.md)** — the CUDA feasibility audit (GO verdict): op-by-op kernel coverage
+at our exact shapes, the two blockers and their verified fixes, measured RTX 4500 Ada rates
+(20–26× our CPU engine, 54–80 % of PyTorch-GPU), the TF32/F16-accumulation numerics findings, the
+silent-wrong-answer hazard that makes graph validation mandatory, and the 6-chunk implementation plan.
+
 ## Accuracy on real data
 
 **[accuracy-image.md](accuracy-image.md)** — frozen-feature k-NN on Imagenette (10 classes), PyTorch vs

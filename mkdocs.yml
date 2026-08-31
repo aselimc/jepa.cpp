@@ -58,6 +58,7 @@ nav:
   - Performance:
       - Benchmarks: benchmarks.md
       - ggml notes: ggml-notes.md
+      - GPU notes: gpu-notes.md
   - Accuracy:
       - Images (Imagenette): accuracy-image.md
       - Video (UCF-101): accuracy-video.md

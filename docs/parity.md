@@ -14,7 +14,7 @@ build/test-predictor --lewm  models/gguf/<lewm>.gguf   --ref tests/fixtures/ref/
 build/test-predictor --vjepa2 models/gguf/<vjepa2>.gguf --ref tests/fixtures/ref/<ref> --samples archery_f16 --threads 32
 ctest --test-dir build                                           # parity-lejepa-vits16, parity-lewm-pusht, (re-run cmake once GGUFs + refs exist — tests register at configure time)
                                                                  # parity-vjepa2_1-vitb-384-images, predictor-lewm,
-                                                                 # predictor-vjepa2, ops, attn — 7 tests, ~14 s
+                                                                 # predictor-vjepa2, batch, ops, attn — 8 tests, ~22 s
 ```
 
 `test-parity` prints the threshold row it is judging with (family class × file-type tier, see

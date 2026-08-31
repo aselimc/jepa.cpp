@@ -390,7 +390,7 @@ static int jepa_encode_image(jepa_context * ctx, const jepa_input * in, jepa_out
         const double mib = 1024.0 * 1024.0;
         if (encoder_graph_bytes(m, 1, n_tokens) > budget) {
             jepa_log("jepa: one %lld-token item of '%s' needs about %.1f MiB of graph activations, over the "
-                     "%.1f MiB limit ($JEPA_MAX_GRAPH_MIB); feed a smaller input\n",
+                     "%.1f MiB limit — raise $JEPA_MAX_GRAPH_MIB or feed fewer/smaller items\n",
                      (long long) n_tokens, m->hp.name.c_str(),
                      (double) encoder_graph_bytes(m, 1, n_tokens) / mib, (double) budget / mib);
             return -1;
@@ -441,6 +441,8 @@ static int jepa_encode_image(jepa_context * ctx, const jepa_input * in, jepa_out
         if (!y) { free(out->data); out->data = nullptr; return -1; }
         ggml_build_forward_expand(ctx->gf, y);
         if (!jepa_graph_alloc(ctx)) { free(out->data); out->data = nullptr; return -1; }
+        GGML_ASSERT(batch_rows.size() * sizeof(float) == ggml_nbytes(inp));
+        GGML_ASSERT(y->type == GGML_TYPE_F32);
         ggml_backend_tensor_set(inp, batch_rows.data(), 0, batch_rows.size() * sizeof(float));
         if (jepa_graph_compute(ctx) != 0) { free(out->data); out->data = nullptr; return -1; }
         total_ms += ctx->last_compute_ms;

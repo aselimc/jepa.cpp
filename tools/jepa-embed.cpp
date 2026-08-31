@@ -40,7 +40,8 @@ static void usage(const char * argv0) {
         "  -o out.npy        save the features as float32 .npy ([n_items, D] or [n_items*n_tokens, D] for --pool none)\n"
         "  --pool MODE       mean (patch tokens, default for models without CLS) | cls (default for CLS models)\n"
         "                    | lewm (enc.proj(CLS) world-model state) | none (all tokens)\n"
-        "  --batch B         image items per encoder graph (default 32, or $JEPA_MAX_BATCH; V-JEPA clips are always 1)\n"
+        "  --batch B         image items per encoder graph (default 32, or $JEPA_MAX_BATCH; video models default to 1 —\n"
+        "                    clips never batch in the library; $JEPA_MAX_GRAPH_MIB caps one graph's activations, default 8192)\n"
         "  --no-batch        same as --batch 1: one graph per item, the pre-batching path\n"
         "  --logits F        also run the attentive-pool head and save [n_items, n_classes] raw logits\n"
         "  --json F          write a stats JSON (timings, throughput) for benchmark drivers\n"
@@ -80,7 +81,12 @@ static bool item_frames(const item & it, npy::Array & hold, std::vector<const ui
                         std::vector<int> & fh, std::vector<int> & fw) {
     fp.clear(); fh.clear(); fw.clear();
     if (!it.npy.empty()) {
-        hold = npy::load(it.npy);
+        try {
+            hold = npy::load(it.npy);
+        } catch (const std::exception & e) {
+            fprintf(stderr, "error: cannot load %s: %s\n", it.npy.c_str(), e.what());
+            return false;
+        }
         if (hold.shape.size() != 4 || hold.shape[3] != 3 || hold.dtype != "|u1") {
             fprintf(stderr, "%s: expected a THWC uint8 array, got %zu dims dtype %s\n",
                     it.npy.c_str(), hold.shape.size(), hold.dtype.c_str());
@@ -200,6 +206,7 @@ int main(int argc, char ** argv) {
     if (!ctx) { jepa_model_free(model); return 1; }
     // an explicit --batch / --no-batch overrides the library default (32) and $JEPA_MAX_BATCH;
     // without one the tool follows whatever the context resolved to
+    const bool batch_explicit = batch > 0;   // --batch / --no-batch on the command line
     if (batch > 0) jepa_context_set_max_batch(ctx, batch);
     batch = jepa_context_max_batch(ctx);
 
@@ -235,6 +242,10 @@ int main(int argc, char ** argv) {
     const bool video_model = family == "vjepa" || family == "vjepa2" || family == "vjepa2_1";
     const int tubelet = jepa_model_tubelet_size(model);
     const bool clip_mode = !frames_npy.empty() || as_video || (video_model && images.size() > 1 && !as_images);
+    // The library never batches video clips (one clip per graph), so grouping clip items only
+    // inflates the tool's working set — measured 3.9x peak RSS for +16 % wall on 16-frame clips.
+    // Default to one clip per group unless the user explicitly asked for a batch.
+    if (video_model && !batch_explicit && batch > 1) { jepa_context_set_max_batch(ctx, 1); batch = 1; }
 
     // ---- collect the items (an image is a 1-frame clip)
     std::vector<item> items;

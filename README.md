@@ -142,7 +142,7 @@ policy, parity thresholds — is on the [documentation site](https://aselimc.git
 ## Testing
 
 ```bash
-ctest --test-dir build        # 7 suites: parity, predictors, RoPE vectors, attention
+ctest --test-dir build        # 8 suites: parity, predictors, batching, RoPE vectors, attention
 ```
 
 `test-parity` replays PyTorch golden dumps through the engine and gates per-token cosine, pooled

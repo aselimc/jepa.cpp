@@ -244,7 +244,8 @@ int jepa_lewm_rollout(jepa_context * ctx, const float * embs, int n_seed,
 // Inputs larger than n are encoded in ceil(n_items / n) graphs, so this caps memory, not batch size.
 void jepa_context_set_max_batch(jepa_context * ctx, int n);
 int  jepa_context_max_batch(const jepa_context * ctx);
-// Items in the last graph the encoder built (1 unless batching kicked in) — for tools that report
-// per-item timings from jepa_context_last_compute_ms().
+// The per-graph item cap the last jepa_encode call actually used — jepa_context_max_batch(), or
+// less when the $JEPA_MAX_GRAPH_MIB memory guard shrank it (the final ragged chunk may hold fewer
+// items than this). Only jepa_encode updates it; head/predictor/projector calls leave it unchanged.
 int  jepa_context_last_batch(const jepa_context * ctx);
 ```
