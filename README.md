@@ -31,6 +31,14 @@ The full evidence lives in **[docs/accuracy.md](docs/accuracy.md)** and
 **[docs/performance.md](docs/performance.md)**, and on the
 **[documentation site](https://aselimc.github.io/jepa.cpp/)**.
 
+![Three panels: encoder latency per item for PyTorch and jepa.cpp on the CPU and on one GPU, k-NN
+top-1 against PyTorch on Imagenette and UCF-101, and what each dtype costs in weights and in
+time](docs/assets/results.svg)
+
+*Every number on it is read from `tests/results/{benchmarks,accuracy-image,accuracy-video}.json` and
+the GPU tables of [docs/performance.md](docs/performance.md), measured on a 96-core Threadripper
+7995WX and one RTX 4500 Ada; `scripts/gen_results_figure.py` redraws it.*
+
 ## Supported models
 
 | model | size | what you can do | licence |
