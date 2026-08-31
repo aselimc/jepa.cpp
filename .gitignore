@@ -5,7 +5,7 @@
 __pycache__/
 *.pyc
 # weights (kept on disk in-repo, never committed)
-/models/
+/models
 *.gguf
 *.safetensors
 *.pt
@@ -13,7 +13,7 @@ __pycache__/
 *.pth.tar
 *.bin
 # reference dumps
-/tests/fixtures/ref/
+/tests/fixtures/ref
 /tests/fixtures/media/*.mp4
 .DS_Store
 # accuracy-benchmark datasets (in-repo, never committed)

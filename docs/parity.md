@@ -319,6 +319,8 @@ f16/q8_0 tail while still collapsing for a real graph bug: a wrong RoPE layout a
 (V-JEPA 2) / ~0.91 (2.1) on *every* token (`docs/architecture.md`, `VJEPA_NOTES.md` §6). Every f32 file
 keeps the hard 0.9999-on-every-token bar.
 
+Sensitivity note: at f16/q8 the video token map has no rel_max and no worst-token gate, so its floor for a weight-level error is ~1–5 % (a +1 % scale on one `attn_out` matrix of the SSv2 f16 file still passes: mean 0.9995, median 0.99997, logits 0.99998); the f32 file is the sensitive configuration (REL(N) ≈ 37× its noise floor) and every model ships one, which is why every family is anchored at f32.
+
 Deviation from the protocol’s “f16: cos ≥ 0.9999”: that bar is unattainable for the worst single token
 of an f16 file regardless of implementation — running the numpy executable spec
 (`scripts/jepa_convert/selftest.py` math: f16 weights, float32 activations) on the stored I-JEPA inputs

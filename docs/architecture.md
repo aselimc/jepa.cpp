@@ -70,7 +70,7 @@ Patch "conv" is a host-side rearrangement into `[N, C*T*P*P]` followed by one `g
 
 ## Parity protocol (every phase ends with this)
 1. `scripts/dump_reference.py --model <name>` writes `tests/fixtures/ref/<name>/manifest.json` plus one float32 C-order `.npy` per tensor per sample (`<sample>.<tensor>.npy`; `frames_u8` uint8, `top5_idx` int64) containing, per fixture: preprocessed input tensor (`input`, layout stated in the manifest), `last_hidden_state`, pooled feature, and (if a head exists) logits / pooler output; video samples also carry the raw sampled frames (`frames_u8`). Schema and per-model tensor lists: `tests/fixtures/README.md`.
-2. `test-parity <model.gguf> <ref dir>` feeds the **same preprocessed tensor** (bypassing our preprocessor) and reports per-sample cosine similarity, max abs error; then runs our own preprocessor (from `frames_u8` for video) and reports the same, plus top-1/top-5 agreement for heads. `scripts/compare.py` is the Python twin (same metrics and thresholds on `.npy` outputs).
+2. `test-parity <model.gguf> <ref dir>` feeds the **same preprocessed tensor** (bypassing our preprocessor) and reports per-sample cosine similarity, max abs error; then runs our own preprocessor (from `frames_u8` for video) and reports the same, plus top-1/top-5 agreement for heads. `scripts/compare.py` is the Python side for ad-hoc `.npy` comparison (same metrics); its `--min-cos`/`--max-rel` are flat and do **not** implement the POLICY table.
 3. Pass thresholds are **table-driven, per model family × file-type tier** (`POLICY` in
    `tests/test-parity.cpp`, reproduced in `docs/parity.md` "Thresholds"), because the low-cosine token
    tail of the f16/quantized video encoders is not something the image ViTs show:
@@ -83,7 +83,8 @@ Patch "conv" is a host-side rearrangement into `[N, C*T*P*P]` followed by one `g
      recommended quantization for parity" note, only the derived tensors (≥ 0.99) and the top-1 label
      gated;
    * classifiers reproduce the reference top-1 exactly and ≥ 4 of its top-5; the own-preprocessing pass
-     uses the same rules with no bar stricter than 0.99.
+     keeps only the mean/median gates with no bar stricter than 0.99 and no worst-token or rel_max bound
+     at all (it carries JPEG-decoder variance on top of the model error).
    `REL(N) = max(1e-3, 1e-3·√(N/2048))`: `rel_max` is a max-abs difference, which grows with the length
    of the graph's reductions while the cosine does not (the 8192-token V-JEPA 2 clip sits at 1.22e-3
    with cosine 1.000000 on every token). `tests/test-predictor.cpp` uses the image-family rows and the

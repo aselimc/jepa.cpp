@@ -124,7 +124,8 @@ static metrics compare(const float * a, const float * b, int64_t rows, int64_t d
 //     recommends q8_0 as the lowest parity-grade quantisation).
 // Classifiers additionally have to reproduce the reference top-1 exactly and 4 of its top-5 (top-1
 // only in the low-bit tier).
-// The own-preprocessing pass uses the same rules with no bar stricter than 0.99: it additionally
+// The own-preprocessing pass keeps only the mean/median gates (no bar stricter than 0.99) and drops the
+// worst-token and rel_max bounds entirely: it additionally
 // carries JPEG-decoder differences (stb_image vs PIL) unless --rgb-dir provides the reference pixels
 // (video samples run on the stored frames_u8 and come out bit-exact).
 struct thresholds { double min_mean; double min_med; double min_min; double max_rel; };  // <= 0: no gate

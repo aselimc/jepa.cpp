@@ -178,6 +178,9 @@ int jepa_predict_ex(jepa_context * ctx, const jepa_output * enc,
 //           the 576-token COCO image against the numpy spec's mode="image" (docs/parity.md): the
 //           image vector gives cosine 1.0000000 on every row at f32, the video vector 0.862 mean /
 //           0.655 worst -- a silent two-digit error, not noise.
+// AUTO picks IMAGE when the ids span a single temporal slice and the file carries pred.mod_embed_img.
+// A single-tubelet video clip (2 frames, tubelet 2) is indistinguishable from an image on the id grid,
+// so pass JEPA_MODALITY_VIDEO explicitly for 2-frame clips — the wrong vector costs ~0.14 cosine.
 enum { JEPA_MODALITY_AUTO = 0, JEPA_MODALITY_VIDEO = 1, JEPA_MODALITY_IMAGE = 2 };
 
 // jepa_predict_ex with an explicit modality (jepa_predict_ex == modality JEPA_MODALITY_VIDEO).
