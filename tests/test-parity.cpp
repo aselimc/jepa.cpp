@@ -159,7 +159,7 @@ static const char * const BK_NAME[BK_COUNT]     = { "cpu", "gpu" };
 //
 // Every GPU cell additionally gates **rel_max**, which the CPU tiers only do at f32. That is not
 // belt-and-braces: a wrong ggml_norm variance is a per-row *scale* error, and cosine similarity is
-// exactly blind to a per-row scale — the audit's §5.3 sweep shows CUDA at relative error 5.7 with
+// exactly blind to a per-row scale — CUDA has been measured at relative error 5.7 with
 // per-row cosine still reading 1.0000000. Without a rel_max gate the GPU tier would not be able to
 // see the one backend difference that has no fix. The bounds are set from the measured worst
 // fixture value with the usual margin (see docs/parity.md's GPU section for the numbers).
@@ -411,7 +411,7 @@ int main(int argc, char ** argv) {
         printf("NOTE: there is no f32 parity tier on a GPU — ggml's CUDA \"F32\" mul_mat is TF32 (the "
                "CUBLAS_GEMM_DEFAULT_TENSOR_OP algo enum, which GGML_PREC_F32 cannot undo), flash attention "
                "always converts K/V to F16 and accumulates PV in F16, and ggml_norm uses the one-pass "
-               "variance. This f32 file is judged with the f16 bars plus rel_max (docs/parity.md "Parity on a GPU").\n");
+               "variance. This f32 file is judged with the f16 bars plus rel_max (docs/parity.md 'Parity on a GPU').\n");
     }
     if (pol.advisory) {
         if (ftype_bits_per_weight(ftype) < 0) {

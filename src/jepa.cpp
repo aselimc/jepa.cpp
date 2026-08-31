@@ -236,7 +236,7 @@ bool jepa_graph_validate(jepa_context * ctx) {
     }
     if (n_bad > 0) {
         jepa_log("jepa: %d of %d graph nodes cannot run on %s — refusing to compute, because this "
-                 "backend would silently produce a wrong answer (docs/architecture.md "GPU backend"). Run on "
+                 "backend would silently produce a wrong answer (docs/architecture.md 'GPU backend'). Run on "
                  "the CPU, or fix the graph.\n", n_bad, n, ggml_backend_dev_name(ctx->dev));
         return false;
     }
@@ -456,7 +456,7 @@ ggml_type jepa_context_kv_type(const jepa_context * ctx) {
                 warned = true;
                 jepa_log("jepa: F32 K/V was requested but no GPU flash-attention kernel keeps K/V in F32 — "
                          "they are converted to F16 before the kernel runs and the PV accumulator is F16 "
-                         "either way (docs/architecture.md "Attention and precision"). Use --no-flash for an F32 attention path.\n");
+                         "either way (docs/architecture.md 'Attention and precision'). Use --no-flash for an F32 attention path.\n");
             }
         }
         return GGML_TYPE_F16;
@@ -480,7 +480,7 @@ bool jepa_gpu_flash_ok(const jepa_context * ctx, int head_dim) {
     if (!warned) {
         warned = true;
         jepa_log("jepa: no GPU flash-attention kernel exists at head_dim 32, so this predictor uses the "
-                 "naive mul_mat + soft_max_ext path (fully F32, and supported) — docs/architecture.md "GPU backend"\n");
+                 "naive mul_mat + soft_max_ext path (fully F32, and supported) — docs/architecture.md 'GPU backend'\n");
     }
     return false;
 }
@@ -497,7 +497,7 @@ bool jepa_gpu_naive_attn_fits(const jepa_context * ctx, int64_t n_rows, int n_he
     if (bytes <= budget) return true;
     jepa_log("jepa: %s needs a %.1f GiB attention score matrix (%lld rows x %d heads, F32) but only "
              "%.1f GiB is free on %s. head_dim 32 has no GPU flash kernel, so there is no smaller "
-             "form of this graph — run this shape on the CPU (docs/architecture.md "GPU backend").\n",
+             "form of this graph — run this shape on the CPU (docs/architecture.md 'GPU backend').\n",
              what, bytes / (1024.0 * 1024.0 * 1024.0), (long long) n_rows, n_head,
              (double) dfree / (1024.0 * 1024.0 * 1024.0), ggml_backend_dev_name(ctx->dev));
     return false;
