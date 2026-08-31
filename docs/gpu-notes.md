@@ -24,7 +24,7 @@ Everything read-only was checked against the pinned ggml submodule, commit `36da
 Ceilings, computed from what `nvidia-smi` reports rather than from a datasheet: 7 680 CUDA cores at
 a max SM clock of **3 105 MHz** and a 210 W board limit give **47.7 TFLOP/s FP32** and, at the 2×
 dense rate of Ada's 4th-gen tensor cores, **~95 TFLOP/s FP16 with FP32 accumulate**. Sustained
-clocks under a 210 W cap are lower than 3 105 MHz, so treat these as upper bounds. §5.5 shows
+clocks under a 210 W cap are lower than 3 105 MHz, so treat these as upper bounds. §5.6 shows
 PyTorch reaching 56–77 TFLOP/s (fp16) and ~14 TFLOP/s (fp32) on this card, which is the practical
 ceiling any ggml-CUDA number should be read against.
 
@@ -109,12 +109,18 @@ Two consequences, one of them potentially fatal:
 - a wider error band at f16 on GPU than the `docs/parity.md` f16 rows describe, and
 - **a real overflow risk**: `half` saturates at 65504, and `docs/architecture.md` records I-JEPA
   ViT-H activations reaching ~2e4. An FFN output stored as `half` is one factor of 3 away from `inf`.
-  §5.4 checks for non-finite outputs explicitly.
+  The §5.5 encoder runs check for non-finite outputs and found none — but their random weights keep
+  activations near ±5, so that is **not** evidence about the real ViT-H. Like the `ggml_norm`
+  question of §5.3, it needs a dump of real activations and is a pre-flight check for chunk 3.
 
-F32 weights are safe — `batched_mul_mat_traits<GGML_TYPE_F32>` uses `CUBLAS_COMPUTE_32F` with
-`CUDA_R_32F`, i.e. **strict FP32, not TF32** (ggml never calls `cublasSetMathMode`), so an f32 GGUF
-gets Ada's ~24 TFLOP/s FP32 rather than its ~48 TFLOP/s tensor-core rate. Quantized weights take the
-`mmq` path (INT8 tensor cores, INT32 accumulate, F32 rescale) and are unaffected.
+F32 weights use `batched_mul_mat_traits<GGML_TYPE_F32>`, i.e. `CUBLAS_COMPUTE_32F` with `CUDA_R_32F`,
+which *reads* like strict FP32 — **but §5.1 measured that it is not**: 62.7 TFLOP/s (above this card's
+FP32 ceiling) at 3.2e-04 error against the CPU, which is TF32. ggml passes the legacy algo enum
+`CUBLAS_GEMM_DEFAULT_TENSOR_OP` to every `cublasGemmEx` (`ggml-cuda.cu:1559/1575/1613`) and never
+calls `cublasSetMathMode`, and that enum permits TF32 downconversion for `CUBLAS_COMPUTE_32F`.
+`GGML_PREC_F32` cannot undo it, because it only selects the compute type. **Read §5.1 before relying
+on anything in this paragraph.** Quantized weights take the `mmq` path (INT8 tensor cores, INT32
+accumulate, F32 rescale) and are unaffected.
 
 **Consequence for the port:** call `ggml_mul_mat_set_prec(t, GGML_PREC_F32)` on every `mul_mat` in
 `jepa_build_linear` when the backend is a GPU (it is a no-op on CPU — `docs/ggml-notes.md` §6), or
@@ -412,49 +418,10 @@ That model is validated against the CPU numbers already in the repo: `docs/ggml-
 `4948/3.3 + 6597/1.7 = 5.4 s` for the 64-frame ViT-L clip against the **6 388 ms** `docs/benchmarks.md`
 actually measures — 18 % out, i.e. the right shape with the expected slack for LN/GELU/launch overhead.
 
-### 5.5 PyTorch-GPU baseline
-
-The numbers a jepa.cpp-CUDA has to be compared against. One RTX 4500 Ada (`CUDA_VISIBLE_DEVICES=0`),
-batch 1, synthetic input of the right shape, `torch.set_num_threads(8)`, TF32 **off** (torch's
-default), 3 warmup + 7 timed forwards with `torch.cuda.synchronize()` around each.
-Driver 580.173.02, **torch 2.13.0+cu130**, transformers 5.16.1, `attn_implementation="sdpa"`.
-`VJEPA2Model(..., skip_predictor=True)` and `IJepaModel`, both loaded from `models/`.
-Script: `tmp/torch_gpu_bench.py`; raw JSON: `tmp/results/torch-gpu.json`.
-
-| model | dtype | frames | tokens | mean ms | median ms | min ms | peak GiB | implied TFLOP/s |
-|---|---|---:|---:|---:|---:|---:|---:|---:|
-| vjepa2-vitl-fpc64-256 | fp32 | 16 | 2 048 | 118.58 | 118.54 | 118.39 | 1.33 | 13.9 |
-| vjepa2-vitl-fpc64-256 | fp32 | 64 | 8 192 | 836.52 | 836.61 | 835.12 | 1.65 | 13.8 |
-| vjepa2-vitl-fpc64-256 | **fp16** | 16 | 2 048 | **29.56** | 29.56 | 29.47 | 1.27 | **55.8** |
-| vjepa2-vitl-fpc64-256 | **fp16** | 64 | 8 192 | **150.03** | 150.04 | 149.85 | 0.83 | **77.0** |
-| ijepa_vith14_1k | fp32 | 1 | 256 | 24.99 | 25.02 | 24.66 | 2.43 | 13.3 |
-| ijepa_vith14_1k | **fp16** | 1 | 256 | **5.57** | 5.58 | 5.52 | 2.42 | **59.7** |
-
-Run-to-run spread is well under 1 % on every row (mean ≈ median ≈ min), so these are clean numbers.
-
-Two things to take from this table:
-
-* **fp16 is 4.2–5.6× faster than fp32** on this card, because TF32 is off by default in torch and
-  ggml likewise never calls `cublasSetMathMode` (§1.3) — both engines run f32 on the FP32 CUDA cores
-  (~14 TFLOP/s achieved, 29 % of the 47.7 ceiling) and f16 on the tensor cores (56–77 TFLOP/s,
-  59–81 % of the ~95 ceiling). **An f32 GGUF on CUDA will be roughly 4× slower than an f16 one**,
-  the same shape as on CPU but for a different reason.
-* Against the CPU engine we ship today (`docs/benchmarks.md`, f16):
-
-  | shape | jepa.cpp CPU t=32 | jepa.cpp CPU t=96 | torch-GPU fp16 | GPU vs CPU-32 / CPU-96 |
-  |---|---:|---:|---:|---:|
-  | I-JEPA ViT-H, 224² | 147.0 ms | 113.1 ms | 5.57 ms | **26.4× / 20.3×** |
-  | V-JEPA 2 ViT-L, 16f@256 | 820.7 ms | 566.6 ms | 29.56 ms | **27.8× / 19.2×** |
-  | V-JEPA 2 ViT-L, 64f@256 | 6 388.1 ms | 4 026.9 ms | 150.03 ms | **42.6× / 26.8×** |
-
-  That is the size of the prize: one 210 W workstation GPU beats 96 Zen 4 cores by 20–43×. Even a
-  jepa.cpp-CUDA that only reached half of torch's throughput would be a 10–21× improvement on the
-  fastest thing the project can do today.
-
 ### 5.1 `mul_mat` — CUDA vs CPU
 
 `Y = mul_mat(W, X)`, `W = [1024 x 4096]` (a ViT-L `ffn_up`), `X = [1024, N]` F32 — the same shape
-`docs/ggml-notes.md` S5 benches on the CPU. Best of 20 (CUDA) / 3 (CPU, 32 threads); the error column
+`docs/ggml-notes.md` §5 benches on the CPU. Best of 20 (CUDA) / 3 (CPU, 32 threads); the error column
 is CUDA vs the CPU backend on the *same weight bytes*, i.e. the kernel difference alone, not
 quantisation.
 
@@ -474,7 +441,7 @@ quantisation.
 | q4_K | 2048 | 0.185 | **93 019** | 9.64 | 1 783 | 1.35e-02 | 0.9991882 |
 | q4_K | 8192 | 0.778 | 88 294 | 38.05 | 1 806 | 1.39e-02 | 0.9991175 |
 
-**Three findings, one of them a correction to S1.3.**
+**Three findings, one of them a correction to §1.3.**
 
 1. **ggml's "F32" matmul on CUDA is actually TF32.** 62.7 TFLOP/s is *above* this card's 47.7 TFLOP/s
    FP32 ceiling, and the error against the CPU is **3.2e-04** — far too large for real FP32 (which
@@ -486,7 +453,7 @@ quantisation.
    `GGML_TYPE_F32`, which is already the case for an F32 weight, so the `--prec-f32` run reproduces
    the f32 rows to the digit (38 915 / 59 306 / 62 625 GFLOP/s, rel 3.17e-04). **There is no way to
    get a true-F32 `mul_mat` out of ggml-CUDA from jepa.cpp.** Torch is in the same regime by
-   *choice* (`torch.backends.cuda.matmul.allow_tf32` defaults to `False`, and S5.5 confirms it ran
+   *choice* (`torch.backends.cuda.matmul.allow_tf32` defaults to `False`, and §5.6 confirms it ran
    at 13.8 TFLOP/s, i.e. real FP32); ggml is in it by accident.
 2. **`GGML_PREC_F32` transforms f16 accuracy and is nearly free at scale.** With `--prec-f32` the f16
    rows go from **4.55e-03 to 2.57e-05** max rel error (177x better) and min cos 0.9999984 to
@@ -494,14 +461,14 @@ quantisation.
    N=8192**. For anything but the shortest sequence it is close to free. This is the single cheapest
    accuracy fix in the whole port.
 3. **The quantized types are the *fastest* path on CUDA** — 88-98 TFLOP/s, above f16 and f32 — and
-   q4_K is level with q8_0. That is the inversion S1.3 predicted: on the CPU `docs/benchmarks.md` has
+   q4_K is level with q8_0. That is the inversion §1.3 predicted: on the CPU `docs/benchmarks.md` has
    q4_k *slower* than q8_0 (ViT-H 198 vs 129 ms) because llamafile's sgemm covers only F32/F16/Q8_0.
 
 Speed-up over the 32-thread CPU at N=2048: f32 **27x**, f16 **20x**, q8_0 **48x**, q4_K **52x**.
 
 ### 5.2 `flash_attn_ext` — CUDA vs CPU, and the head_dim-32 fallback
 
-No mask, `GGML_PREC_F32` requested (a no-op on CUDA, S1.5). Best of 10 (CUDA) / 2 (CPU, 32 threads).
+No mask, `GGML_PREC_F32` requested (a no-op on CUDA, §1.5). Best of 10 (CUDA) / 2 (CPU, 32 threads).
 `GFLOP/s` counts `4*N^2*D*H`.
 
 | head_dim | n_head | N | K/V | shape | CUDA ms | **CUDA GFLOP/s** | CPU 32t ms | rel vs CPU | min cos |
@@ -519,13 +486,13 @@ No mask, `GGML_PREC_F32` requested (a no-op on CUDA, S1.5). Best of 10 (CUDA) / 
 
 * **35-40x faster than the CPU** on every production encoder shape, running at 51-71 TFLOP/s. The
   small I-JEPA case (N=256) only reaches 11.9 TFLOP/s — 11 GFLOP of work is too little to fill the
-  GPU, which is exactly why I-JEPA's 3 % attention share (S5.0) does not matter.
-* **F32 K/V buys nothing, exactly as S1.5 predicted from the source.** Same error to three digits
+  GPU, which is exactly why I-JEPA's 3 % attention share (§5.0) does not matter.
+* **F32 K/V buys nothing, exactly as §1.5 predicted from the source.** Same error to three digits
   (5.21e-03 vs 5.25e-03) and, if anything, *slower* (the extra F32-to-F16 conversion pass). This is
   the measured proof that `JEPA_KV_F32` cannot be honoured on CUDA.
-* The CUDA error is ~10x the CPU's. `docs/ggml-notes.md` S3 measures CPU flash with F16 K/V at
+* The CUDA error is ~10x the CPU's. `docs/ggml-notes.md` §3 measures CPU flash with F16 K/V at
   rel <= 1.3e-3 and per-row cosine >= 0.9999995; CUDA lands at rel 5.2e-3-1.5e-2 and min cos
-  0.99991-0.99999. That is the F16 PV accumulator (`T_C_VKQ = tile<..., half2>`, S1.5), and unlike
+  0.99991-0.99999. That is the F16 PV accumulator (`T_C_VKQ = tile<..., half2>`, §1.5), and unlike
   the `mul_mat` case there is **no flag to turn it off**.
 
 **The head_dim-32 fallback, measured.** Naive F32 attention (`mul_mat + soft_max_ext + cont`) at the
@@ -578,13 +545,13 @@ that is a max element, not a row mean, and a row with large elements has a large
 `mean 20 000, sigma 30` row (ratio 667, error 4.05e-02) is the realistic worst case and the `mean 0`
 rows are the realistic typical case. Settling this needs a dump of real pre-LN rows, which would
 have meant changing `src/`, outside this audit's scope. **It is a required pre-flight check for
-chunk 3 of S6.7.**
+chunk 3 of §6.7.**
 
 ### 5.4 The RoPE chain: 193 splits vs 1, and bit-identical
 
 `jepa_rope3d_apply` applied to q and k of L layers, on the real non-contiguous qkv view. "current" is
 `src/rope3d.cpp` as it stands; "hoisted" is the brief's three-table suggestion **plus** a `ggml_cont`;
-"proposed" is S2.3 (two tables, one pair-swap roll). `sched` is `ggml_backend_sched` over
+"proposed" is §2.3 (two tables, one pair-swap roll). `sched` is `ggml_backend_sched` over
 `{CUDA, CPU}`.
 
 | N | L | chain | CPU 32t | **CUDA-only** | sched | **splits** |
@@ -597,10 +564,10 @@ chunk 3 of S6.7.**
 | 8 192 | 6 | proposed | 40.9 ms | **13.360 ms** | 13.323 ms | **1** |
 
 * **193 splits** for 24 layers is 8 per layer — the four rejected rolls plus the copies around them,
-  exactly the per-layer fragmentation S1.2 predicted. Both fixes collapse it to **1**.
+  exactly the per-layer fragmentation §1.2 predicted. Both fixes collapse it to **1**.
 * **Bit-identical, on both backends.** `max abs 0.000e+00`, `min cos 1.0000000` for hoisted-vs-current
   and proposed-vs-current on the CPU, *and* for proposed-CUDA-vs-current-CPU. The numpy proof in
-  S2.3 holds in ggml, in float32, on the GPU.
+  §2.3 holds in ggml, in float32, on the GPU.
 * The isolated CPU columns look alarming (7.0 to 32.5 ms) but are an **artefact of this
   microbenchmark**: all 48 chains read one shared `qkv` tensor that stays hot in cache, so adding a
   `ggml_cont` per chain looks far more expensive than it is. In the **full encoder**, where each
@@ -632,7 +599,7 @@ enc --rope         --verify : verify vs CPU: max abs 7.401e-03 (rel 1.560e-03), 
 Note the failure would **pass jepa.cpp's f16 parity gate** (mean >= 0.9999, worst >= 0.99). And
 because this synthetic encoder has random weights — giving near-uniform attention that is insensitive
 to corrupted q/k — 0.99996 is a *lower bound* on the real error, not an estimate of it. Consequence
-for S6.1: a single-backend design **must validate its own graph** against
+for §6.1: a single-backend design **must validate its own graph** against
 `ggml_backend_dev_supports_op` at build time. That is ~15 lines and it is not optional.
 
 ### 5.5 Synthetic encoder forward, CUDA vs CPU
@@ -669,20 +636,59 @@ Variants:
 | variant | ViT-H N=256 f16 | ViT-L N=2048 f16 | note |
 |---|---:|---:|---|
 | baseline | 7.2 ms | 35.1 ms | |
-| `+ GGML_PREC_F32` on every mul_mat | **15.1 ms** (2.1x) | **43.7 ms** (1.25x) | the accuracy fix of S5.1 |
+| `+ GGML_PREC_F32` on every mul_mat | **15.1 ms** (2.1x) | **43.7 ms** (1.25x) | the accuracy fix of §5.1 |
 | `+ GGML_PREC_F32`, q8_0 weights | – | 31.9 ms (vs 31.5, **free**) | quantized skips cuBLAS |
-| F32 weights, F32 K/V | 10.7 ms (vs 10.8 F16 K/V) | – | K/V dtype is a no-op, S5.2 |
+| F32 weights, F32 K/V | 10.7 ms (vs 10.8 F16 K/V) | – | K/V dtype is a no-op, §5.2 |
 | naive attention instead of flash | 11.2 ms (vs 10.7) — **~free** | 98.0 ms (2.8x), 0.30 GiB | the F32-parity escape hatch |
 
 Two useful consequences: **`GGML_PREC_F32` costs 2.1x on the short-sequence ViT-H but only 1.25x on
 ViT-L and nothing at all on quantized weights**; and **the naive attention path is essentially free at
 I-JEPA's 256 tokens**, so `--no-flash` really is a viable f32-accuracy mode for the image models
-(S6.4), while at 2 048 tokens it costs 2.8x.
+(§6.4), while at 2 048 tokens it costs 2.8x.
 
-### 5.6 Forecast, and the honest ratio against torch-GPU
+### 5.6 PyTorch-GPU baseline
 
-The S5.5 column *is* the forecast — it is a measured ggml-CUDA forward of the right shape, so no
-extrapolation is needed. Adding the transfers of S6.1.3 (~7 ms at the largest shape, less elsewhere)
+The numbers a jepa.cpp-CUDA has to be compared against. One RTX 4500 Ada (`CUDA_VISIBLE_DEVICES=0`),
+batch 1, synthetic input of the right shape, `torch.set_num_threads(8)`, TF32 **off** (torch's
+default), 3 warmup + 7 timed forwards with `torch.cuda.synchronize()` around each.
+Driver 580.173.02, **torch 2.13.0+cu130**, transformers 5.16.1, `attn_implementation="sdpa"`.
+`VJEPA2Model(..., skip_predictor=True)` and `IJepaModel`, both loaded from `models/`.
+Script: `tmp/torch_gpu_bench.py`; raw JSON: `tmp/results/torch-gpu.json`.
+
+| model | dtype | frames | tokens | mean ms | median ms | min ms | peak GiB | implied TFLOP/s |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| vjepa2-vitl-fpc64-256 | fp32 | 16 | 2 048 | 118.58 | 118.54 | 118.39 | 1.33 | 13.9 |
+| vjepa2-vitl-fpc64-256 | fp32 | 64 | 8 192 | 836.52 | 836.61 | 835.12 | 1.65 | 13.8 |
+| vjepa2-vitl-fpc64-256 | **fp16** | 16 | 2 048 | **29.56** | 29.56 | 29.47 | 1.27 | **55.8** |
+| vjepa2-vitl-fpc64-256 | **fp16** | 64 | 8 192 | **150.03** | 150.04 | 149.85 | 0.83 | **77.0** |
+| ijepa_vith14_1k | fp32 | 1 | 256 | 24.99 | 25.02 | 24.66 | 2.43 | 13.3 |
+| ijepa_vith14_1k | **fp16** | 1 | 256 | **5.57** | 5.58 | 5.52 | 2.42 | **59.7** |
+
+Run-to-run spread is well under 1 % on every row (mean ≈ median ≈ min), so these are clean numbers.
+
+Two things to take from this table:
+
+* **fp16 is 4.2–5.6× faster than fp32** on this card, because TF32 is off by default in torch and
+  ggml likewise never calls `cublasSetMathMode` (§1.3) — both engines run f32 on the FP32 CUDA cores
+  (~14 TFLOP/s achieved, 29 % of the 47.7 ceiling) and f16 on the tensor cores (56–77 TFLOP/s,
+  59–81 % of the ~95 ceiling). **An f32 GGUF on CUDA will be roughly 4× slower than an f16 one**,
+  the same shape as on CPU but for a different reason.
+* Against the CPU engine we ship today (`docs/benchmarks.md`, f16):
+
+  | shape | jepa.cpp CPU t=32 | jepa.cpp CPU t=96 | torch-GPU fp16 | GPU vs CPU-32 / CPU-96 |
+  |---|---:|---:|---:|---:|
+  | I-JEPA ViT-H, 224² | 147.0 ms | 113.1 ms | 5.57 ms | **26.4× / 20.3×** |
+  | V-JEPA 2 ViT-L, 16f@256 | 820.7 ms | 566.6 ms | 29.56 ms | **27.8× / 19.2×** |
+  | V-JEPA 2 ViT-L, 64f@256 | 6 388.1 ms | 4 026.9 ms | 150.03 ms | **42.6× / 26.8×** |
+
+  That is the size of the prize: one 210 W workstation GPU beats 96 Zen 4 cores by 20–43×. Even a
+  jepa.cpp-CUDA that only reached half of torch's throughput would be a 10–21× improvement on the
+  fastest thing the project can do today.
+
+### 5.7 Forecast, and the honest ratio against torch-GPU
+
+The §5.5 column *is* the forecast — it is a measured ggml-CUDA forward of the right shape, so no
+extrapolation is needed. Adding the transfers of §6.1.3 (~7 ms at the largest shape, less elsewhere)
 and the patch embed (~2-5 % of the matmul work):
 
 | model / shape | jepa.cpp CPU 32t today | **forecast jepa.cpp-CUDA (f16)** | torch-GPU fp16 | **ggml / torch** |
@@ -692,20 +698,20 @@ and the patch embed (~2-5 % of the matmul work):
 | V-JEPA 2 ViT-L, 64f@256 | 6 388.1 ms | **~280 ms** | 150.03 ms | 1.87x slower (**54 %**) |
 | V-JEPA 2.1 ViT-B, 16f@384 | 853.5 ms | ~40 ms | – | – |
 | V-JEPA 2.1 ViT-B, 64f@384 | 9 036.1 ms | ~405 ms | – | – |
-| V-JEPA 2 ViT-L predictor, 16f | 452 ms | **~105 ms** | – | (naive attention, S5.2) |
+| V-JEPA 2 ViT-L predictor, 16f | 452 ms | **~105 ms** | – | (naive attention, §5.2) |
 
 **The honest ratio is 54-80 % of PyTorch**, i.e. jepa.cpp-CUDA would be 1.25-1.9x slower than
 `VJEPA2Model` on the same card — and **20-26x faster than jepa.cpp as it exists today**.
 
-Where the remaining gap is, at the 64-frame ViT-L shape: the measured component rates (S5.1, S5.2)
+Where the remaining gap is, at the 64-frame ViT-L shape: the measured component rates (§5.1, §5.2)
 predict `4948/55.9 + 6597/70.7 = 88 + 93 = 182 ms`, against 270 ms measured. The missing ~88 ms is
-everything that is neither a GEMM nor an attention: 48 unfused LayerNorms (S1.6), `gelu_erf` over
+everything that is neither a GEMM nor an attention: 48 unfused LayerNorms (§1.6), `gelu_erf` over
 `[4096, 8192]` twice per layer, the per-layer F32-to-F16 K/V casts, and the RoPE. **That is where a
-second round of optimisation would go**, and the `{NORM, MUL, ADD}` fusion of S1.6 is the first item
+second round of optimisation would go**, and the `{NORM, MUL, ADD}` fusion of §1.6 is the first item
 on that list. It also explains the shape of the ratio column: the gap is smallest where matmuls
 dominate (I-JEPA, ViT-L 16f) and widest where the long-sequence overheads pile up (ViT-L 64f).
 
-### 5.7 Measurement conditions
+### 5.8 Measurement conditions
 
 The batching agent's sentinel appeared at 22:17 and every number above was taken after it, on an
 otherwise idle box. `uptime` load average: **1.79 before the build**, 10.06 at the start of the
@@ -929,7 +935,7 @@ parity-policy decision (§6.4) costs in discussion. Chunk 1 is worth doing regar
 it is bit-identical, it removes ~340 nodes from a ViT-L video graph, and the repo already lists it as
 a candidate ("rope3d sin-mask hoisting").
 
-A **second, optional** round of optimisation exists and was quantified in §5.6: ~33 % of the
+A **second, optional** round of optimisation exists and was quantified in §5.7: ~33 % of the
 64-frame ViT-L time is neither GEMM nor attention. The first item on that list is an upstream
 `{NORM, MUL, ADD}` fusion in ggml-cuda (§1.6), which would benefit every ViT on ggml.
 
@@ -952,7 +958,7 @@ The three decisive facts:
    real encoder shapes gives 7.2 ms for I-JEPA ViT-H, 35 ms for the ViT-L 16-frame clip and 270 ms
    for the 64-frame clip, against 147 / 821 / 6 388 ms on 32 Zen 4 cores today (§5.5). One 210 W
    workstation card beats 96 cores by more than an order of magnitude, and ggml gets within 1.25–1.9×
-   of `VJEPA2Model` on the same GPU (§5.6). Quantized weights are the *fastest* path on CUDA
+   of `VJEPA2Model` on the same GPU (§5.7). Quantized weights are the *fastest* path on CUDA
    (q4_K at 93 TFLOP/s, level with q8_0), which inverts the CPU guidance and makes the small
    quantized files genuinely attractive rather than a memory-only trade.
 
