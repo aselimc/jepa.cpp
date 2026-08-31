@@ -64,10 +64,13 @@ against parity.md's independent timings. Machine-readable twin:
 attention accuracy and wall time, memory behaviour, this box's matmul throughput per dtype, and the
 gotchas collected on the way. Read it before adding an op.
 
-**[gpu-notes.md](gpu-notes.md)** — the CUDA feasibility audit (GO verdict): op-by-op kernel coverage
-at our exact shapes, the two blockers and their verified fixes, measured RTX 4500 Ada rates
-(20–26× our CPU engine, 54–80 % of PyTorch-GPU), the TF32/F16-accumulation numerics findings, the
-silent-wrong-answer hazard that makes graph validation mandatory, and the 6-chunk implementation plan.
+**[gpu-notes.md](gpu-notes.md)** — the optional CUDA backend (`-DJEPA_CUDA=ON`, `--gpu [N]`), both
+halves: the feasibility audit that preceded it — op-by-op kernel coverage at our exact shapes, the two
+blockers and their fixes, the TF32/F16-accumulation numerics findings, the silent-wrong-answer hazard
+that makes graph validation mandatory — and §8, the port as built and measured: **9–21× our 32-thread
+CPU engine, 38–62 % of PyTorch on the same card**, quantized weights the fastest GPU path, and the two
+open numeric questions (f16 overflow, the one-pass `ggml_norm`) closed with a dump of real activations.
+The parity consequence — there is no f32 tier on a GPU — is in [parity.md](parity.md#parity-on-a-gpu-gpu).
 
 ## Accuracy on real data
 

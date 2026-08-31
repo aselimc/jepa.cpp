@@ -1,7 +1,7 @@
 // jepa-bench: timing harness for every graph jepa.cpp can run.
 //
 //   jepa-bench -m model.gguf [--mode encoder|head|predictor|lewm-step|lewm-rollout]
-//              [--frames N] [--size HxW] [--batch B] [--threads 32,96]
+//              [--frames N] [--size HxW] [--batch B] [--threads 32,96] [--gpu [N]] [--gpu-prec f16|f32]
 //              [--repeat R] [--warmup W] [--kv-f16|--kv-f32] [--no-flash]
 //              [--seed S] [--steps K] [--md] [--json out.json] [--ftype-label NAME] [-v]
 //
@@ -27,6 +27,11 @@
 // The reported ms is the wall time of ggml_backend_graph_compute (jepa_context_last_compute_ms), i.e.
 // graph build/alloc and the host-side patchify are excluded; `wall_ms` in the JSON is the full API
 // call. With --threads a,b a context is created per thread count and each gets its own warmup.
+//
+// --gpu [N] runs everything on the N-th GPU device instead (docs/gpu-notes.md); --threads is then
+// unused, the table's "threads / device" column carries the device name, and the JSON gains
+// "device"/"gpu"/"mul_mat_prec_f32". GPU rows do not belong in docs/benchmarks.md (which is keyed by
+// thread count) — scripts/gen_benchmarks_md.py skips them; they live in docs/results.md "GPU (CUDA)".
 //
 // In --mode head/predictor the encoder is run three times (one warmup + two measured) and the
 // *minimum* of the measured passes is reported as `encoder_ms`, so a burst of load on the box during
@@ -135,6 +140,9 @@ static stats summarize(std::vector<double> v) {
 
 struct run {
     std::string model_name, model_path, family, ftype, ftype_gguf, mode, shape, kv;
+    std::string device = "CPU";   // ggml device the graph ran on ("CPU", "CUDA0", ...)
+    bool gpu = false;
+    bool prec_f32 = false;        // GGML_PREC_F32 mul_mat (GPU only; see docs/gpu-notes.md)
     int  threads = 0, batch = 1, frames = 0, height = 0, width = 0;
     int  repeat = 0, warmup = 0, steps = 0;
     bool flash = true;
@@ -156,8 +164,11 @@ static double ms_per_unit(const run & r) {
 }
 
 static void print_human(const run & r) {
-    printf("%-26s %-5s %-13s %-15s t=%-3d %9.2f ms (min %9.2f) %8.0f tok/s %6.0f MiB",
-           r.model_name.c_str(), r.ftype.c_str(), r.mode.c_str(), r.shape.c_str(), r.threads,
+    char dev[32];
+    if (r.gpu) snprintf(dev, sizeof(dev), "%-5s", r.device.c_str());
+    else       snprintf(dev, sizeof(dev), "t=%-3d", r.threads);
+    printf("%-26s %-5s %-13s %-15s %-5s %9.2f ms (min %9.2f) %8.0f tok/s %6.0f MiB",
+           r.model_name.c_str(), r.ftype.c_str(), r.mode.c_str(), r.shape.c_str(), dev,
            r.ms.mean, r.ms.min, tokens_per_s(r), (double) r.peak_rss / (1024.0 * 1024.0));
     if (r.units > 1) printf("  %8.2f ms/item", ms_per_unit(r));
     printf("\n");
@@ -165,12 +176,17 @@ static void print_human(const run & r) {
 
 static void print_md(const run & r, bool header) {
     if (header) {
-        printf("| model | ftype | mode | shape | tokens | threads | ms mean | ms min | tokens/s | peak RSS |\n");
+        printf("| model | ftype | mode | shape | tokens | threads / device | ms mean | ms min | tokens/s | peak RSS |\n");
         printf("|---|---|---|---|---:|---:|---:|---:|---:|---:|\n");
     }
-    printf("| %s | %s | %s | %s | %lld | %d | %.1f | %.1f | %.0f | %.0f MiB |\n",
+    // "device" is the ggml device for a GPU run and the thread count for a CPU one, so a table can
+    // mix the two without a second column that is blank on half the rows.
+    char dev[40];
+    if (r.gpu) snprintf(dev, sizeof(dev), "%s%s", r.device.c_str(), r.prec_f32 ? "" : " (prec f16)");
+    else       snprintf(dev, sizeof(dev), "%d", r.threads);
+    printf("| %s | %s | %s | %s | %lld | %s | %.1f | %.1f | %.0f | %.0f MiB |\n",
            r.model_name.c_str(), r.ftype.c_str(), r.mode.c_str(), r.shape.c_str(),
-           (long long) r.tokens, r.threads, r.ms.mean, r.ms.min, tokens_per_s(r),
+           (long long) r.tokens, dev, r.ms.mean, r.ms.min, tokens_per_s(r),
            (double) r.peak_rss / (1024.0 * 1024.0));
 }
 
@@ -202,6 +218,9 @@ static bool write_json(const std::string & path, const std::vector<run> & runs) 
         json_str(f, "mode",  r.mode);
         json_str(f, "shape", r.shape);
         json_str(f, "kv",    r.kv);
+        json_str(f, "device", r.device);
+        fprintf(f, "\"gpu\": %s, ", r.gpu ? "true" : "false");
+        fprintf(f, "\"mul_mat_prec_f32\": %s, ", r.prec_f32 ? "true" : "false");
         fprintf(f, "\"flash\": %s, ", r.flash ? "true" : "false");
         fprintf(f, "\"threads\": %d, \"batch\": %d, \"frames\": %d, \"height\": %d, \"width\": %d, ",
                 r.threads, r.batch, r.frames, r.height, r.width);
@@ -403,10 +422,13 @@ int main(int argc, char ** argv) {
         r.model_name = name; r.model_path = model_path; r.family = family; r.mode = mode;
         r.ftype = ftype; r.ftype_gguf = ftype_gguf;
         r.threads = jepa_context_n_threads(ctx);
+        r.device = jepa_model_device_name(model);
+        r.gpu = jepa_model_is_gpu(model);
+        r.prec_f32 = jepa_context_mul_mat_prec_f32(ctx);
         // The published tables are 32/96 threads (one worker per physical core, or a third of them).
         // Falling through to hardware_concurrency() puts two workers on every SMT sibling, which is
         // both slower and not what the documents quote — say so rather than let it pass unnoticed.
-        if (smt_threads > 0 && r.threads == smt_threads) {
+        if (smt_threads > 0 && r.threads == smt_threads && !r.gpu) {
             fprintf(stderr, "note: running with all %d hardware threads (SMT siblings included); "
                             "docs/benchmarks.md quotes 32 and 96 — pass --threads 32 to match it\n",
                     smt_threads);

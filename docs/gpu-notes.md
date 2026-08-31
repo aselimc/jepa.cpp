@@ -1,6 +1,10 @@
 # GPU (CUDA) feasibility for jepa.cpp
 
-**Status: audit only.** Nothing in `src/`, `tools/` or the build system has been changed. This document
+**Status: implemented — §§0-7 are the audit that preceded it, §8 is what shipped.** Sections 0-7 were
+written before any code changed and are left exactly as they were, so the forecast can be read against
+the result; **§8 records the port as built and measured**, including the two places the audit was wrong.
+A CUDA build is `-DJEPA_CUDA=ON` (off by default) and the tools take `--gpu [N]`; start at §8 if you
+want the numbers rather than the reasoning. The audit
 records (1) what ggml's CUDA backend can and cannot run *at jepa.cpp's exact shapes and strides*,
 (2) measured ggml-CUDA throughput on this box next to the CPU numbers of `docs/ggml-notes.md`,
 (3) a measured PyTorch-GPU baseline for the same models, and (4) the implementation plan and effort
@@ -990,3 +994,199 @@ image models are the right first target**: 97 % of their work is matmul, `--no-f
 **One open item this audit could not close:** whether real ViT residual streams ever reach the
 |mean|/σ ratio where CUDA's one-pass `ggml_norm` matters (§5.3). It needs a dump of real pre-LN rows,
 which would have meant changing `src/`. It is the first thing to check in chunk 3.
+
+## 8. Measured implementation — forecast vs achieved
+
+**Status: implemented.** §§0–7 above are the audit, written before any code changed and left as
+written. This section records what the port actually does and what it actually measures, on the same
+box, and marks the places where the audit was wrong.
+
+The port landed as the six chunks of §6.7. `JEPA_CUDA=OFF` is still the default; a CUDA build is
+
+```bash
+cmake -S . -B build-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DJEPA_CUDA=ON
+cmake --build build-cuda -j 16
+build-cuda/jepa-info --devices
+build-cuda/jepa-embed -m models/gguf/<model>.gguf -i img.jpg --gpu 0    # or $JEPA_DEVICE=cuda:0
+```
+
+### 8.1 What was built
+
+| chunk | landed as | note |
+|---|---|---|
+| 1 RoPE refactor | `src/rope3d.{h,cpp}`: the sin table carries the rotation's sign, and the pair swap is one `ggml_roll` of 1 over a length-2 axis, preceded by a `ggml_cont` when `x` is a view | 13 nodes → 5, bit-identical (`test-ops` 9/9 with the errors unchanged to the digit), **+4.8 % CPU** on the ViT-L 16-frame encoder (790.6 → 828.3 ms) — inside the 2.9–5.5 % §5.4 forecast |
+| 2 backend plumbing | `jepa_model_params` / `jepa_model_load_ex` / `$JEPA_DEVICE` / `--gpu [N]` / `jepa-info --devices`; the context always takes the model's backend | single backend, no `ggml_backend_sched`, as §6.1 argued |
+| 2 graph validation | `jepa_graph_validate()` in `jepa_graph_alloc()` | **the audit's condition, and it works**: `tests/test-backend.cpp` builds the historical bad node and the walk refuses it |
+| 3 numerics | `GGML_PREC_F32` on every `mul_mat` (GPU default, `--gpu-prec f16` / `$JEPA_GPU_PREC` to opt out), F16-only K/V with a one-shot log, a device-memory guard on naive attention | |
+| 4 predictor | naive attention on a GPU at head_dim 32, refusal with both sizes when the score matrix does not fit | |
+| 5 parity | `POLICY[backend][family][tier]` in `test-parity`, `--gpu` on `test-parity`/`test-predictor`, `tests/test-backend.cpp` in `ctest` | `docs/parity.md` "Parity on a GPU" |
+| 6 measurement | this section, `docs/results.md` "GPU (CUDA)", the README paragraph | |
+
+The §2 refactor changed `src/rope3d.cpp` and `tests/test-ops.cpp` only — `src/jepa.cpp`,
+`src/predictor.cpp` and `src/lewm.cpp` needed no change, exactly as §2.5 predicted.
+
+### 8.2 Forecast vs achieved
+
+§5.7's forecast column against the measured `ggml_backend_graph_compute` time, f16 weights, best of
+5 after 2 warmups, one RTX 4500 Ada, `GGML_PREC_F32` on (the default):
+
+| model / shape | §5.7 forecast | **achieved** | with `--gpu-prec f16` | §5.5's own `+PREC_F32` variant |
+|---|---:|---:|---:|---:|
+| I-JEPA ViT-H, 224² | ~7.5 ms | **15.5 ms** | 8.8 ms | 15.1 ms |
+| V-JEPA 2 ViT-L, 16 f @256 | ~37 ms | **46.5 ms** | 37.4 ms | 43.7 ms |
+| V-JEPA 2 ViT-L, 64 f @256 | ~280 ms | **306 ms** | 304 ms | – |
+| V-JEPA 2.1 ViT-B, 16 f @384 | ~40 ms | **43.0 ms** | – | – |
+| V-JEPA 2.1 ViT-B, 64 f @384 | ~405 ms | **424 ms** | – | – |
+| V-JEPA 2 ViT-L predictor, 16 f | ~105 ms | **113 ms** | – | – |
+
+**The forecast holds, and the two rows that look off are a like-for-like error in the forecast, not
+in the port.** §5.7 built its forecast on the §5.5 baseline column, which did *not* have
+`GGML_PREC_F32`, while §6.1.7 recommended turning it on by default — which the port did. Against
+§5.5's own `+ GGML_PREC_F32` variant the match is 15.5 vs 15.1 ms and 46.5 vs 43.7 ms, i.e. **+3 %
+and +6 %**, and the residual is the patch embedding and position handling the synthetic encoder
+omitted. With the flag off, the port reproduces the forecast directly (8.8 vs ~7.5, 37.4 vs ~37).
+The three long-sequence rows, where `GGML_PREC_F32` is nearly free, land at **+6 % to +9 %** of
+forecast with no caveat at all.
+
+Against the engine as it shipped before this work (`docs/benchmarks.md`, 32 threads, f16):
+
+| shape | CPU t=32 | CPU t=96 | **CUDA** | vs t=32 | vs t=96 |
+|---|---:|---:|---:|---:|---:|
+| I-JEPA ViT-H, 224² | 147.0 | 113.1 | **15.5** | 9.5× | 7.3× |
+| LeJEPA ViT-S, 224² | 12.8 | – | **1.1** | 11.6× | – |
+| LeWM ViT-Ti, 224² | 9.8 | – | **0.8** | 12.3× | – |
+| V-JEPA 2 ViT-L, 16 f | 820.7 | 566.6 | **46.5** | 17.6× | 12.2× |
+| V-JEPA 2 ViT-L, 64 f | 6 388.1 | 4 026.9 | **306** | 20.9× | 13.2× |
+| V-JEPA 2.1 ViT-B, 384² | 60.3 | 52.7 | **4.4** | 13.7× | 12.0× |
+| V-JEPA 2.1 ViT-B, 16 f | 853.5 | 636.0 | **43.0** | 19.8× | 14.8× |
+| V-JEPA 2.1 ViT-B, 64 f | 9 036.1 | 5 040.2 | **424** | 21.3× | 11.9× |
+| V-JEPA 2 ViT-L predictor | 452 | – | **113** | 4.0× | – |
+| SSv2 attentive-pool head | 96 | – | **5.7** | 16.8× | – |
+
+§7 promised "20–26×" against 32 threads. The long clips deliver it (17.6–21.3×); the short-sequence
+image models come in at 9.5–13.7× rather than 16–20× because `GGML_PREC_F32` costs most exactly
+where there is least work to hide it (I-JEPA at 256 tokens: 1.76×, against 1.06× at 8 192 tokens),
+and because the audit's synthetic encoder omitted the patch embed. The predictor's 4.0× is the
+"4–7×, not the 20× the encoders get" §5.2 called for.
+
+### 8.3 The torch-GPU baseline, re-measured
+
+§5.6 re-run after the port (torch 2.13.0+cu130, transformers 5.16.1, sdpa, batch 1, TF32 off,
+3 warmup + 7 timed, `cuda.synchronize()` around each, GPU 0):
+
+| model | dtype | frames | tokens | mean ms | §5.6 | delta |
+|---|---|---:|---:|---:|---:|---:|
+| vjepa2-vitl-fpc64-256 | fp32 | 16 | 2 048 | 115.62 | 118.58 | −2.5 % |
+| vjepa2-vitl-fpc64-256 | fp32 | 64 | 8 192 | 838.38 | 836.52 | +0.2 % |
+| vjepa2-vitl-fpc64-256 | fp16 | 16 | 2 048 | **28.74** | 29.56 | −2.8 % |
+| vjepa2-vitl-fpc64-256 | fp16 | 64 | 8 192 | **147.48** | 150.03 | −1.7 % |
+| ijepa_vith14_1k | fp32 | 1 | 256 | 24.26 | 24.99 | −2.9 % |
+| ijepa_vith14_1k | fp16 | 1 | 256 | **5.91** | 5.57 | +6.1 % |
+
+Reproducible to within 3 % on every row (the I-JEPA fp16 row has a 0.34 ms stdev at 5.9 ms, so its
++6 % is jitter; its minimum, 5.62 ms, is within 1 % of §5.6).
+
+**One correction to §5.6: its fp16 `peak GiB` column is wrong.** 1.27 and 2.42 GiB are essentially
+its own fp32 peaks (1.33, 2.43), which cannot be right for half-sized weights; the cause is loading
+fp32 → cuda → `.half()` without resetting the allocator's high-water mark. Measured cleanly, real
+fp16 inference peaks are **0.67 GiB** (ViT-L @2 048 tokens) and **1.19 GiB** (ViT-H @256), not
+1.27/2.42. The fp32 rows and the fp16 64-frame row (0.83) were already correct.
+
+The honest ratio, with everything measured on this box:
+
+| shape | jepa.cpp CUDA | `--gpu-prec f16` | torch fp16 | **ggml / torch** |
+|---|---:|---:|---:|---:|
+| I-JEPA ViT-H, 224² | 15.5 | 8.8 | 5.91 | 2.6× (38 %) / 1.5× (67 %) |
+| V-JEPA 2 ViT-L, 16 f | 46.5 | 37.4 | 28.74 | 1.6× (62 %) / 1.3× (77 %) |
+| V-JEPA 2 ViT-L, 64 f | 306 | 304 | 147.5 | 2.1× (48 %) / 2.1× (49 %) |
+
+§5.7 forecast "54–80 % of PyTorch"; the port delivers **38–62 % at its default precision** and
+**48–77 % with `--gpu-prec f16`**, which is the same band once the `GGML_PREC_F32` decision is
+accounted for. §5.7's diagnosis of the remaining gap stands unchanged: at the 64-frame shape the
+component rates predict 182 ms of GEMM + attention against 306 ms measured, and the missing ~120 ms
+is 48 unfused LayerNorms, `gelu_erf` over `[4096, 8192]` twice per layer, the F32→F16 K/V casts and
+the RoPE. The `{NORM, MUL, ADD}` fusion of §1.6 is still the first item on any second round.
+
+### 8.4 Quantised weights really are the fastest GPU path
+
+§1.3 predicted the inversion and §5.1 measured it on one matmul; end to end it holds:
+
+| model / shape | f32 | f16 | q8_0 | q4_k | CPU f16 | CPU q4_k |
+|---|---:|---:|---:|---:|---:|---:|
+| I-JEPA ViT-H, 224² | 11.8 | 15.5 | 8.0 | **7.8** | 147 | 198 |
+| V-JEPA 2 ViT-L, 16 f | 44.3 | 46.5 | **34.4** | 34.8 | 821 | 1 096 |
+| V-JEPA 2 ViT-L, 64 f | 303 | 306 | **281** | 282 | 6 388 | 7 406 |
+| V-JEPA 2.1 ViT-B, 384² | – | 4.4 | – | **3.5** | 60.3 | – |
+| V-JEPA 2.1 ViT-B, 16 f | – | 43.0 | – | **37.3** | 853 | – |
+
+q4_k ties q8_0 on the GPU and beats f16 everywhere, against being the *slowest* type on the CPU —
+`mmq`'s INT8 tensor-core kernel covers every type we ship, while llamafile's fast sgemm covers only
+F32/F16/Q8_0. Note also that the f32 column is not slower than f16: ggml's CUDA F32 path is TF32
+(§5.1) while the f16 path is paying for `GGML_PREC_F32`.
+
+### 8.5 The two open numeric questions, closed
+
+§1.3 and §5.3 both ended on "this needs a dump of real activations". Done, with forward hooks on the
+reference PyTorch models over the stored fixture inputs (1.66 M LayerNorm rows across I-JEPA ViT-H,
+V-JEPA 2 ViT-L at 16 and 64 frames, V-JEPA 2.1 ViT-B and LeJEPA ViT-S).
+
+**Overflow (§1.3): not real, and the premise was wrong.** The largest linear-layer output anywhere
+is **414** (V-JEPA 2.1 ViT-B, layer 0 fused qkv). I-JEPA ViT-H — the model `docs/architecture.md`
+described as reaching ~2e4 — peaks at **95**, with a largest residual value of 151, a largest
+unscaled q·k of 201 and a largest pre-softmax logit of 22.5. The number that decides overflow is the
+GEMM's running partial sum: measured in float64 for the worst output element it peaks at **412**,
+and the unattainable all-same-sign ceiling `Σ_k |x_k w_k|`, computed for *every* element of *every*
+linear, is **600** — 109× below `half`'s 65504. Activations would have to grow ~100× before
+`CUBLAS_COMPUTE_16F` could produce an `inf`. The `~2e4` figure has been corrected in
+`docs/architecture.md` and `docs/parity.md`; the F16-K/V parity finding it was cited for
+(cos min 0.9910 vs 1.000000) is unaffected, because its cause is F16's 10-bit **mantissa**, not its
+range. `GGML_PREC_F32` therefore stays on by default for precision, not for safety.
+
+**`ggml_norm`'s one-pass variance (§5.3): not a risk for these models.** Its failure is governed by
+|row mean| / row σ. Over 1.66 M real pre-LN rows the maximum is **2.72** (I-JEPA ViT-H, layer 0, one
+token: mean 0.488, σ 0.179), the 99.9th percentile 2.30, the median 0.06–1.35, and no row anywhere
+exceeds 10. §5.3's table has both backends matching a double-precision two-pass reference to
+~1.8e-07 at that ratio; the catastrophic behaviour needs 100–2000, which LayerNorm's own centring
+keeps these residual streams far away from. The `rel_max` gates the GPU parity tier adds are kept
+anyway — they cost nothing and this is the only failure mode cosine is blind to by construction —
+but they are insurance, not a live concern.
+
+### 8.6 Parity, measured
+
+`docs/parity.md`'s new "Parity on a GPU" section carries the tier table and the full sweep. The
+headline is §6.4's, confirmed end to end: **there is no f32 tier on a GPU** — V-JEPA 2 ViT-L's f32
+file on CUDA behaves like its f16 file (worst token 0.3549 vs 0.3557) where on the CPU the f32 file
+is exact — and **f16 and quantized hold**. 22 of 24 encoder files and all 9 predictor rows pass; the
+two that do not (`lejepa-vits16-q4_k`, `vjepa2-vitl-ssv2-q4_k`) fail identically on the CPU and are
+already documented as below the recommended parity quantisation.
+
+One bar had to be loosened rather than mapped across: the image families' worst-token floor, 0.99 →
+0.90, for I-JEPA ViT-H alone (0.9976 on the CPU at f16 → 0.9613 on a GPU, 0.9723 with `--no-flash`).
+That is the F16 PV accumulator landing on a token that is already degenerate on the CPU; LeJEPA and
+LeWM stay at 0.9998 / 0.99999 on the same backend and I-JEPA's median stays at 0.999996.
+
+### 8.7 Things the audit got right that are worth restating
+
+* **The `ggml_roll` blocker was the whole game.** With the §2 refactor the encoder is one split and
+  every node has a CUDA kernel; without it a single CUDA backend computes a wrong answer in silence.
+* **`supports_op` is not checked by a single backend.** `jepa_graph_validate()` is 30 lines and
+  `tests/test-backend.cpp` proves it fires: building `ggml_roll` on a strided qkv view is refused
+  with the node listed, and the same roll on a contiguous tensor is accepted and computes.
+* **head_dim 32 has no CUDA flash kernel.** The naive path is what the predictor takes, and it is
+  both accurate (F32 end to end: `rel_max` 1.7e-03–2.8e-03 against the PyTorch dump, better than a
+  CUDA flash kernel would give) and the reason the predictor gets 4× where encoders get 20×.
+* **`--no-flash` is affordable only at image scale.** Measured **16.5 ms vs 15.5** for I-JEPA at 256
+  tokens (+6 %, essentially free, as §5.5 predicted) against **109.4 ms vs 46.5** for the ViT-L
+  16-frame clip (2.4×); the guard refuses shapes whose `4·N²·H` score matrix does not fit on the
+  device and prints both numbers.
+
+### 8.8 CI
+
+Unchanged, deliberately: `.github/workflows/` still contains only `docs.yml` and **no CUDA job was
+added**, because no GPU runner exists and a compile-only CUDA job on a GitHub-hosted runner would
+install a ~3 GB toolkit to prove something a developer's `-DJEPA_CUDA=ON` build already proves. The
+shape §6.3 sketched is still the right one when CI is added: a CPU job running `ctest`, a
+compile-only CUDA job, and GPU correctness on a self-hosted or manual run. What makes that last part
+cheap already exists — `ctest`'s `backend` test runs the whole check and exits 0 with a `SKIP` line
+on a machine without a GPU, so it is registered unconditionally and costs a CPU-only checkout
+nothing.

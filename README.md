@@ -64,6 +64,11 @@ features plus nearest neighbours, so any backend error would show up directly as
 copied from a committed, regenerable artifact — sources, more shapes, 96-thread rows, memory tables and
 the fine print are in [docs/results.md](docs/results.md).)*
 
+An optional CUDA build is **9–21× faster than those 32-thread numbers** on one RTX 4500 Ada — I-JEPA
+15.5 ms, the 16-frame V-JEPA 2 ViT-L clip 46.5 ms, the 64-frame one 306 ms — at 38–62 % of PyTorch's
+throughput on the same card; see the GPU paragraph below and
+[docs/results.md](docs/results.md#gpu-cuda-from-gpu-notesmd).
+
 Which file should you actually ship? The quantization study boils down to:
 
 | you want | use | why |
@@ -149,6 +154,20 @@ ctest --test-dir build        # 8 suites: parity, predictors, batching, RoPE vec
 outputs and classifier top-1/top-5 with per-family thresholds; `test-predictor` does the same for the
 three predictors, including a bit-exactness causality check on the world model. Details:
 [parity](https://aselimc.github.io/jepa.cpp/parity/) · [results](docs/results.md).
+
+## Optional: running on a GPU
+
+The engine is CPU-first and stays that way — `libggml-cuda.so` is 45 MB for a *single* GPU
+architecture — but the graphs are backend-clean, so a CUDA build is one CMake flag:
+`cmake -S . -B build-cuda -DJEPA_CUDA=ON`, then `--gpu [N]` on `jepa-embed`, `jepa-classify`,
+`jepa-worldmodel` and `jepa-bench` (or `JEPA_DEVICE=cuda:0`). Weights and activations live entirely
+on the card; before every graph runs, jepa.cpp walks it against the backend's own `supports_op` and
+refuses to compute anything the device cannot really run, because a GPU backend that is handed such
+a node returns a *wrong answer with no error*. One caveat worth knowing before you switch: **there
+is no f32 parity tier on a GPU** — ggml's CUDA "F32" matmul is really TF32 and its flash attention
+always accumulates in F16 — so use f16 or q8_0 there (both hold their bars, and quantized weights
+are the *fastest* GPU path), and the CPU when you need f32 exactness. The audit, the design and
+every measured number: [docs/gpu-notes.md](docs/gpu-notes.md).
 
 ## Limitations
 

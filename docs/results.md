@@ -30,9 +30,79 @@ names the samples feeding each baseline.
 ² the fpc64 reference forward always runs the predictor too, so it is an upper bound and no speedup is
 claimed against it.
 
-**Quantisation buys memory, not time.** q8_0 is 0.93–1.14× of f16 and q4 is a *loss* on the wide matmuls
-(I-JEPA q4_k 198 ms vs f16 147 ms; V-JEPA 2.1 384² q4_k 90.7 vs 60.3) — llamafile's accelerated sgemm
-covers F32/F16/Q8_0 and the K-quants fall back to ggml's generic vec-dot.
+**Quantisation buys memory, not time — on the CPU.** q8_0 is 0.93–1.14× of f16 and q4 is a *loss* on the
+wide matmuls (I-JEPA q4_k 198 ms vs f16 147 ms; V-JEPA 2.1 384² q4_k 90.7 vs 60.3) — llamafile's
+accelerated sgemm covers F32/F16/Q8_0 and the K-quants fall back to ggml's generic vec-dot. The GPU
+table below inverts this: there, quantised weights are the *fastest* path and q4_k ties q8_0.
+
+### GPU (CUDA) — from [gpu-notes.md](gpu-notes.md)
+
+Optional, off by default: `cmake -B build-cuda -DJEPA_CUDA=ON`, then `--gpu [N]` on the tools. One
+**NVIDIA RTX 4500 Ada Generation** (24 GB, compute 8.9, 210 W), CUDA 13.0.88, driver 580.173.02,
+best of 5 runs after 2 warmups, `ggml_backend_graph_compute` time as everywhere else. The CPU
+columns are the 32-thread rows of the table above, i.e. 96 Zen 4 cores' worth of machine against one
+workstation card. `GGML_PREC_F32` (the GPU default) is on unless a row says otherwise.
+
+| model | shape | tokens | f32 | f16 | q8_0 | q4_k | CPU f16 t=32 | **f16 speed-up** |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| I-JEPA ViT-H/14 | 224² | 256 | 11.8 | 15.5 | 8.0 | **7.8** | 147 | **9.5×** |
+| LeJEPA ViT-S/16 | 224² | 197 | – | **1.1** | – | – | 12.8 | **11.6×** |
+| LeWM ViT-Ti/14 | 224² | 257 | – | **0.8** | – | – | 9.8 | **12.3×** |
+| V-JEPA 2 ViT-L fpc64 | 16 f 256² | 2 048 | 44.3 | 46.5 | 34.4 | **34.8** | 821 | **17.6×** |
+| V-JEPA 2 ViT-L fpc64 | 64 f 256² | 8 192 | 303 | 306 | **281** | 282 | 6 388 | **20.9×** |
+| V-JEPA 2.1 ViT-B/384 | 384² | 576 | – | **4.4** | – | 3.5 | 60.3 | **13.7×** |
+| V-JEPA 2.1 ViT-B/384 | 16 f 384² | 4 608 | – | **43.0** | – | 37.3 | 853 | **19.8×** |
+| V-JEPA 2.1 ViT-B/384 | 64 f 384² | 18 432 | – | **424** | – | 421 | 9 036 | **21.3×** |
+| V-JEPA 2 ViT-L predictor | 16 f, 4 096 rows | 2 048 | – | **113** | – | – | 452 | **4.0×** |
+| SSv2 attentive-pool head | 16 f 256² | 2 048 | – | **5.7** | – | – | 96 | **16.8×** |
+| LeWM predictor step | 3 f × 192 d | 3 | – | **0.5** | – | – | 1.2 | 2.4× |
+
+**Three things this table says.**
+
+1. **9–21× over 32 CPU threads**, and the ratio grows with the sequence: the small image models are
+   launch-bound on a GPU (LeJEPA's whole forward is 1.1 ms) while the long clips are where the card
+   is actually busy. The **predictor is the weak spot at 4.0×**, because head_dim 32 has no CUDA
+   flash-attention kernel and it has to run naive `mul_mat + soft_max_ext` — accurate (genuinely
+   F32) but ~3 TFLOP/s against flash's 50–70.
+2. **Quantised weights are the fastest GPU path, and q4_k ties q8_0** — the exact inversion of the
+   CPU column, where q4_k is a *loss* (I-JEPA 198 ms vs f16 147). On CUDA every type we ship takes
+   `mmq`, a real INT8 tensor-core kernel, so q4_k gets both the speed and a quarter of the weight
+   bytes. On the GPU the small quantised files are genuinely attractive rather than a memory-only
+   trade — with the parity caveats of [parity.md](parity.md#parity-on-a-gpu-gpu).
+3. **f32 is not faster than f16 and sometimes beats it**, which is only true because ggml's CUDA
+   "F32" matmul is really TF32 while the f16 path is asked for `GGML_PREC_F32` accumulation. Turning
+   that off (`--gpu-prec f16`) buys 15.5 → 8.8 ms on I-JEPA and 46.5 → 37.4 ms on the ViT-L 16-frame
+   clip, at 177× the f16 matmul error; it is off the default path for that reason.
+
+Wall time (the full `jepa_encode` call, host-side patchify and the two transfers included) runs
+2–14 % above the graph-compute column: 16.0 vs 15.5 ms for I-JEPA, 49.4 vs 46.5 for the ViT-L
+16-frame clip, and 349 vs 306 for the 64-frame one, where 8 192 patch rows of 1 536 floats have to
+be built on the host and copied across PCIe.
+
+### GPU vs PyTorch on the same card
+
+`VJEPA2Model(skip_predictor=True)` / `IJepaModel` under torch 2.13.0+cu130, transformers 5.16.1,
+`attn_implementation="sdpa"`, batch 1, TF32 off (torch's default), 3 warmup + 7 timed forwards with
+`cuda.synchronize()` around each — the same protocol as [gpu-notes.md](gpu-notes.md) §5.6.
+
+| shape | jepa.cpp CPU t=32 | **jepa.cpp CUDA** | with `--gpu-prec f16` | torch fp16 | ggml / torch |
+|---|---:|---:|---:|---:|---:|
+| I-JEPA ViT-H, 224² | 147.0 | **15.5** | 8.8 | 5.91 | 2.6× / 1.5× |
+| V-JEPA 2 ViT-L, 16 f | 820.7 | **46.5** | 37.4 | 28.74 | 1.6× / 1.3× |
+| V-JEPA 2 ViT-L, 64 f | 6 388.1 | **306** | 304 | 147.5 | 2.1× / 2.1× |
+
+So jepa.cpp-CUDA lands at **38–62 % of PyTorch's throughput on the same GPU** with its default
+(accurate) precision and 48–77 % with `--gpu-prec f16` — while being 9–21× faster than the CPU
+engine. The remaining gap is everything that is neither a GEMM nor an attention: 48 unfused
+LayerNorms per ViT-L forward (ggml-CUDA fuses `{RMS_NORM, MUL, ADD}` but has no `{NORM, MUL, ADD}`
+pattern, and ViTs use LayerNorm), `gelu_erf` over the FFN hidden twice per layer, and the per-layer
+F32→F16 K/V casts. Torch's fp16 peak GPU memory is 1.19 GiB (I-JEPA) and 0.67 GiB (ViT-L 16 f);
+jepa.cpp's whole *process* peak RSS for the same runs is 359 and 374 MiB with the weights on the
+card.
+
+Correctness on the GPU is a separate question with a real answer: there is **no f32 parity tier**
+there, and f16/q8_0 hold. [parity.md](parity.md#parity-on-a-gpu-gpu) has the tier table and a 24-file
+sweep.
 
 ### Batched image encoding — from `tests/results/batching.json`
 

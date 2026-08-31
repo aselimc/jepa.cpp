@@ -4,7 +4,7 @@
 
 The whole public surface is this one header: C linkage, opaque handles (`jepa_model`, `jepa_context`), plain structs, `malloc`-returned buffers freed with `jepa_free`. Typical flow: `jepa_model_load` → `jepa_context_new` → `jepa_preprocess_*` → `jepa_encode` → `jepa_pool_*` / `jepa_head` / `jepa_predict*` / `jepa_lewm_*`.
 
-**Functions (58):** `jepa_context_default_params` · `jepa_context_free` · `jepa_context_last_batch` · `jepa_context_last_compute_ms` · `jepa_context_max_batch` · `jepa_context_n_threads` · `jepa_context_new` · `jepa_context_set_max_batch` · `jepa_encode` · `jepa_free` · `jepa_head` · `jepa_head_ex` · `jepa_lewm_action_dim` · `jepa_lewm_n_frames` · `jepa_lewm_predict` · `jepa_lewm_project` · `jepa_lewm_project_rows` · `jepa_lewm_rollout` · `jepa_load_image_rgb` · `jepa_model_embed_dim` · `jepa_model_family` · `jepa_model_file_type` · `jepa_model_file_type_name` · `jepa_model_free` · `jepa_model_has_cls` · `jepa_model_has_head` · `jepa_model_has_predictor` · `jepa_model_has_projector` · `jepa_model_img_size` · `jepa_model_label` · `jepa_model_load` · `jepa_model_n_bytes` · `jepa_model_n_classes` · `jepa_model_n_frames` · `jepa_model_n_head` · `jepa_model_n_layer` · `jepa_model_n_prefix_tokens` · `jepa_model_n_registers` · `jepa_model_name` · `jepa_model_patch_size` · `jepa_model_tubelet_size` · `jepa_pool_cls` · `jepa_pool_mean` · `jepa_predict` · `jepa_predict_ex` · `jepa_predict_mod` · `jepa_preprocess_default_params` · `jepa_preprocess_frames_rgb` · `jepa_preprocess_frames_rgb_ex` · `jepa_preprocess_image_file` · `jepa_preprocess_image_rgb` · `jepa_preprocess_image_rgb_ex` · `jepa_print_system_info` · `jepa_resize_antialias_u8` · `jepa_softmax` · `jepa_token_grid` · `jepa_top_k` · `jepa_version`
+**Functions (69):** `jepa_context_default_params` · `jepa_context_free` · `jepa_context_last_batch` · `jepa_context_last_compute_ms` · `jepa_context_max_batch` · `jepa_context_mul_mat_prec_f32` · `jepa_context_n_threads` · `jepa_context_new` · `jepa_context_set_max_batch` · `jepa_context_set_mul_mat_prec_f32` · `jepa_device_count` · `jepa_device_description` · `jepa_device_memory` · `jepa_device_name` · `jepa_encode` · `jepa_free` · `jepa_head` · `jepa_head_ex` · `jepa_lewm_action_dim` · `jepa_lewm_n_frames` · `jepa_lewm_predict` · `jepa_lewm_project` · `jepa_lewm_project_rows` · `jepa_lewm_rollout` · `jepa_load_image_rgb` · `jepa_model_default_params` · `jepa_model_device` · `jepa_model_device_name` · `jepa_model_embed_dim` · `jepa_model_family` · `jepa_model_file_type` · `jepa_model_file_type_name` · `jepa_model_free` · `jepa_model_has_cls` · `jepa_model_has_head` · `jepa_model_has_predictor` · `jepa_model_has_projector` · `jepa_model_img_size` · `jepa_model_is_gpu` · `jepa_model_label` · `jepa_model_load` · `jepa_model_load_ex` · `jepa_model_n_bytes` · `jepa_model_n_classes` · `jepa_model_n_frames` · `jepa_model_n_head` · `jepa_model_n_layer` · `jepa_model_n_prefix_tokens` · `jepa_model_n_registers` · `jepa_model_name` · `jepa_model_patch_size` · `jepa_model_tubelet_size` · `jepa_pool_cls` · `jepa_pool_mean` · `jepa_predict` · `jepa_predict_ex` · `jepa_predict_mod` · `jepa_preprocess_default_params` · `jepa_preprocess_frames_rgb` · `jepa_preprocess_frames_rgb_ex` · `jepa_preprocess_image_file` · `jepa_preprocess_image_rgb` · `jepa_preprocess_image_rgb_ex` · `jepa_print_system_info` · `jepa_resize_antialias_u8` · `jepa_softmax` · `jepa_token_grid` · `jepa_top_k` · `jepa_version`
 
 ## Types and handles
 
@@ -248,4 +248,45 @@ int  jepa_context_max_batch(const jepa_context * ctx);
 // less when the $JEPA_MAX_GRAPH_MIB memory guard shrank it (the final ragged chunk may hold fewer
 // items than this). Only jepa_encode updates it; head/predictor/projector calls leave it unchanged.
 int  jepa_context_last_batch(const jepa_context * ctx);
+
+// ======================================================================================
+// APPEND-ONLY: backend / device selection (src/jepa.cpp, src/jepa-gguf.cpp).
+// See docs/gpu-notes.md. Requires a build configured with -DJEPA_CUDA=ON; without one
+// jepa_device_count() is 0 and any device >= 0 is rejected with a message.
+// ======================================================================================
+
+// Devices are numbered over the GPU devices of the ggml backend registry, in registry order,
+// so device 0 is the first GPU (CUDA0), 1 the second, and so on. -1 means the CPU.
+typedef struct {
+    bool verbose;
+    int  device;   // -1 = CPU (the default), >= 0 = the n-th GPU device
+} jepa_model_params;
+
+// Defaults: verbose = false, device from $JEPA_DEVICE ("cpu" | "cuda:N" | "gpu:N" | "N"; anything
+// unparseable is reported and ignored), i.e. -1 unless the environment says otherwise.
+jepa_model_params jepa_model_default_params(void);
+// jepa_model_load(path, verbose) == jepa_model_load_ex(path, {verbose, $JEPA_DEVICE}).
+// The weights are allocated on `params->device` and every jepa_context built from this model
+// computes there: a model and its contexts never straddle two backends.
+jepa_model * jepa_model_load_ex(const char * gguf_path, const jepa_model_params * params);
+
+// GPU devices the ggml backend registry can see (0 for a CPU-only build).
+int          jepa_device_count(void);
+const char * jepa_device_name(int device);         // ggml device name, e.g. "CUDA0"
+const char * jepa_device_description(int device);  // e.g. "NVIDIA RTX 4500 Ada Generation"
+void         jepa_device_memory(int device, size_t * free_bytes, size_t * total_bytes);  // either may be NULL
+
+int          jepa_model_device(const jepa_model * model);       // -1 = CPU
+const char * jepa_model_device_name(const jepa_model * model);  // "CPU" | "CUDA0" | ...
+bool         jepa_model_is_gpu(const jepa_model * model);
+
+// GPU numeric policy. On CUDA an f16 weight's mul_mat otherwise runs cuBLAS with F16 compute AND
+// (on Ada) an F16 GEMM output; GGML_PREC_F32 takes the error against the CPU from 4.6e-03 to
+// 2.6e-05 for -21 % throughput at 2048 tokens, +9 % at 8192, and nothing at all on quantized
+// weights, which never reach cuBLAS. On by default for a GPU context (correctness first), a no-op
+// on the CPU. $JEPA_GPU_PREC=f16 is the same opt-out. It cannot help f32 weights: ggml's "F32"
+// CUDA path is TF32 by way of the CUBLAS_GEMM_DEFAULT_TENSOR_OP algo enum, not the compute type.
+// Takes effect from the next graph built by this context.
+void jepa_context_set_mul_mat_prec_f32(jepa_context * ctx, bool on);
+bool jepa_context_mul_mat_prec_f32(const jepa_context * ctx);
 ```

@@ -103,6 +103,12 @@ def load_runs(bench_dir: Path) -> tuple[list[dict], dict, list[str]]:
                 for k in ("model", "ftype", "mode", "threads", "ms_mean"):
                     if k not in r:
                         raise KeyError(k)
+                # docs/benchmarks.md is the CPU document: its rows are keyed by thread count, which
+                # means nothing for a GPU run. GPU numbers live in docs/results.md "GPU (CUDA)" and
+                # docs/gpu-notes.md S8, so a stray --gpu JSON in the sweep directory is skipped
+                # rather than silently mixed in.
+                if r.get("gpu"):
+                    continue
                 r["_file"] = p.name
                 runs.append(r)
         except (KeyError, TypeError) as e:

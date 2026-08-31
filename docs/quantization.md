@@ -302,6 +302,14 @@ Per tensor, aggregated over the samples: `cos mean` = mean over samples of the m
 | dense per-token features (segmentation-style use of `last_hidden_state`, per-token retrieval) | **q8_0**, at most q6_k; **f32 for V-JEPA 2 ViT-L** (the C++ engine's f16 matmuls round activations: worst token 0.51 at f16, `docs/parity.md`) | q6_k keeps the mean token cosine >= 0.998 but the worst tokens go to 0.91 on ViT-H; q5 and below distort individual tokens badly (worst 0.5-0.7); V-JEPA 2 ViT-L already has 3 % of tokens below 0.99 at q8_0 |
 | small-footprint feature extraction where pooled ~0.99 is enough | **q4_k** (falls back to q4_0 on 384-wide layers) | pooled cosine 0.992-0.998 on every model, 0.29x of f16; not for parity testing, not for per-token use |
 
+**On a GPU the speed half of this advice inverts.** Everything above about *accuracy* holds
+unchanged, but the "quantised buys memory, not time" rule is a CPU statement: `GGML_LLAMAFILE`'s fast
+sgemm covers only F32/F16/Q8_0, so K-quants fall back to ggml's generic vec-dot there. On CUDA every
+type we ship takes `mmq`, a real INT8 tensor-core kernel, and **q4_k ties q8_0 and beats f16** — I-JEPA
+ViT-H 7.8 ms (q4_k) / 8.0 (q8_0) / 15.5 (f16) against 198 / 129 / 147 ms on 32 CPU threads. See
+`docs/results.md` "GPU (CUDA)" and `docs/parity.md` "Parity on a GPU" for the parity bars that apply
+there (q4_k stays in the advisory low-bit tier on both backends).
+
 q4_1 / q5_1 / q5_0 / q5_k are supported for completeness (q5_k and q5_0 have the same size, as do q4_k and q4_0)
 but no row of the tables prefers them over q8_0 / q6_k / q4_k; there is no reason to ship them. When a single
 component or layer is known to be sensitive, `--keep` can hold it at the source type at a small size cost (it did
