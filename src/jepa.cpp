@@ -139,6 +139,15 @@ jepa_context * jepa_context_new(jepa_model * model, jepa_context_params params) 
     // Graph validation (jepa_graph_validate): mandatory on a GPU, opt-in on the CPU.
     ctx->validate_graph = ctx->is_gpu;
     if (const char * s = getenv("JEPA_VALIDATE_GRAPH")) ctx->validate_graph = atoi(s) != 0;
+    // GGML_PREC_F32 mul_mat: on by default on a GPU (correctness first), off on the CPU where it
+    // means nothing. $JEPA_GPU_PREC=f16 is the opt-out; docs/gpu-notes.md §5.1 measures the cost at
+    // -21 % throughput at N=2048 and +9 % at N=8192, and nothing at all on quantized weights.
+    ctx->prec_f32 = ctx->is_gpu;
+    if (const char * s = getenv("JEPA_GPU_PREC")) {
+        if (strcmp(s, "f16") == 0)      ctx->prec_f32 = false;
+        else if (strcmp(s, "f32") == 0) ctx->prec_f32 = true;
+        else jepa_log("jepa: ignoring JEPA_GPU_PREC='%s' (expected f16 or f32)\n", s);
+    }
     ctx->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(ctx->backend));
     // encoder batching knobs, overridable without touching the caller (JEPA_MAX_BATCH=1 = no batching)
     if (const char * s = getenv("JEPA_MAX_BATCH")) {
@@ -161,6 +170,9 @@ int jepa_context_max_batch(const jepa_context * ctx) {
 }
 int jepa_context_last_batch(const jepa_context * ctx) { return ctx ? ctx->last_batch : 0; }
 
+void jepa_context_set_mul_mat_prec_f32(jepa_context * ctx, bool on) { if (ctx) ctx->prec_f32 = on; }
+bool jepa_context_mul_mat_prec_f32(const jepa_context * ctx)        { return ctx && ctx->prec_f32; }
+
 void jepa_context_free(jepa_context * ctx) {
     if (!ctx) return;
     if (ctx->ctx_g)   ggml_free(ctx->ctx_g);
@@ -176,6 +188,7 @@ double jepa_context_last_compute_ms(const jepa_context * ctx) { return ctx ? ctx
 // graph execution
 // ---------------------------------------------------------------------------------------------
 void jepa_graph_begin(jepa_context * ctx, size_t max_nodes) {
+    jepa_mul_mat_prec_f32 = ctx->prec_f32;   // read by jepa_build_linear while this graph is built
     if (max_nodes < 64) max_nodes = 64;
     const size_t mem = ggml_tensor_overhead() * max_nodes + ggml_graph_overhead_custom(max_nodes, false) + 4096;
     if (ctx->ctx_g) { ggml_free(ctx->ctx_g); ctx->ctx_g = nullptr; }
@@ -278,8 +291,16 @@ ggml_tensor * jepa_build_layer_norm(ggml_context * ctx, ggml_tensor * x, ggml_te
     return x;
 }
 
+thread_local bool jepa_mul_mat_prec_f32 = false;
+
 ggml_tensor * jepa_build_linear(ggml_context * ctx, ggml_tensor * x, ggml_tensor * w, ggml_tensor * b) {
     x = ggml_mul_mat(ctx, w, x);
+    // On CUDA an f16 weight otherwise runs cuBLAS at CUBLAS_COMPUTE_16F *and* (on Ada, where
+    // prefer_f32_output is off) writes the GEMM output as half — F16 accumulation over a 1024- to
+    // 5120-long reduction. GGML_PREC_F32 is a no-op on the CPU and on quantized weights (they never
+    // reach cuBLAS), and it does not touch f32 weights either, whose "F32" path is TF32 by way of
+    // the CUBLAS_GEMM_DEFAULT_TENSOR_OP algo enum and cannot be made strict from here at all.
+    if (jepa_mul_mat_prec_f32) ggml_mul_mat_set_prec(x, GGML_PREC_F32);
     if (b) x = ggml_add(ctx, x, b);
     return x;
 }
@@ -416,11 +437,66 @@ int64_t jepa_patchify(const float * cthw, int C, int T, int H, int W, int patch,
 // image encoder graph (ijepa / hfvit / lewm)
 // ---------------------------------------------------------------------------------------------
 ggml_type jepa_context_kv_type(const jepa_context * ctx) {
+    // On a GPU the F32-K/V policy cannot be honoured and asking for it only costs a conversion
+    // pass. ggml_cuda_flash_attn_ext_get_alloc_size / launch_fattn set need_f16_K = need_f16_V for
+    // the MMA and tile kernels and convert an F32 K or V into a scratch buffer before the kernel
+    // runs, and the MMA kernel's PV accumulator is half2 regardless; ggml_flash_attn_ext_set_prec
+    // is likewise a no-op there (only mul_mat reads it). docs/gpu-notes.md §1.5 measured the two
+    // settings agreeing to three digits (rel 5.21e-03 vs 5.25e-03) with F32 K/V *slower*. The
+    // honest F32 attention path on a GPU is --no-flash, which is free at I-JEPA's 256 tokens and
+    // 2.8x at 2048 (§5.5), and whose score matrix is 4*N^2*H bytes.
+    if (ctx->is_gpu) {
+        if (ctx->params.flash_kv == JEPA_KV_F32) {
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                jepa_log("jepa: F32 K/V was requested but no GPU flash-attention kernel keeps K/V in F32 — "
+                         "they are converted to F16 before the kernel runs and the PV accumulator is F16 "
+                         "either way (docs/gpu-notes.md §1.5). Use --no-flash for an F32 attention path.\n");
+            }
+        }
+        return GGML_TYPE_F16;
+    }
     switch (ctx->params.flash_kv) {
         case JEPA_KV_F16: return GGML_TYPE_F16;
         case JEPA_KV_F32: return GGML_TYPE_F32;
         default:          return ctx->model->hp.file_type == 0 ? GGML_TYPE_F32 : GGML_TYPE_F16;
     }
+}
+
+bool jepa_gpu_flash_ok(const jepa_context * ctx, int head_dim) {
+    if (!ctx->is_gpu) return true;
+    // The one gap at jepa.cpp's shapes. ggml_cuda_get_best_fattn_kernel (fattn.cu) switches on
+    // K->ne[0] over {40,64,72,80,96,112,128,192,256,320,512,576} and returns
+    // BEST_FATTN_KERNEL_NONE in default: — 32 is in none of the MMA, vec or tile instantiations.
+    // It hits the V-JEPA 2 / 2.1 masked predictors (384-d, 12 heads) and nothing else: the encoders
+    // are head_dim 64 (ViT-L/B) or 80 (I-JEPA ViT-H), and the LeWM predictor is 64.
+    if (head_dim != 32) return true;
+    static bool warned = false;
+    if (!warned) {
+        warned = true;
+        jepa_log("jepa: no GPU flash-attention kernel exists at head_dim 32, so this predictor uses the "
+                 "naive mul_mat + soft_max_ext path (fully F32, and supported) — docs/gpu-notes.md §3\n");
+    }
+    return false;
+}
+
+bool jepa_gpu_naive_attn_fits(const jepa_context * ctx, int64_t n_rows, int n_head, const char * what) {
+    if (!ctx->is_gpu || n_rows <= 0 || n_head <= 0) return true;
+    // The naive path materialises the [n_kv, n_q, n_head] F32 score matrix; the graph allocator
+    // reuses that block for the softmax output, so 4*N^2*H is the real peak (docs/gpu-notes.md §5.2
+    // measured 0.76 GiB at N=4096, H=12 against 4*4096^2*12 = 0.75 GiB).
+    const double bytes = 4.0 * (double) n_rows * (double) n_rows * (double) n_head;
+    size_t dfree = 0, dtotal = 0;
+    ggml_backend_dev_memory(ctx->dev, &dfree, &dtotal);
+    const double budget = 0.85 * (double) dfree;   // leave room for the weights already resident
+    if (bytes <= budget) return true;
+    jepa_log("jepa: %s needs a %.1f GiB attention score matrix (%lld rows x %d heads, F32) but only "
+             "%.1f GiB is free on %s. head_dim 32 has no GPU flash kernel, so there is no smaller "
+             "form of this graph — run this shape on the CPU (docs/gpu-notes.md §3).\n",
+             what, bytes / (1024.0 * 1024.0 * 1024.0), (long long) n_rows, n_head,
+             (double) dfree / (1024.0 * 1024.0 * 1024.0), ggml_backend_dev_name(ctx->dev));
+    return false;
 }
 
 static jepa_block_opts encoder_block_opts(const jepa_context * ctx) {
@@ -705,6 +781,10 @@ static int jepa_encode_video(jepa_context * ctx, const jepa_input * in, jepa_out
 
     const int64_t D = e.embed_dim;
     const int64_t N = vs.n_tokens;
+    // --no-flash is the only honest F32 attention path on a GPU (gpu-notes §1.5) but its score
+    // matrix is 4*N^2*H bytes — 0.30 GiB at 2048 tokens and 15 GiB at 18432. Say so before trying.
+    if (!ctx->params.use_flash_attn &&
+        !jepa_gpu_naive_attn_fits(ctx, N, e.n_head, "the video encoder with --no-flash")) return -1;
     const int64_t n_clips = in->n_batch;
     out->n_tokens = n_clips * N;
     out->dim = D;
@@ -777,8 +857,10 @@ ggml_tensor * jepa_build_head(jepa_context * ctx, ggml_tensor * inp, ggml_tensor
     ggml_tensor * v = jepa_build_linear(g, kv, m->require("head.xattn.v.weight"), m->get("head.xattn.v.bias"));
     jepa_attn_opts ao;
     ao.flash = ctx->params.use_flash_attn;
-    ao.kv_type = GGML_TYPE_F32;   // N_q == 1 -> ggml's per-row kernel, which would round q and the
-                                  // PV accumulator to F16 with F16 K/V (docs/ggml-notes.md S1)
+    // N_q == 1 -> ggml's per-row kernel, which would round q and the PV accumulator to F16 with
+    // F16 K/V (docs/ggml-notes.md S1). CPU-only: on CUDA the vec kernel converts an F32 K to F16
+    // before it runs and accumulates PV in F16 anyway, so F32 there is a wasted pass (gpu-notes S1.5).
+    ao.kv_type = ctx->is_gpu ? GGML_TYPE_F16 : GGML_TYPE_F32;
     ggml_tensor * o = jepa_build_attention(g, ggml_reshape_3d(g, q, hd, n_head, 1),
                                               ggml_reshape_3d(g, k, hd, n_head, N),
                                               ggml_reshape_3d(g, v, hd, n_head, N), ao);   // [D, 1]

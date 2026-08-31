@@ -55,7 +55,9 @@ ggml_tensor * jepa_build_lewm(jepa_context * ctx, ggml_tensor * emb, ggml_tensor
     attn.flash = ctx->params.use_flash_attn;
     // T <= n_frames (3) queries hit ggml's per-row flash kernel, which rounds q and the PV
     // accumulator to F16 when K/V are F16 (docs/ggml-notes.md §1) — keep K/V in F32, it is free here.
-    attn.kv_type = GGML_TYPE_F32;
+    // That is a CPU-only statement: on CUDA every fattn kernel converts an F32 K/V to F16 into a
+    // scratch buffer first, so asking for F32 there only buys an extra pass (gpu-notes §1.5).
+    attn.kv_type = ctx->is_gpu ? GGML_TYPE_F16 : GGML_TYPE_F32;
     attn.mask = mask;
 
     for (int i = 0; i < p.n_layer; i++) {

@@ -55,6 +55,8 @@ static void usage(const char * a0) {
         "  --batch B         items per encoder call (default 1); image families put all B through ONE graph\n"
         "  --threads L       thread count, or a comma-separated list to sweep (default: all cores)\n"
         JEPA_GPU_USAGE
+        "  --gpu-prec P      f32 (default on a GPU: GGML_PREC_F32 accumulation in every mul_mat)\n"
+        "                    or f16 (cuBLAS' own compute type; faster, 177x wider f16 error)\n"
         "  --repeat R        measured runs (default 3)\n"
         "  --warmup W        unmeasured runs before them (default 1)\n"
         "  --steps K         lewm-rollout steps (default 20)\n"
@@ -241,6 +243,7 @@ int main(int argc, char ** argv) {
     jepa_context_params cp = jepa_context_default_params();
     jepa_model_params   mp = jepa_model_default_params();
     int frames = -1, batch = 1, repeat = 3, warmup = 1, steps = 20;
+    int gpu_prec = -1;   // -1 = the context default (F32 on a GPU), 0 = --gpu-prec f16, 1 = f32
     uint64_t seed = 1234;
     bool md = false, md_header = true, verbose = false;
     for (int i = 1; i < argc; i++) {
@@ -262,6 +265,12 @@ int main(int argc, char ** argv) {
         else if (a == "--kv-f16")               cp.flash_kv = JEPA_KV_F16;
         else if (a == "--kv-f32")               cp.flash_kv = JEPA_KV_F32;
         else if (jepa_arg_gpu(argc, argv, i, mp.device)) {}
+        else if (a == "--gpu-prec") {
+            const std::string v = next("--gpu-prec");
+            if (v == "f16")      gpu_prec = 0;
+            else if (v == "f32") gpu_prec = 1;
+            else { fprintf(stderr, "--gpu-prec wants f16 or f32, got '%s'\n", v.c_str()); return 1; }
+        }
         else if (a == "--no-flash")             cp.use_flash_attn = false;
         else if (a == "--md")                   md          = true;
         else if (a == "--no-md-header")         md_header   = false;
@@ -388,6 +397,7 @@ int main(int argc, char ** argv) {
         p.n_threads = nth;
         jepa_context * ctx = jepa_context_new(model, p);
         if (!ctx) { rc_exit = 1; break; }
+        if (gpu_prec >= 0) jepa_context_set_mul_mat_prec_f32(ctx, gpu_prec == 1);
 
         run r;
         r.model_name = name; r.model_path = model_path; r.family = family; r.mode = mode;

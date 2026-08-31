@@ -259,6 +259,16 @@ int          jepa_model_device(const jepa_model * model);       // -1 = CPU
 const char * jepa_model_device_name(const jepa_model * model);  // "CPU" | "CUDA0" | ...
 bool         jepa_model_is_gpu(const jepa_model * model);
 
+// GPU numeric policy. On CUDA an f16 weight's mul_mat otherwise runs cuBLAS with F16 compute AND
+// (on Ada) an F16 GEMM output; GGML_PREC_F32 takes the error against the CPU from 4.6e-03 to
+// 2.6e-05 for -21 % throughput at 2048 tokens, +9 % at 8192, and nothing at all on quantized
+// weights, which never reach cuBLAS. On by default for a GPU context (correctness first), a no-op
+// on the CPU. $JEPA_GPU_PREC=f16 is the same opt-out. It cannot help f32 weights: ggml's "F32"
+// CUDA path is TF32 by way of the CUBLAS_GEMM_DEFAULT_TENSOR_OP algo enum, not the compute type.
+// Takes effect from the next graph built by this context.
+void jepa_context_set_mul_mat_prec_f32(jepa_context * ctx, bool on);
+bool jepa_context_mul_mat_prec_f32(const jepa_context * ctx);
+
 #ifdef __cplusplus
 }
 #endif

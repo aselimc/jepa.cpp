@@ -241,6 +241,7 @@ struct jepa_context {
     ggml_backend_dev_t  dev     = nullptr;   // its device (null = CPU)
     bool                is_gpu  = false;     // shorthand for model->device >= 0
     bool                validate_graph = false;  // check every node against dev supports_op
+    bool                prec_f32 = false;    // GGML_PREC_F32 on every mul_mat (GPU default: true)
     ggml_gallocr_t      galloc  = nullptr;   // graph allocator, reused across runs
     std::vector<uint8_t> graph_meta;         // memory for the graph ggml_context
     ggml_context *      ctx_g   = nullptr;   // current graph context (rebuilt per run)
@@ -283,6 +284,13 @@ struct jepa_block_opts {
     jepa_qk_hook   qk_hook;               // optional
 };
 
+// Set by jepa_graph_begin from the context it is building for (thread_local: two contexts on two
+// devices in two threads keep their own value). When true, jepa_build_linear marks every mul_mat
+// GGML_PREC_F32 — a no-op on the CPU backend, and on CUDA the difference between cuBLAS
+// accumulating an f16 weight's GEMM in F16 (max rel err 4.6e-03 vs the CPU) and in F32 (2.6e-05,
+// 177x better) — docs/gpu-notes.md §1.3, §5.1.
+extern thread_local bool jepa_mul_mat_prec_f32;
+
 // y = norm(x, eps) * w + b   (w / b may be nullptr)
 ggml_tensor * jepa_build_layer_norm(ggml_context * ctx, ggml_tensor * x, ggml_tensor * w, ggml_tensor * b, float eps);
 // y = w x + b   with w [in, out] (PyTorch [out, in]); b may be nullptr
@@ -324,6 +332,15 @@ bool jepa_graph_alloc(jepa_context * ctx);
 int  jepa_graph_compute(jepa_context * ctx);
 // K/V dtype flash attention should use for this context (resolves JEPA_KV_AUTO by file_type).
 ggml_type jepa_context_kv_type(const jepa_context * ctx);
+// False when this backend has no flash-attention kernel at `head_dim` and the caller must take the
+// naive mul_mat + soft_max_ext path instead. Only head_dim 32 (the V-JEPA 2 / 2.1 masked
+// predictors) is affected, and only on CUDA: ggml_cuda_get_best_fattn_kernel switches over
+// {40,64,72,80,96,112,128,192,256,320,512,576} and returns NONE for anything else, which the graph
+// check of jepa_graph_validate would then reject (docs/gpu-notes.md §3). Logs once.
+bool jepa_gpu_flash_ok(const jepa_context * ctx, int head_dim);
+// Refuse a naive-attention graph whose [N, N, n_head] F32 score matrix does not fit on the device.
+// Returns true when it fits (always so on the CPU, which pages); logs the sizes when it does not.
+bool jepa_gpu_naive_attn_fits(const jepa_context * ctx, int64_t n_rows, int n_head, const char * what);
 // Convenience: alloc + set one input + compute + fetch one output.
 // Returns 0 on success; out is resized to ggml_nelements(out_t) floats.
 int  jepa_graph_run(jepa_context * ctx, ggml_tensor * inp, const float * inp_data, size_t inp_bytes,
