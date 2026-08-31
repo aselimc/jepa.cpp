@@ -40,9 +40,12 @@ covers F32/F16/Q8_0 and the K-quants fall back to ggml's generic vec-dot.
 image input into **one** graph, carried on ggml's batch dimension: activations are `[D, N, B]`, the
 attention tensors `[head_dim, n_head, N, B]`, and `ggml_flash_attn_ext` / `ggml_mul_mat` walk `ne[3]`
 as an outer loop, so items never mix and the rows come out **bit-identical** to the per-item path at
-every dtype measured (`tests/test-batch`, ctest entry `batch`). Video is deliberately excluded: one
-V-JEPA 2 clip is 2 048–18 432 tokens and already saturates 32 threads (`n_batch=2` measures 916 vs
-908 ms per clip — noise, and twice the arena).
+every dtype measured (`tests/test-batch`, ctest entry `batch`). Video is deliberately excluded: what
+batching buys is the *fixed* per-call cost, measured at ~5 ms on the image models (LeJEPA 12.6 →
+7.4 ms), and a V-JEPA 2 clip runs 908–9 000 ms — under 1 % — while a batched clip graph would
+multiply the largest arena in the engine. `jepa_encode` therefore keeps its per-clip loop for video:
+`n_batch=2` is two calls' worth (916 vs 908 ms per clip, inside the noise) and bit-identical to two
+`n_batch=1` calls, which `tests/test-batch --video` checks.
 
 `ms` is `jepa-bench --batch B` on synthetic input; `img/s` is `jepa-embed` over 561 Imagenette-160 val
 JPEGs with decode, preprocessing and one GGUF load inside the number, best of two passes.

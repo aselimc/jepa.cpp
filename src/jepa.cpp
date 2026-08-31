@@ -778,9 +778,10 @@ int jepa_encode(jepa_context * ctx, const jepa_input * in, jepa_output * out) {
         case JEPA_FAMILY_VJEPA2:
         case JEPA_FAMILY_VJEPA2_1:
             // One graph per clip: tubelet patchify + 3-D RoPE over the whole T x H x W token grid.
-            // Not batched on purpose — a clip is already 2048-18432 tokens, so a single graph
-            // saturates the 32 threads; folding clips in would only multiply the arena
-            // (measured in docs/results.md: n_batch=2 is within noise of two n_batch=1 calls).
+            // n_batch > 1 loops here rather than sharing a graph, on purpose: batching buys the
+            // fixed per-call cost, ~5 ms on the image models, which is under 1 % of a clip's
+            // 908-9000 ms, while a batched clip graph would multiply the engine's largest arena.
+            // The loop is bit-identical to n_batch separate calls (tests/test-batch --video).
             return jepa_encode_video(ctx, in, out);
         default:
             jepa_log("jepa: jepa_encode: family '%s' is not implemented\n", m->hp.family_str.c_str());
