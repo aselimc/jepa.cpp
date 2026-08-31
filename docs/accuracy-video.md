@@ -1,5 +1,7 @@
 # Accuracy — video k-NN on the UCF101 subset (PyTorch vs jepa.cpp)
 
+*Raw measurement report — the curated view is [Benchmarks → Accuracy](accuracy.md).*
+
 Frozen-feature evaluation, 2026-08-31. **Inference only** — nothing is trained: the encoders are frozen and both metrics are look-ups over their pooled clip features.
 
 - **Dataset** `data/ucf101-subset/UCF101_subset` — 10 classes, gallery = train (300 clips), queries = test (75) / val (30) / val+test (105).

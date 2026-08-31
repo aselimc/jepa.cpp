@@ -2,7 +2,7 @@
 //
 //   test-backend MODEL.gguf [--gpu N] [--threads N]
 //
-//   1. **Graph validation fails loudly.** docs/gpu-notes.md §5.4 established that a single CUDA
+//   1. **Graph validation fails loudly.** docs/architecture.md "GPU backend" records that a single CUDA
 //      backend performs no supports_op check of its own: ggml_backend_cuda_graph_compute dispatches
 //      every node and ggml_cuda_op_roll happily reads a *strided* view as if it were contiguous,
 //      producing no error, no warning and a wrong answer whose cosine (0.99996) would pass this
@@ -104,7 +104,7 @@ int main(int argc, char ** argv) {
     {
         jepa_context * ctx = jepa_context_new(gpu_model, cp);
         if (!ctx) return 2;
-        printf("\n-- graph validation (the check docs/gpu-notes.md §5.4 made mandatory)\n");
+        printf("\n-- graph validation (the check docs/architecture.md "GPU backend" makes mandatory)\n");
         printf("   the next lines are the expected refusal, not a failure:\n");
         const bool strided_ok = build_roll_graph(ctx, /*contiguous =*/ false);
         report("ggml_roll on a strided qkv view is REFUSED", !strided_ok,
@@ -151,7 +151,7 @@ int main(int argc, char ** argv) {
             snprintf(note, sizeof(note), "%lld rows: cos_mean %.7f, cos_min %.7f, max|d| %.3e, rel %.3e",
                      (long long) rc, cos_mean, cos_min, max_abs, rel);
             // A loose bar on purpose: this measures the *backend* difference (TF32 mul_mat, F16 PV
-            // accumulation, one-pass norm), which docs/gpu-notes.md §6.4 sizes at 1e-2 - 1e-1 on a
+            // accumulation, one-pass norm), which docs/parity.md "Parity on a GPU" sizes at 1e-2 - 1e-1 on a
             // token map. test-parity --gpu is what gates it per family and dtype; here the job is
             // to catch a broken graph, which collapses the cosine outright.
             report("GPU and CPU agree to backend round-off (cos_mean >= 0.999)", cos_mean >= 0.999, note);

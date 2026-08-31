@@ -145,7 +145,7 @@ static const char * const TIER_NAME[TIER_COUNT] = { "f32", "f16", "q8", "low-bit
 static const char * const FAM_NAME[FAM_COUNT]   = { "image", "video" };
 static const char * const BK_NAME[BK_COUNT]     = { "cpu", "gpu" };
 
-// ---- The GPU dimension (docs/gpu-notes.md §6.4, docs/parity.md "Thresholds on a GPU") ----------
+// ---- The GPU dimension (docs/parity.md "Parity on a GPU") ----------------------------------
 // On a GPU **there is no f32 tier**, and it is not recoverable:
 //   * ggml passes CUBLAS_GEMM_DEFAULT_TENSOR_OP to every cublasGemmEx and never calls
 //     cublasSetMathMode, so a CUBLAS_COMPUTE_32F GEMM is free to run in TF32 — measured at
@@ -183,7 +183,7 @@ static const policy POLICY[BK_COUNT][FAM_COUNT][TIER_COUNT] = {
     //     I-JEPA ViT-H f16 bottoms out at 0.9976; on a GPU the same file measures 0.9613, and with
     //     --no-flash (F32 attention) 0.9723 — the F16 PV accumulator of every CUDA fattn kernel
     //     plus TF32, landing on token 8 of coco_000000219578: a HIGH-norm outlier row (|ref row|
-    //     39.23 vs a 32.85 mean; measured activations peak at 95, docs/gpu-notes.md §8). LeJEPA
+    //     39.23 vs a 32.85 mean; measured activations peak at 95, docs/architecture.md "Attention and precision"). LeJEPA
     //     and LeWM stay at 0.9998 / 0.99999 on the same backend, so this bar is about ViT-H, not
     //     about the port; the MEDIAN stays at 0.9999 and is what actually gates.
     //   * the token map's MEAN bar drops 0.9999 -> 0.999 (I-JEPA GPU f16 measures 0.999788).
@@ -411,7 +411,7 @@ int main(int argc, char ** argv) {
         printf("NOTE: there is no f32 parity tier on a GPU — ggml's CUDA \"F32\" mul_mat is TF32 (the "
                "CUBLAS_GEMM_DEFAULT_TENSOR_OP algo enum, which GGML_PREC_F32 cannot undo), flash attention "
                "always converts K/V to F16 and accumulates PV in F16, and ggml_norm uses the one-pass "
-               "variance. This f32 file is judged with the f16 bars plus rel_max (docs/gpu-notes.md §6.4).\n");
+               "variance. This f32 file is judged with the f16 bars plus rel_max (docs/parity.md "Parity on a GPU").\n");
     }
     if (pol.advisory) {
         if (ftype_bits_per_weight(ftype) < 0) {

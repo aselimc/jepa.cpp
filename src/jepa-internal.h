@@ -32,7 +32,7 @@
 void jepa_log(const char * fmt, ...);
 
 // ---------------------------------------------------------------------------------------------
-// 0. devices (docs/gpu-notes.md §6.1)
+// 0. devices (docs/architecture.md "GPU backend")
 // ---------------------------------------------------------------------------------------------
 // GPU devices of the ggml backend registry, in registry order (device 0 = the first GPU). Loads
 // the registry on first use; the list is empty for a build without a GPU backend.
@@ -254,7 +254,7 @@ struct jepa_context {
 };
 
 // Image items folded into one encoder graph unless the caller says otherwise. Measured peak-RSS
-// growth from B = 1 to B = 32 (docs/results.md): LeJEPA ViT-S/16 52 -> 148 MiB, LeWM ViT-Ti/14
+// growth from B = 1 to B = 32 (docs/performance.md "Batched image encoding"): LeJEPA ViT-S/16 52 -> 148 MiB, LeWM ViT-Ti/14
 // 48 -> 107 MiB, I-JEPA ViT-H/14 f16 1230 -> 1597 MiB — i.e. ~3-11 MiB of arena per extra item.
 #define JEPA_DEFAULT_MAX_BATCH 32
 // Hard ceiling on the estimated activation bytes of one encoder graph ($JEPA_MAX_GRAPH_MIB).
@@ -288,7 +288,7 @@ struct jepa_block_opts {
 // devices in two threads keep their own value). When true, jepa_build_linear marks every mul_mat
 // GGML_PREC_F32 — a no-op on the CPU backend, and on CUDA the difference between cuBLAS
 // accumulating an f16 weight's GEMM in F16 (max rel err 4.6e-03 vs the CPU) and in F32 (2.6e-05,
-// 177x better) — docs/gpu-notes.md §1.3, §5.1.
+// 177x better) — docs/architecture.md "Attention and precision".
 extern thread_local bool jepa_mul_mat_prec_f32;
 
 // y = norm(x, eps) * w + b   (w / b may be nullptr)
@@ -321,7 +321,7 @@ void jepa_graph_begin(jepa_context * ctx, size_t max_nodes);
 // true when the whole graph runs on the backend; otherwise logs each offending node and returns
 // false. NOT optional on a GPU: ggml_backend_cuda_graph_compute dispatches every node without
 // consulting supports_op, so an unsupported node produces a wrong answer with no error at all
-// (docs/gpu-notes.md §5.4 — the pre-refactor RoPE chain scored cosine 0.99996, which would have
+// (docs/architecture.md "GPU backend" — the pre-refactor RoPE chain scored cosine 0.99996, which would have
 // passed the f16 parity gate). Runs whenever the backend is not the CPU; $JEPA_VALIDATE_GRAPH=1
 // forces it on the CPU too and =0 turns it off.
 bool jepa_graph_validate(jepa_context * ctx);
@@ -336,7 +336,7 @@ ggml_type jepa_context_kv_type(const jepa_context * ctx);
 // naive mul_mat + soft_max_ext path instead. Only head_dim 32 (the V-JEPA 2 / 2.1 masked
 // predictors) is affected, and only on CUDA: ggml_cuda_get_best_fattn_kernel switches over
 // {40,64,72,80,96,112,128,192,256,320,512,576} and returns NONE for anything else, which the graph
-// check of jepa_graph_validate would then reject (docs/gpu-notes.md §3). Logs once.
+// check of jepa_graph_validate would then reject (docs/architecture.md "GPU backend"). Logs once.
 bool jepa_gpu_flash_ok(const jepa_context * ctx, int head_dim);
 // Refuse a naive-attention graph whose [N, N, n_head] F32 score matrix does not fit on the device.
 // Returns true when it fits (always so on the CPU, which pages); logs the sizes when it does not.

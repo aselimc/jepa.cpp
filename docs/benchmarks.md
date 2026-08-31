@@ -1,5 +1,7 @@
 # jepa.cpp — measured benchmarks
 
+*Raw measurement report — the curated view is [Benchmarks → Performance](performance.md).*
+
 Every number here comes from `tools/jepa-bench` on the box described below, on **synthetic but deterministic** input (a seeded uint8 stream put through the model's own `jepa.pre.*` normalisation), so the tables can be reproduced without the fixture media or a Python environment. They are cross-checked against `docs/parity.md`, which times the same graphs on the real reference clips (see the cross-check table below).
 
 ## How to reproduce

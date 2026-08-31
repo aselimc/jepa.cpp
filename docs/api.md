@@ -251,7 +251,7 @@ int  jepa_context_last_batch(const jepa_context * ctx);
 
 // ======================================================================================
 // APPEND-ONLY: backend / device selection (src/jepa.cpp, src/jepa-gguf.cpp).
-// See docs/gpu-notes.md. Requires a build configured with -DJEPA_CUDA=ON; without one
+// See docs/architecture.md "GPU backend". Requires a build configured with -DJEPA_CUDA=ON; without one
 // jepa_device_count() is 0 and any device >= 0 is rejected with a message.
 // ======================================================================================
 

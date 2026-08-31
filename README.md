@@ -27,7 +27,8 @@ What you can do with it today:
 Correctness is the point of this project, not an afterthought: every f32 conversion reproduces its
 PyTorch reference to cosine 1.000000 (mean; every single token ≥ 0.99999), preprocessing is bit-exact
 against torchvision, and quantized files are measured — on real datasets — rather than assumed.
-The full evidence lives in **[docs/results.md](docs/results.md)** and on the
+The full evidence lives in **[docs/accuracy.md](docs/accuracy.md)** and
+**[docs/performance.md](docs/performance.md)**, and on the
 **[documentation site](https://aselimc.github.io/jepa.cpp/)**.
 
 ## Supported models
@@ -62,12 +63,12 @@ features plus nearest neighbours, so any backend error would show up directly as
 
 *(Threadripper 7995WX, ggml `36da5713`, `GGML_LLAMAFILE=ON`, idle box, 2026-08-31. Every number is
 copied from a committed, regenerable artifact — sources, more shapes, 96-thread rows, memory tables and
-the fine print are in [docs/results.md](docs/results.md).)*
+the fine print are in [docs/performance.md](docs/performance.md).)*
 
 An optional CUDA build is **9–21× faster than those 32-thread numbers** on one RTX 4500 Ada — I-JEPA
 15.5 ms, the 16-frame V-JEPA 2 ViT-L clip 46.5 ms, the 64-frame one 306 ms — at 38–62 % of PyTorch's
 throughput on the same card; see the GPU paragraph below and
-[docs/results.md](docs/results.md#gpu-cuda-from-gpu-notesmd).
+[docs/performance.md](docs/performance.md#gpu-encoder).
 
 Which file should you actually ship? The quantization study boils down to:
 
@@ -153,7 +154,7 @@ ctest --test-dir build        # 8 suites: parity, predictors, batching, RoPE vec
 `test-parity` replays PyTorch golden dumps through the engine and gates per-token cosine, pooled
 outputs and classifier top-1/top-5 with per-family thresholds; `test-predictor` does the same for the
 three predictors, including a bit-exactness causality check on the world model. Details:
-[parity](https://aselimc.github.io/jepa.cpp/parity/) · [results](docs/results.md).
+[parity](https://aselimc.github.io/jepa.cpp/parity/) · [accuracy](docs/accuracy.md).
 
 ## Optional: running on a GPU
 
@@ -166,8 +167,9 @@ refuses to compute anything the device cannot really run, because a GPU backend 
 a node returns a *wrong answer with no error*. One caveat worth knowing before you switch: **there
 is no f32 parity tier on a GPU** — ggml's CUDA "F32" matmul is really TF32 and its flash attention
 always accumulates in F16 — so use f16 or q8_0 there (both hold their bars, and quantized weights
-are the *fastest* GPU path), and the CPU when you need f32 exactness. The audit, the design and
-every measured number: [docs/gpu-notes.md](docs/gpu-notes.md).
+are the *fastest* GPU path), and the CPU when you need f32 exactness. The design:
+[docs/architecture.md](docs/architecture.md); every measured number:
+[docs/performance.md](docs/performance.md) and [docs/accuracy.md](docs/accuracy.md).
 
 ## Limitations
 
@@ -188,7 +190,9 @@ every measured number: [docs/gpu-notes.md](docs/gpu-notes.md).
 
 Documentation site: **<https://aselimc.github.io/jepa.cpp/>** — built from `docs/` with MkDocs
 (`pip install -r docs/requirements.txt && mkdocs serve` to browse locally). All detailed tables:
-[docs/results.md](docs/results.md); machine-readable twins: `tests/results/*.json`.
+[docs/performance.md](docs/performance.md) and [docs/accuracy.md](docs/accuracy.md), with the raw
+measurement reports under `docs/{parity,benchmarks,quantization,accuracy-image,accuracy-video}.md`;
+machine-readable twins: `tests/results/*.json`.
 
 Built on [ggml](https://github.com/ggml-org/ggml). Models by **Meta FAIR** (I-JEPA, V-JEPA 2 / 2.1),
 **OK-AI** (LeJEPA ViT-S/16) and **quentinll / le-wm** (LeWorldModel Push-T).

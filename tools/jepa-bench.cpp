@@ -28,10 +28,10 @@
 // graph build/alloc and the host-side patchify are excluded; `wall_ms` in the JSON is the full API
 // call. With --threads a,b a context is created per thread count and each gets its own warmup.
 //
-// --gpu [N] runs everything on the N-th GPU device instead (docs/gpu-notes.md); --threads is then
+// --gpu [N] runs everything on the N-th GPU device instead (docs/architecture.md "GPU backend"); --threads is then
 // unused, the table's "threads / device" column carries the device name, and the JSON gains
 // "device"/"gpu"/"mul_mat_prec_f32". GPU rows do not belong in docs/benchmarks.md (which is keyed by
-// thread count) — scripts/gen_benchmarks_md.py skips them; they live in docs/results.md "GPU (CUDA)".
+// thread count) — scripts/gen_benchmarks_md.py skips them; they live in docs/performance.md "GPU encoder".
 //
 // In --mode head/predictor the encoder is run three times (one warmup + two measured) and the
 // *minimum* of the measured passes is reported as `encoder_ms`, so a burst of load on the box during
@@ -142,7 +142,7 @@ struct run {
     std::string model_name, model_path, family, ftype, ftype_gguf, mode, shape, kv;
     std::string device = "CPU";   // ggml device the graph ran on ("CPU", "CUDA0", ...)
     bool gpu = false;
-    bool prec_f32 = false;        // GGML_PREC_F32 mul_mat (GPU only; see docs/gpu-notes.md)
+    bool prec_f32 = false;        // GGML_PREC_F32 mul_mat (GPU only; see docs/architecture.md "Attention and precision")
     int  threads = 0, batch = 1, frames = 0, height = 0, width = 0;
     int  repeat = 0, warmup = 0, steps = 0;
     bool flash = true;

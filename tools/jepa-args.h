@@ -8,7 +8,7 @@
 #include <cstring>
 
 // `--gpu` / `--gpu N`: run the model on the n-th GPU device of the ggml backend registry
-// (docs/gpu-notes.md). Consumes the optional index only when the next argument is a bare number,
+// (docs/architecture.md "GPU backend"). Consumes the optional index only when the next argument is a bare number,
 // so `--gpu -i img.jpg` still works. Returns true when the argument was ours.
 //   i      : index of the current argument, advanced past a consumed index
 //   device : set to the requested device (>= 0); left alone otherwise

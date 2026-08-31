@@ -76,7 +76,7 @@ static double rel_bound(double base, int64_t rows) {
 
 // On a GPU there is no f32 tier: ggml's CUDA "F32" mul_mat is TF32 (the algo enum, which
 // GGML_PREC_F32 cannot undo), the attention path is F16-accumulate, and ggml_norm uses the
-// one-pass variance -- docs/gpu-notes.md §6.4, same reasoning as test-parity's POLICY. An f32 file
+// one-pass variance -- docs/parity.md "Parity on a GPU", same reasoning as test-parity's POLICY. An f32 file
 // is therefore judged with the f16 bars there, and every GPU tier gates rel_max as well, because a
 // wrong ggml_norm variance is a per-row *scale* error that cosine is blind to by construction.
 static thresholds thresholds_for(int ftype, bool gpu) {

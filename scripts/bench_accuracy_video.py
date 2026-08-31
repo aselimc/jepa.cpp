@@ -621,6 +621,7 @@ def render_md(p: dict, cj: dict) -> str:
     L = []
     A = L.append
     A("# Accuracy — video k-NN on the UCF101 subset (PyTorch vs jepa.cpp)\n")
+    A("*Raw measurement report — the curated view is [Benchmarks → Accuracy](accuracy.md).*\n")
     A(f"Frozen-feature evaluation, {p['date']}. **Inference only** — nothing is trained: the encoders "
       "are frozen and both metrics are look-ups over their pooled clip features.\n")
     A(f"- **Dataset** `{p['dataset']['root']}` — {len(p['dataset']['classes'])} classes, "
