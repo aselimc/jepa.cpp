@@ -4,7 +4,7 @@ Every measured table in one place. All numbers were produced on an idle AMD Ryze
 7995WX (96 cores / 192 threads, AVX-512), gcc 13.3.0 `-O3 -march=native`, ggml `36da5713`,
 `GGML_LLAMAFILE=ON`, 2026-08-31; PyTorch baselines: torch 2.13.0+cpu, transformers 5.16.1, float32,
 32 threads. Each section names the source document that carries the methodology and the raw artifacts;
-machine-readable twins live in `tests/results/{benchmarks,accuracy-image,accuracy-video}.json`.
+machine-readable twins live in `tests/results/{benchmarks,accuracy-image,accuracy-video,batching}.json`.
 
 ## Speed
 
@@ -33,6 +33,36 @@ claimed against it.
 **Quantisation buys memory, not time.** q8_0 is 0.93–1.14× of f16 and q4 is a *loss* on the wide matmuls
 (I-JEPA q4_k 198 ms vs f16 147 ms; V-JEPA 2.1 384² q4_k 90.7 vs 60.3) — llamafile's accelerated sgemm
 covers F32/F16/Q8_0 and the K-quants fall back to ggml's generic vec-dot.
+
+### Batched image encoding — from `tests/results/batching.json`
+
+`jepa_encode` folds up to `jepa_context_max_batch()` items (default 32, `jepa-embed --batch`) of an
+image input into **one** graph, carried on ggml's batch dimension: activations are `[D, N, B]`, the
+attention tensors `[head_dim, n_head, N, B]`, and `ggml_flash_attn_ext` / `ggml_mul_mat` walk `ne[3]`
+as an outer loop, so items never mix and the rows come out **bit-identical** to the per-item path at
+every dtype measured (`tests/test-batch`, ctest entry `batch`). Video is deliberately excluded: one
+V-JEPA 2 clip is 2 048–18 432 tokens and already saturates 32 threads (`n_batch=2` measures 916 vs
+908 ms per clip — noise, and twice the arena).
+
+`ms` is `jepa-bench --batch B` on synthetic input; `img/s` is `jepa-embed` over 561 Imagenette-160 val
+JPEGs with decode, preprocessing and one GGUF load inside the number, best of two passes.
+
+| model | dtype | ms/image b=1 | b=8 | b=32 | img/s b=1 → 8 → 32 | PyTorch batch 32 | peak RSS b=1 → 32 |
+|---|---|---:|---:|---:|---|---:|---|
+| LeJEPA ViT-S/16 | f16 | 12.6 | 8.1 | **7.4** | 67.0 → 94.4 → **94.5** | 86.4–89.2 | 52 → 148 MiB |
+| LeWM ViT-Ti/14 | f16 | 9.7 | 4.8 | **4.4** | 95.4 → 148.5 → **159.0** | 189.7–206.2 | 48 → 107 MiB |
+| I-JEPA ViT-H/14 | f16 | 148.8 | **137.9** | 140.3 | 6.16 → **6.92** → 6.77 | 5.45–5.51 | 1230 → 1597 MiB |
+| I-JEPA ViT-H/14 | q8_0 | 139.4 | **129.8** | 129.8 | 6.94 → **7.60** → 7.38 | 5.45–5.51¹ | 659 → 993 MiB |
+
+¹ the PyTorch baseline is f32 in every row; [accuracy-image.md](accuracy-image.md) has the split-by-split numbers.
+
+**The win is inversely proportional to model size.** Batching amortises what does not scale with the
+matmuls — thread launch, the per-layer norm/GELU passes, weight streaming — so the two small models
+gain 1.7× and 2.2× of encoder time while ViT-H, whose 1.2 GiB of weights already keep 32 threads
+busy on one image, gains 1.08×. B = 32 is also *worse* than B = 8 there (140.3 vs 137.9 ms): the
+graph arena grows to 1.6 GiB and the weights stop fitting alongside it in cache. Batching is a
+small-model feature; the default of 32 is capped per graph, and inputs larger than it are encoded in
+several graphs rather than one giant one.
 
 ### End-to-end video classification (V-JEPA 2 ViT-L SSv2, 16 f 256², 2 048 tokens)
 

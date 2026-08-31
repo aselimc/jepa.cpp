@@ -152,8 +152,12 @@ three predictors, including a bit-exactness causality check on the world model. 
 
 ## Limitations
 
-- **No batching yet** — one item per call, so PyTorch's batch-32 wins end-to-end on the two smallest
-  image models. Biggest known win on the roadmap.
+- **Batching is images only** — `jepa_encode` puts up to 32 image items through one ggml graph
+  (`jepa-embed --batch`, bit-identical to one-at-a-time), worth 1.7–2.1× of encoder time and taking
+  end-to-end throughput at 32 threads from 67 to 94 img/s on LeJEPA ViT-S/16 and 95 to 159 on LeWM
+  against PyTorch batch-32's 86–89 and 190–206, and 6.2 to 6.9 (7.6 at q8_0) on I-JEPA ViT-H/14
+  against 5.5. So LeJEPA now passes PyTorch, LeWM is still 0.77–0.84× of it, and a V-JEPA 2 clip is
+  deliberately not batched — one clip is already 2 048–18 432 tokens and saturates the cores.
 - **V-JEPA 2 ViT-L scatters individual tokens at f16** (a property of the checkpoint's activation
   range, reproduced in numpy — not an engine bug); use f32 for dense per-token work on that one model.
 - **Not converted yet:** V-JEPA 1, V-JEPA 2-AC (the schema and kernels exist), the larger V-JEPA 2 /

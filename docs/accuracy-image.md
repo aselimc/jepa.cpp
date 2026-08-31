@@ -140,32 +140,32 @@ ImageNet mean/std) on PIL-decoded pixels. **jepa.cpp is given the JPEG file** an
 |---|---|---|---|---|---|---|
 | PyTorch, batch 32 | ijepa-vith14-1k | f32 | train2000 | 2000 | 363.1 | 5.51 |
 | PyTorch, batch 32 | ijepa-vith14-1k | f32 | val | 3925 | 719.5 | 5.45 |
-| jepa-embed, 1 img/call | ijepa-vith14-1k | f16 | train2000 | 2000 | 324.9 | 6.16 |
-| jepa-embed, 1 img/call | ijepa-vith14-1k | f16 | val | 3925 | 637.2 | 6.16 |
-| jepa-embed, 1 img/call | ijepa-vith14-1k | q8_0 | train2000 | 2000 | 282.4 | 7.08 |
-| jepa-embed, 1 img/call | ijepa-vith14-1k | q8_0 | val | 3925 | 557.4 | 7.04 |
-| jepa-embed, 1 img/call | ijepa-vith14-1k | q4_k | train2000 | 2000 | 419.5 | 4.77 |
-| jepa-embed, 1 img/call | ijepa-vith14-1k | q4_k | val | 3925 | 826.8 | 4.75 |
+| jepa-embed, batch 1 | ijepa-vith14-1k | f16 | train2000 | 2000 | 324.9 | 6.16 |
+| jepa-embed, batch 1 | ijepa-vith14-1k | f16 | val | 3925 | 637.2 | 6.16 |
+| jepa-embed, batch 1 | ijepa-vith14-1k | q8_0 | train2000 | 2000 | 282.4 | 7.08 |
+| jepa-embed, batch 1 | ijepa-vith14-1k | q8_0 | val | 3925 | 557.4 | 7.04 |
+| jepa-embed, batch 1 | ijepa-vith14-1k | q4_k | train2000 | 2000 | 419.5 | 4.77 |
+| jepa-embed, batch 1 | ijepa-vith14-1k | q4_k | val | 3925 | 826.8 | 4.75 |
 | PyTorch, batch 32 | lejepa-vits16 | f32 | train_full | 9469 | 109.6 | 86.40 |
 | PyTorch, batch 32 | lejepa-vits16 | f32 | val | 3925 | 44.0 | 89.15 |
-| jepa-embed, 1 img/call | lejepa-vits16 | f32 | train_full | 9469 | 141.3 | 66.99 |
-| jepa-embed, 1 img/call | lejepa-vits16 | f32 | val | 3925 | 58.7 | 66.90 |
-| jepa-embed, 1 img/call | lejepa-vits16 | f16 | train_full | 9469 | 140.6 | 67.34 |
-| jepa-embed, 1 img/call | lejepa-vits16 | f16 | val | 3925 | 58.3 | 67.32 |
-| jepa-embed, 1 img/call | lejepa-vits16 | q8_0 | train_full | 9469 | 126.5 | 74.83 |
-| jepa-embed, 1 img/call | lejepa-vits16 | q8_0 | val | 3925 | 52.3 | 75.01 |
-| jepa-embed, 1 img/call | lejepa-vits16 | q4_k | train_full | 9469 | 141.0 | 67.15 |
-| jepa-embed, 1 img/call | lejepa-vits16 | q4_k | val | 3925 | 58.4 | 67.16 |
+| jepa-embed, batch 1 | lejepa-vits16 | f32 | train_full | 9469 | 141.3 | 66.99 |
+| jepa-embed, batch 1 | lejepa-vits16 | f32 | val | 3925 | 58.7 | 66.90 |
+| jepa-embed, batch 1 | lejepa-vits16 | f16 | train_full | 9469 | 140.6 | 67.34 |
+| jepa-embed, batch 1 | lejepa-vits16 | f16 | val | 3925 | 58.3 | 67.32 |
+| jepa-embed, batch 1 | lejepa-vits16 | q8_0 | train_full | 9469 | 126.5 | 74.83 |
+| jepa-embed, batch 1 | lejepa-vits16 | q8_0 | val | 3925 | 52.3 | 75.01 |
+| jepa-embed, batch 1 | lejepa-vits16 | q4_k | train_full | 9469 | 141.0 | 67.15 |
+| jepa-embed, batch 1 | lejepa-vits16 | q4_k | val | 3925 | 58.4 | 67.16 |
 | PyTorch, batch 32 | lewm-pusht | f32 | train2000 | 2000 | 9.7 | 206.16 |
 | PyTorch, batch 32 | lewm-pusht | f32 | val1000 | 1000 | 5.3 | 189.66 |
-| jepa-embed, 1 img/call | lewm-pusht | f32 | train2000 | 2000 | 21.0 | 95.33 |
-| jepa-embed, 1 img/call | lewm-pusht | f32 | val1000 | 1000 | 10.5 | 95.26 |
-| jepa-embed, 1 img/call | lewm-pusht | f16 | train2000 | 2000 | 21.0 | 95.36 |
-| jepa-embed, 1 img/call | lewm-pusht | f16 | val1000 | 1000 | 10.5 | 95.21 |
-| jepa-embed, 1 img/call | lewm-pusht | q8_0 | train2000 | 2000 | 20.1 | 99.67 |
-| jepa-embed, 1 img/call | lewm-pusht | q8_0 | val1000 | 1000 | 9.9 | 101.05 |
-| jepa-embed, 1 img/call | lewm-pusht | q4_k | train2000 | 2000 | 23.1 | 86.43 |
-| jepa-embed, 1 img/call | lewm-pusht | q4_k | val1000 | 1000 | 11.7 | 85.16 |
+| jepa-embed, batch 1 | lewm-pusht | f32 | train2000 | 2000 | 21.0 | 95.33 |
+| jepa-embed, batch 1 | lewm-pusht | f32 | val1000 | 1000 | 10.5 | 95.26 |
+| jepa-embed, batch 1 | lewm-pusht | f16 | train2000 | 2000 | 21.0 | 95.36 |
+| jepa-embed, batch 1 | lewm-pusht | f16 | val1000 | 1000 | 10.5 | 95.21 |
+| jepa-embed, batch 1 | lewm-pusht | q8_0 | train2000 | 2000 | 20.1 | 99.67 |
+| jepa-embed, batch 1 | lewm-pusht | q8_0 | val1000 | 1000 | 9.9 | 101.05 |
+| jepa-embed, batch 1 | lewm-pusht | q4_k | train2000 | 2000 | 23.1 | 86.43 |
+| jepa-embed, batch 1 | lewm-pusht | q4_k | val1000 | 1000 | 11.7 | 85.16 |
 
 Measured back-to-back in one sweep on an otherwise idle box: over the 28 timed passes above the machine spent 2673 CPU-minutes out of idle, 2651 of them this benchmark's own process trees, leaving 22.9 CPU-minutes — an average of 0.26 of one core out of 96 — for everything else on the machine (`occupancy` per row in the JSON: /proc/stat non-idle minus os.times() self+children).
 
@@ -286,8 +286,21 @@ as a jepa.cpp defect: its feature cosine is 0.999994 at f32/f16, the best in the
 Two different shapes are compared and the asymmetry is deliberate:
 
 * **PyTorch** runs **batch 32** with the model loaded once; the reported time excludes the load.
-* **jepa-embed** encodes **one image per call** — the tool's normal mode — inside a process that is
-  handed a chunk of 512 images and reloads the GGUF once per chunk; that load *is* in the number.
+* **jepa-embed** ran **one image per call** when the table above was taken (`--batch 1`, which was
+  then the only mode), inside a process that is handed a chunk of 512 images and reloads the GGUF
+  once per chunk; that load *is* in the number.
+
+> **The table above predates encoder batching.** `jepa_encode` now folds up to 32 image items into
+> one graph (`jepa-embed --batch`, default 32 in this script) and the features are bit-identical, so
+> **every accuracy number on this page is unchanged** — verified by re-running the LeJEPA and LeWM
+> f32 passes at `--batch 1` and `--batch 32` and diffing the JSON (identical payload,
+> `tests/results/batching.json`). Only the throughput columns move, and they move a lot on the small
+> models: over 561 Imagenette val JPEGs at 32 threads, LeJEPA f16 goes 67.0 → **94.5** img/s and LeWM
+> f16 95.4 → **159.0**, while I-JEPA f16 goes 6.16 → **6.92** and q8_0 6.94 → **7.60**
+> ([results.md](results.md) has the per-batch table). LeJEPA therefore now *passes* PyTorch's 86–89;
+> LeWM is still behind at 0.77–0.84×. The rows below were not re-measured: re-running the 28-pass
+> sweep would change 28 numbers with no accuracy consequence, and the batch-1 rows remain the honest
+> record of what the tool cost before the change.
 
 On the idle box the picture is much narrower than an earlier, contended version of this page
 claimed. On the big model jepa.cpp is ahead at q8_0 and f16 and **behind** at q4_k:
@@ -297,12 +310,13 @@ claimed. On the big model jepa.cpp is ahead at q8_0 and f16 and **behind** at q4
 | img/s (train2000 / val) | 5.51 / 5.45 | 6.16 / 6.16 | 7.08 / 7.04 | 4.77 / 4.75 |
 | vs PyTorch, same split | 1× | 1.12–1.13× | 1.29× | 0.87× |
 
-On the two small models PyTorch wins outright: LeJEPA 67–75 img/s against 86–89 (0.75–0.87×) and
-LeWM 85–101 against 190–206 (0.42–0.53×), where per-image fixed cost and PyTorch's batching
-dominate. So the range across everything measured here is **4.8–7.1 img/s for I-JEPA** against
-PyTorch's 5.5, and the right conclusion is the one `docs/parity.md` already draws, only with a
-smaller margin than before: jepa.cpp is competitive where the matmuls dominate and loses where
-launch overhead does; batching support would close the small-model gap.
+At batch 1 PyTorch won the two small models outright: LeJEPA 67–75 img/s against 86–89 (0.75–0.87×)
+and LeWM 85–101 against 190–206 (0.42–0.53×), where per-image fixed cost and PyTorch's batching
+dominate. So the range across everything measured in the table is **4.8–7.1 img/s for I-JEPA**
+against PyTorch's 5.5, and the conclusion `docs/parity.md` draws holds: jepa.cpp is competitive where
+the matmuls dominate and lost where launch overhead did. That last half is what batching fixed —
+it is exactly the fixed cost that amortises, which is why it is worth 1.4× on LeJEPA end to end and
+1.1× on I-JEPA (see the note above and [results.md](results.md)).
 
 The load conditions are measured, not asserted. Across the 28 timed passes the machine spent
 2 673 CPU-minutes out of idle and this benchmark's own process trees account for 2 651 of them,
@@ -349,6 +363,11 @@ cmake --build build -j 32 --target jepa-embed
 .venv/bin/python scripts/bench_accuracy_image.py --stage cpp   --models ijepa-vith14-1k --dtypes q4_k
 .venv/bin/python scripts/bench_accuracy_image.py --stage graphtime     # the graph-compute table
 .venv/bin/python scripts/bench_accuracy_image.py --stage eval          # re-score cached features
+
+# --batch sets the images per encoder graph in the cpp stage (default 32, PyTorch's batch).  The
+# features do not depend on it, so this only moves the throughput columns; --stage graphtime always
+# uses --batch 1 because it reports the graph cost of ONE image.
+.venv/bin/python scripts/bench_accuracy_image.py --stage cpp --batch 1 --models lejepa-vits16
 
 # 1-minute smoke test.  --limit refuses to write the default --out, and caches its features under
 # their own <split>-limit60 names, so it cannot be mistaken for or mixed into a full run.

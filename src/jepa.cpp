@@ -386,18 +386,18 @@ static int jepa_encode_image(jepa_context * ctx, const jepa_input * in, jepa_out
     if (encoder_graph_bytes(m, bmax, n_tokens) > budget) {
         // shrink rather than fail when a single item still fits — only a genuinely absurd request errors
         while (bmax > 1 && encoder_graph_bytes(m, bmax, n_tokens) > budget) bmax /= 2;
+        const double mib = 1024.0 * 1024.0;
         if (encoder_graph_bytes(m, 1, n_tokens) > budget) {
-            jepa_log("jepa: one %lld-token item of '%s' needs about %.1f GiB of graph activations, over the "
-                     "%.1f GiB limit ($JEPA_MAX_GRAPH_MIB); feed a smaller input\n",
+            jepa_log("jepa: one %lld-token item of '%s' needs about %.1f MiB of graph activations, over the "
+                     "%.1f MiB limit ($JEPA_MAX_GRAPH_MIB); feed a smaller input\n",
                      (long long) n_tokens, m->hp.name.c_str(),
-                     (double) encoder_graph_bytes(m, 1, n_tokens) / (1024.0 * 1024.0 * 1024.0),
-                     (double) budget / (1024.0 * 1024.0 * 1024.0));
+                     (double) encoder_graph_bytes(m, 1, n_tokens) / mib, (double) budget / mib);
             return -1;
         }
         if (ctx->params.verbose) {
-            jepa_log("jepa: batch capped at %lld items (~%.2f GiB of graph activations, limit %.1f GiB)\n",
-                     (long long) bmax, (double) encoder_graph_bytes(m, bmax, n_tokens) / (1024.0 * 1024.0 * 1024.0),
-                     (double) budget / (1024.0 * 1024.0 * 1024.0));
+            jepa_log("jepa: batch capped at %lld items (~%.1f MiB of graph activations, limit %.1f MiB)\n",
+                     (long long) bmax, (double) encoder_graph_bytes(m, bmax, n_tokens) / mib,
+                     (double) budget / mib);
         }
     }
 

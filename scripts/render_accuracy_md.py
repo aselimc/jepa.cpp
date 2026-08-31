@@ -105,7 +105,8 @@ def render(d: dict) -> str:
     for k in sorted(d["timing"], key=tkey):
         v = d["timing"][k]
         be, m, dt, sp = k.split("|")
-        be = "PyTorch, batch 32" if be == "torch" else "jepa-embed, 1 img/call"
+        # rows recorded before jepa-embed grew --batch carry no "batch" key: those were 1 img/call
+        be = "PyTorch, batch 32" if be == "torch" else f"jepa-embed, batch {v.get('batch', 1)}"
         A(f"| {be} | {m} | {dt} | {sp} | {v['n']} | {v['wall_s']:.1f} | {v['img_per_s']:.2f} |")
     line = occupancy_line(d["timing"])
     if line:

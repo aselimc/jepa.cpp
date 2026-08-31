@@ -40,7 +40,7 @@ static void usage(const char * argv0) {
         "  -o out.npy        save the features as float32 .npy ([n_items, D] or [n_items*n_tokens, D] for --pool none)\n"
         "  --pool MODE       mean (patch tokens, default for models without CLS) | cls (default for CLS models)\n"
         "                    | lewm (enc.proj(CLS) world-model state) | none (all tokens)\n"
-        "  --batch B         image items per encoder graph (default 8; V-JEPA clips are always 1)\n"
+        "  --batch B         image items per encoder graph (default 32, or $JEPA_MAX_BATCH; V-JEPA clips are always 1)\n"
         "  --no-batch        same as --batch 1: one graph per item, the pre-batching path\n"
         "  --logits F        also run the attentive-pool head and save [n_items, n_classes] raw logits\n"
         "  --json F          write a stats JSON (timings, throughput) for benchmark drivers\n"
@@ -157,7 +157,7 @@ int main(int argc, char ** argv) {
     std::vector<std::string> images;
     jepa_context_params cp = jepa_context_default_params();
     bool timing = false, as_video = false, as_images = false;
-    int repeat = 1, print_n = 8, batch = 8, progress = -1;
+    int repeat = 1, print_n = 8, batch = 0, progress = -1;   // batch 0 = whatever the context defaults to
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         auto next = [&](const char * what) -> const char * {
@@ -190,7 +190,6 @@ int main(int argc, char ** argv) {
     }
     if (model_path.empty() || (images.empty() && frames_npy.empty() && frames_list.empty())) { usage(argv[0]); return 1; }
     if (repeat < 1) repeat = 1;
-    if (batch  < 1) batch  = 1;
     if (progress < 0) progress = frames_list.empty() ? 0 : 25;
 
     const double t_load = now_ms();
@@ -199,7 +198,10 @@ int main(int argc, char ** argv) {
     const double load_ms = now_ms() - t_load;
     jepa_context * ctx = jepa_context_new(model, cp);
     if (!ctx) { jepa_model_free(model); return 1; }
-    jepa_context_set_max_batch(ctx, batch);
+    // an explicit --batch / --no-batch overrides the library default (32) and $JEPA_MAX_BATCH;
+    // without one the tool follows whatever the context resolved to
+    if (batch > 0) jepa_context_set_max_batch(ctx, batch);
+    batch = jepa_context_max_batch(ctx);
 
     // every exit below goes through this: the model and context (hundreds of MiB of weights) and
     // the per-batch buffers are released on the error paths too
@@ -386,11 +388,15 @@ int main(int argc, char ** argv) {
                         enc_ms > 0 ? 1000.0 * (double) n_tokens / enc_ms : 0.0,
                         jepa_context_n_threads(ctx), repeat > 1 ? ", mean of repeats" : "");
             } else {
+                // last_batch < nb means the call did not fit one graph and was split (memory cap)
+                const int per_graph = jepa_context_last_batch(ctx);
+                char split[48] = "";
+                if (per_graph > 0 && per_graph < nb) snprintf(split, sizeof(split), ", %d per graph", per_graph);
                 fprintf(stderr, "  batch of %lld x %d frame(s) %s -> %dx%d, %lld tokens each | preprocess %.1f ms | "
-                                "encode %.1f ms (graph compute %.1f ms = %.1f ms/item, %.0f tokens/s, %d threads%s)\n",
+                                "encode %.1f ms (graph compute %.1f ms = %.1f ms/item, %.0f tokens/s, %d threads%s%s)\n",
                         (long long) nb, gT, src, gw, gh, (long long) n_tokens, pre_ms, wall_ms, enc_ms,
                         enc_ms / (double) nb, enc_ms > 0 ? 1000.0 * (double) (nb * n_tokens) / enc_ms : 0.0,
-                        jepa_context_n_threads(ctx), repeat > 1 ? ", mean of repeats" : "");
+                        jepa_context_n_threads(ctx), split, repeat > 1 ? ", mean of repeats" : "");
             }
         }
         if (enc.data) { jepa_free(enc.data); enc.data = nullptr; }
