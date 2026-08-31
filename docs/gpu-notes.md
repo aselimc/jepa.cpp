@@ -21,9 +21,12 @@ Everything read-only was checked against the pinned ggml submodule, commit `36da
 | ggml | submodule `36da5713` (v0.22.0), `GGML_CUDA=ON`, `GGML_NATIVE=ON` → `CMAKE_CUDA_ARCHITECTURES=native` = `89` |
 | Vulkan | loader `libvulkan1` 1.3.275 + the NVIDIA ICD are installed; **`glslc` / `SPIRV-Headers` are not** |
 
-RTX 4500 Ada paper peak: ~24 TFLOP/s FP32, ~48 TFLOP/s FP16 with FP32 accumulate on the tensor
-cores (~96 with FP16 accumulate), ~192 TOP/s INT8, 432 GB/s of GDDR6 ECC bandwidth. Those are the
-ceilings the measured numbers below should be read against.
+Ceilings, computed from what `nvidia-smi` reports rather than from a datasheet: 7 680 CUDA cores at
+a max SM clock of **3 105 MHz** and a 210 W board limit give **47.7 TFLOP/s FP32** and, at the 2×
+dense rate of Ada's 4th-gen tensor cores, **~95 TFLOP/s FP16 with FP32 accumulate**. Sustained
+clocks under a 210 W cap are lower than 3 105 MHz, so treat these as upper bounds. §5.5 shows
+PyTorch reaching 56–77 TFLOP/s (fp16) and ~14 TFLOP/s (fp32) on this card, which is the practical
+ceiling any ggml-CUDA number should be read against.
 
 ## 1. Op coverage
 
@@ -385,7 +388,46 @@ That model is validated against the CPU numbers already in the repo: `docs/ggml-
 `4948/3.3 + 6597/1.7 = 5.4 s` for the 64-frame ViT-L clip against the **6 388 ms** `docs/benchmarks.md`
 actually measures — 18 % out, i.e. the right shape with the expected slack for LN/GELU/launch overhead.
 
-*(GPU rates and the resulting forecast pending the shared-box sentinel; see the final report)*
+### 5.5 PyTorch-GPU baseline
+
+The numbers a jepa.cpp-CUDA has to be compared against. One RTX 4500 Ada (`CUDA_VISIBLE_DEVICES=0`),
+batch 1, synthetic input of the right shape, `torch.set_num_threads(8)`, TF32 **off** (torch's
+default), 3 warmup + 7 timed forwards with `torch.cuda.synchronize()` around each.
+Driver 580.173.02, **torch 2.13.0+cu130**, transformers 5.16.1, `attn_implementation="sdpa"`.
+`VJEPA2Model(..., skip_predictor=True)` and `IJepaModel`, both loaded from `models/`.
+Script: `tmp/torch_gpu_bench.py`; raw JSON: `tmp/results/torch-gpu.json`.
+
+| model | dtype | frames | tokens | mean ms | median ms | min ms | peak GiB | implied TFLOP/s |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| vjepa2-vitl-fpc64-256 | fp32 | 16 | 2 048 | 118.58 | 118.54 | 118.39 | 1.33 | 13.9 |
+| vjepa2-vitl-fpc64-256 | fp32 | 64 | 8 192 | 836.52 | 836.61 | 835.12 | 1.65 | 13.8 |
+| vjepa2-vitl-fpc64-256 | **fp16** | 16 | 2 048 | **29.56** | 29.56 | 29.47 | 1.27 | **55.8** |
+| vjepa2-vitl-fpc64-256 | **fp16** | 64 | 8 192 | **150.03** | 150.04 | 149.85 | 0.83 | **77.0** |
+| ijepa_vith14_1k | fp32 | 1 | 256 | 24.99 | 25.02 | 24.66 | 2.43 | 13.3 |
+| ijepa_vith14_1k | **fp16** | 1 | 256 | **5.57** | 5.58 | 5.52 | 2.42 | **59.7** |
+
+Run-to-run spread is well under 1 % on every row (mean ≈ median ≈ min), so these are clean numbers.
+
+Two things to take from this table:
+
+* **fp16 is 4.2–5.6× faster than fp32** on this card, because TF32 is off by default in torch and
+  ggml likewise never calls `cublasSetMathMode` (§1.3) — both engines run f32 on the FP32 CUDA cores
+  (~14 TFLOP/s achieved, 29 % of the 47.7 ceiling) and f16 on the tensor cores (56–77 TFLOP/s,
+  59–81 % of the ~95 ceiling). **An f32 GGUF on CUDA will be roughly 4× slower than an f16 one**,
+  the same shape as on CPU but for a different reason.
+* Against the CPU engine we ship today (`docs/benchmarks.md`, f16):
+
+  | shape | jepa.cpp CPU t=32 | jepa.cpp CPU t=96 | torch-GPU fp16 | GPU vs CPU-32 / CPU-96 |
+  |---|---:|---:|---:|---:|
+  | I-JEPA ViT-H, 224² | 147.0 ms | 113.1 ms | 5.57 ms | **26.4× / 20.3×** |
+  | V-JEPA 2 ViT-L, 16f@256 | 820.7 ms | 566.6 ms | 29.56 ms | **27.8× / 19.2×** |
+  | V-JEPA 2 ViT-L, 64f@256 | 6 388.1 ms | 4 026.9 ms | 150.03 ms | **42.6× / 26.8×** |
+
+  That is the size of the prize: one 210 W workstation GPU beats 96 Zen 4 cores by 20–43×. Even a
+  jepa.cpp-CUDA that only reached half of torch's throughput would be a 10–21× improvement on the
+  fastest thing the project can do today.
+
+*(ggml-CUDA rates and the resulting forecast: below, once the build finishes)*
 
 ## 6. Implementation plan
 
