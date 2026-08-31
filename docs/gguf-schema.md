@@ -1,7 +1,9 @@
 # jepa.cpp GGUF schema (v1)
 
-One GGUF file = one *model bundle*: an encoder, and optionally a predictor and/or a head.
-All agents (converter, loader, graph builder) implement exactly this. Change it here first.
+One GGUF file is one *model bundle*: an encoder, and optionally a predictor and/or a head. The
+converter, the loader and the graph builder all implement exactly this document — change it here
+first. The graph these keys describe is in [Architecture](architecture.md); the Python side that
+writes them is in [Converter](converter.md).
 
 ## General metadata
 
@@ -46,7 +48,7 @@ All agents (converter, loader, graph builder) implement exactly this. Change it 
 | `jepa.enc.attn_mode` | str | `full` (every existing file: the key is absent and the loader defaults to it) · `block_causal` (`levjepa`: key *j* is visible to query *i* iff `frame_id(i) >= frame_id(j)`, with the CLS row open and the CLS column closed — see the levjepa family note) |
 | `jepa.enc.proj_act` | str | `lewm` only: activation of the `enc.proj.*` MLP (`gelu_erf`) |
 
-Encoder tensors (ggml dim order is reversed from PyTorch; we store PyTorch row-major as-is, i.e. `ne[0]` = last PyTorch dim):
+Encoder tensors (ggml dim order is reversed from PyTorch; PyTorch row-major is stored as-is, i.e. `ne[0]` = last PyTorch dim):
 
 ```
 enc.patch_embed.weight        [embed_dim, in_chans * tubelet * patch * patch]   (conv flattened to a matmul, C-T-H-W order)

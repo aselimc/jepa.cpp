@@ -145,7 +145,7 @@ struct ggml_tensor * jepa_rope3d_apply(struct ggml_context * ctx, struct ggml_te
     const int64_t H = x->ne[1], N = x->ne[2];
 
     // ggml_roll needs a fully contiguous source (its CUDA kernel indexes as if it were: see
-    // ggml/src/ggml-cuda/roll.cu and docs/gpu-notes.md S1.2), and jepa_build_qkv hands us a view
+    // ggml/src/ggml-cuda/roll.cu and docs/architecture.md "GPU backend"), and jepa_build_qkv hands us a view
     // into the fused [3D, N] projection. The copy is not wasted work: the old two-roll form
     // materialised the same bytes twice inside `roll` itself.
     struct ggml_tensor * xc = ggml_is_contiguous(x) ? x : ggml_cont(ctx, x);

@@ -55,7 +55,7 @@
 //       cont (only when x is a view) -> reshape [2, ...] -> roll(1) -> 2x mul -> add
 //   Rolling an axis of length 2 by 1 *is* the pair swap, with no wrap-around lane to mask away, so
 //   no mask has to be built in the graph. Every node has a CUDA kernel and the whole chain is one
-//   scheduler split on any backend (docs/gpu-notes.md S2); the older form (two ne0-wide rolls plus
+//   scheduler split on any backend (docs/architecture.md "3-D RoPE"); the older form (two ne0-wide rolls plus
 //   in-graph arange/repeat/scale masks) had none for `roll` on the strided qkv view and fragmented
 //   a 24-block encoder into 193 splits. The refactor is bit-identical for finite inputs: the only
 //   difference against the old expression is that it also added an exact +0.0 per lane (the masked

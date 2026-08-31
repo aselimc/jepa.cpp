@@ -1,5 +1,7 @@
 # Parity — image ViT encoders (I-JEPA, LeJEPA/hfvit, LeWM) and video encoders (V-JEPA 2 / 2.1)
 
+*Raw measurement report — the curated view is [Benchmarks → Accuracy](accuracy.md).*
+
 Numbers from `tests/test-parity` against the PyTorch golden dumps of `tests/fixtures/ref/<model>/`
 (torch 2.13.0+cpu float32, transformers 5.16.1, 32 threads). Box: AMD Ryzen Threadripper PRO 7995WX
 (96 cores / 192 threads, AVX-512), gcc 13.3.0, ggml @ 36da5713, `-O3 -march=native`, `GGML_LLAMAFILE=ON`.
@@ -364,7 +366,7 @@ that moves the whole distribution is visible even when the gate passes.
 
 ## Parity on a GPU (`--gpu`)
 
-Everything above is the CPU backend. A CUDA build (`-DJEPA_CUDA=ON`, `docs/gpu-notes.md`) runs the
+Everything above is the CPU backend. A CUDA build (`-DJEPA_CUDA=ON`, `docs/getting-started.md`) runs the
 same graphs on a GPU, and `test-parity` / `test-predictor` take `--gpu [N]` to judge them there.
 Box: one NVIDIA RTX 4500 Ada Generation (compute 8.9, 24 GB), CUDA 13.0.88, driver 580.173.02,
 ggml @ 36da5713, `GGML_PREC_F32` on every `mul_mat` (the default on a GPU).
@@ -393,7 +395,7 @@ header. f16 and quantized files keep their own bars: with `GGML_PREC_F32` the f1
 
 Every GPU cell additionally gates **`rel_max`**, which the CPU tiers only do at f32. That is the
 one thing cosine cannot see: a wrong `ggml_norm` variance is a per-row *scale* error, and
-`docs/gpu-notes.md` §5.3 measured CUDA at relative error 5.7 with per-row cosine still reading
+CUDA has been measured at relative error 5.7 with per-row cosine still reading
 1.0000000. The bars below are set just outside the worst measured fixture value, so they are loose
 in the quantized tiers (where weight rounding dominates `rel_max` anyway) and tight on the derived
 tensors — but any of them collapses a norm-scale failure.
@@ -462,7 +464,7 @@ Worst sample per file, stored-input pass, all fixture samples. `derived` names t
 the low-bit tier's 0.99) and `vjepa2-vitl-fpc16-256-ssv2-q4_k` (`logits` 0.9781, `pooled` 0.9807) —
 **fail on the CPU too, identically**: q4_k below 8 bits per weight is not a parity configuration for
 these two models and `docs/quantization.md` already says so. Every q4_k row is otherwise a *pass on
-the GPU*, which matters because q4_k is the fastest GPU path (`docs/results.md`).
+the GPU*, which matters because q4_k is the fastest GPU path (`docs/performance.md`).
 
 The classifier rows reproduce the reference **top-1 and top-5 exactly** at f32/f16/q8_0. The
 own-preprocessing pass passes everywhere the stored-input pass does.
@@ -478,7 +480,7 @@ which is the same statement as "there is no f32 tier here", measured end to end.
 `test-predictor --gpu 0`, against the same PyTorch dumps. The V-JEPA 2 predictor has head_dim 32,
 for which **no CUDA flash-attention kernel exists**, so it runs the naive `mul_mat + soft_max_ext`
 path — fully F32, one graph split, and a 0.75 GiB score matrix at these row counts
-(`docs/gpu-notes.md` §3). `test-predictor` uses the GPU thresholds (f32 judged as f16, plus
+(`docs/architecture.md` "GPU backend"). `test-predictor` uses the GPU thresholds (f32 judged as f16, plus
 `rel_max` ≤ 2e-2 at f32/f16 and ≤ 8e-2 at q8).
 
 | model | ftype | check | rows | cos mean | cos min | rel_max | ms (GPU) | ms (CPU t=32) |
@@ -503,10 +505,11 @@ LeWM's structural self-consistency checks (causal-prefix equality, rollout-vs-pr
 **bit-identical on the GPU too**: `max|d| 0.000e+00` for every T ≥ 2 prefix and both rollout steps,
 at all three dtypes.
 
-### The two questions the audit could not close, measured
+### f16 overflow and the one-pass variance, measured on real activations
 
-`docs/gpu-notes.md` §1.3 and §5.3 both ended on "this needs a dump of real activations". Done, with
-forward hooks on the reference PyTorch models over the fixture inputs (1.66 M LayerNorm rows):
+Both CUDA numerics questions above turn on how large real activations get, so they were measured
+directly: forward hooks on the reference PyTorch models over the fixture inputs (1.66 M LayerNorm
+rows):
 
 * **f16 GEMM accumulation cannot overflow these models.** The largest linear-layer output anywhere
   is **414** (V-JEPA 2.1 ViT-B, layer 0 fused qkv); I-JEPA ViT-H — the model the docs used to
@@ -528,7 +531,7 @@ forward hooks on the reference PyTorch models over the fixture inputs (1.66 M La
 `ggml_flash_attn_ext` with K/V cast to F16 costs ~3 digits of worst-token cosine on ViT-H/14 f32
 (cos min 0.9910 vs 1.000000, rel_max 3.5e-2 vs 8.6e-5). That is F16's 10-bit mantissa, not its range:
 measured on the real forward, I-JEPA ViT-H's largest linear output is 95 and its largest residual
-value 151 (`docs/gpu-notes.md` §8), nowhere near F16's 65504.
+value 151 ("f16 overflow and the one-pass variance" above), nowhere near F16's 65504.
 `jepa_context_params.flash_kv` therefore defaults to **auto**: F32 K/V for f32 files, F16 K/V for
 f16/quantized files (where weight rounding dominates anyway). Override with `JEPA_KV_F16` /
 `JEPA_KV_F32` (`--kv-f16` / `--kv-f32` in the tools); `--no-flash` selects the naive

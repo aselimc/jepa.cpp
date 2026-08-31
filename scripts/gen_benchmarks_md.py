@@ -104,8 +104,8 @@ def load_runs(bench_dir: Path) -> tuple[list[dict], dict, list[str]]:
                     if k not in r:
                         raise KeyError(k)
                 # docs/benchmarks.md is the CPU document: its rows are keyed by thread count, which
-                # means nothing for a GPU run. GPU numbers live in docs/results.md "GPU (CUDA)" and
-                # docs/gpu-notes.md S8, so a stray --gpu JSON in the sweep directory is skipped
+                # means nothing for a GPU run. GPU numbers live in docs/performance.md "GPU encoder",
+                # so a stray --gpu JSON in the sweep directory is skipped
                 # rather than silently mixed in.
                 if r.get("gpu"):
                     continue
@@ -293,6 +293,8 @@ def main() -> int:
     L: list[str] = []
     A = L.append
     A("# jepa.cpp — measured benchmarks")
+    A("")
+    A("*Raw measurement report — the curated view is [Benchmarks → Performance](performance.md).*")
     A("")
     A("Every number here comes from `tools/jepa-bench` on the box described below, on **synthetic but "
       "deterministic** input (a seeded uint8 stream put through the model's own `jepa.pre.*` "

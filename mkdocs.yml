@@ -44,21 +44,21 @@ validation:
 
 nav:
   - Overview: index.md
-  - Results: results.md
+  - Getting started: getting-started.md
+  - Architecture: architecture.md
+  - GGUF format: gguf-schema.md
+  - Benchmarks:
+      - Performance: performance.md
+      - Accuracy: accuracy.md
   - C API: api.md
-  - Design:
-      - Architecture: architecture.md
-      - GGUF schema: gguf-schema.md
+  - Internals:
       - Converter: converter.md
       - V-JEPA tensor & RoPE notes: vjepa-notes.md
-      - Fixtures & golden references: fixtures.md
-  - Correctness:
-      - Parity: parity.md
-      - Quantization: quantization.md
-  - Performance:
-      - Benchmarks: benchmarks.md
       - ggml notes: ggml-notes.md
-      - GPU notes: gpu-notes.md
-  - Accuracy:
-      - Images (Imagenette): accuracy-image.md
-      - Video (UCF-101): accuracy-video.md
+      - Fixtures & golden references: fixtures.md
+  - Appendix — raw reports:
+      - Parity: parity.md
+      - Benchmarks (raw): benchmarks.md
+      - Quantization: quantization.md
+      - Image accuracy (Imagenette): accuracy-image.md
+      - Video accuracy (UCF-101): accuracy-video.md

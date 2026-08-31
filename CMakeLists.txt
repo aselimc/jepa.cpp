@@ -15,7 +15,7 @@ option(JEPA_BUILD_TESTS "Build tests" ON)
 option(JEPA_NATIVE      "Optimize for the host CPU (-march=native)" ON)
 # OFF by default and it stays that way: libggml-cuda.so is ~45 MB for a *single* GPU architecture,
 # 30x the CPU backend, which is not something a "CPU inference in plain C/C++ on ggml" project
-# should ship by default (docs/gpu-notes.md §4.1, §6.3). Configure a CUDA build in its own dir:
+# should ship by default (docs/getting-started.md "CUDA build"). Configure a CUDA build in its own dir:
 #   cmake -S . -B build-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DJEPA_CUDA=ON
 option(JEPA_CUDA        "Build with the ggml CUDA backend (adds --gpu to the tools)" OFF)
 

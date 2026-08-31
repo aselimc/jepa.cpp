@@ -1,5 +1,8 @@
 # ggml notes: flash attention & ops for the video graph (CPU backend)
 
+*Reference notes for the ggml layer under the video graph — the engine-level view is
+[Architecture](architecture.md).*
+
 Everything here was measured with `tests/test-attn.cpp` on this box (AMD Threadripper PRO 7995WX, 96 cores /
 192 threads, AVX-512 + avx512_bf16, 250 GB RAM) against ggml `36da5713` (v0.22.0), Release, `-march=native`,
 OpenMP threading, `GGML_LLAMAFILE=OFF` (ggml's default; see §6). Re-run with

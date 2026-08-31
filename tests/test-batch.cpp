@@ -16,7 +16,8 @@
 // are reported with their measured max|delta| / worst-row cosine and gated at cosine >= 1 - 1e-6.
 //
 // `--video` does the same for the V-JEPA 2 / 2.1 clip path: two clips as n_batch = 2 against two
-// n_batch = 1 calls. That path still builds one graph per clip (docs/results.md explains why), so
+// n_batch = 1 calls. That path still builds one graph per clip (docs/architecture.md "Batching"
+// explains why), so
 // the check is a regression guard on the shared block builders, not on a batched video graph.
 //
 // Exit status 1 on any mismatch. Registered with ctest as "batch" (assets permitting).

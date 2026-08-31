@@ -1,5 +1,8 @@
 # Quantization
 
+*Raw measurement report — the curated views are [Benchmarks → Accuracy](accuracy.md) and
+[Benchmarks → Performance](performance.md).*
+
 `tools/jepa-quantize` turns an f32 / f16 jepa.cpp GGUF into a smaller one (f16, q8_0, q4_0, q4_1, q5_0, q5_1,
 q4_k, q5_k, q6_k). This page has the rule, the CLI, the file sizes and the measured accuracy of every type against
 the PyTorch references, plus a recommendation. All numbers below were produced without the C++ graph: the
@@ -307,7 +310,7 @@ unchanged, but the "quantised buys memory, not time" rule is a CPU statement: `G
 sgemm covers only F32/F16/Q8_0, so K-quants fall back to ggml's generic vec-dot there. On CUDA every
 type we ship takes `mmq`, a real INT8 tensor-core kernel, and **q4_k ties q8_0 and beats f16** — I-JEPA
 ViT-H 7.8 ms (q4_k) / 8.0 (q8_0) / 15.5 (f16) against 198 / 129 / 147 ms on 32 CPU threads. See
-`docs/results.md` "GPU (CUDA)" and `docs/parity.md` "Parity on a GPU" for the parity bars that apply
+`docs/performance.md` "Quantization and speed" and `docs/parity.md` "Parity on a GPU" for the parity bars that apply
 there (q4_k stays in the advisory low-bit tier on both backends).
 
 q4_1 / q5_1 / q5_0 / q5_k are supported for completeness (q5_k and q5_0 have the same size, as do q4_k and q4_0)

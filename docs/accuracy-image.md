@@ -1,5 +1,7 @@
 # Accuracy — image k-NN on Imagenette (PyTorch vs jepa.cpp, per dtype)
 
+*Raw measurement report — the curated view is [Benchmarks → Accuracy](accuracy.md).*
+
 `docs/parity.md` shows that the jepa.cpp graph reproduces the PyTorch encoders to 6 decimals on eight
 stored reference tensors. This page answers the question that follows from it: **does that hold up on
 a real dataset, from the real input path, and does quantisation cost accuracy?** The task is
@@ -297,7 +299,7 @@ Two different shapes are compared and the asymmetry is deliberate:
 > `tests/results/batching.json`). Only the throughput columns move, and they move a lot on the small
 > models: over 561 Imagenette val JPEGs at 32 threads, LeJEPA f16 goes 67.0 → **94.5** img/s and LeWM
 > f16 95.4 → **159.0**, while I-JEPA f16 goes 6.16 → **6.92** and q8_0 6.94 → **7.60**
-> ([results.md](results.md) has the per-batch table). LeJEPA therefore now *passes* PyTorch's 86–89;
+> ([performance.md](performance.md) has the per-batch table). LeJEPA therefore now *passes* PyTorch's 86–89;
 > LeWM is still behind at 0.77–0.84×. The rows below were not re-measured: re-running the 28-pass
 > sweep would change 28 numbers with no accuracy consequence, and the batch-1 rows remain the honest
 > record of what the tool cost before the change.
@@ -316,7 +318,7 @@ dominate. So the range across everything measured in the table is **4.8–7.1 im
 against PyTorch's 5.5, and the conclusion `docs/parity.md` draws holds: jepa.cpp is competitive where
 the matmuls dominate and lost where launch overhead did. That last half is what batching fixed —
 it is exactly the fixed cost that amortises, which is why it is worth 1.4× on LeJEPA end to end and
-1.1× on I-JEPA (see the note above and [results.md](results.md)).
+1.1× on I-JEPA (see the note above and [performance.md](performance.md)).
 
 The load conditions are measured, not asserted. Across the 28 timed passes the machine spent
 2 673 CPU-minutes out of idle and this benchmark's own process trees account for 2 651 of them,

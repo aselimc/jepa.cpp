@@ -1,101 +1,39 @@
-# jepa.cpp documentation
+# jepa.cpp
 
 jepa.cpp runs Meta's JEPA vision models — I-JEPA, V-JEPA 2, V-JEPA 2.1 — plus LeJEPA-style ViTs and
-LeWorldModel on a plain CPU, in C/C++ on [ggml](https://github.com/ggml-org/ggml), from single-file
-GGUF bundles. The [README](https://github.com/aselimc/jepa.cpp#readme) carries the pitch, the
-supported-model table and the headline numbers; this site is the depth behind it.
+LeWorldModel on a plain CPU, in C/C++ on [ggml](https://github.com/ggml-org/ggml), with an optional
+CUDA backend. Each checkpoint is converted once into a single [GGUF](gguf-schema.md) file that carries
+the weights *and* everything needed to run them — dimensions, positional-encoding scheme,
+preprocessing recipe, class labels — so at run time the requirement is one binary and one file. There
+is no Python in the inference path and no per-model C++ code: a new checkpoint of a known family is a
+converter run, because the loader builds the graph from the file's metadata.
 
-Start here:
+Six model bundles ship today: I-JEPA ViT-H/14, LeJEPA ViT-S/16, LeWorldModel Push-T, V-JEPA 2 ViT-L/16
+(encoder + masked predictor), V-JEPA 2 ViT-L SSv2 (174-class video classifier) and V-JEPA 2.1 ViT-B/16
+at 384 px (image *and* video, with a predictor for both). They expose image and video embedding, video
+classification, latent-space prediction and action-conditioned world-model rollout, through four
+command-line tools and one C header.
 
-- **[Results](results.md)** — every measured table: speed at 32/96 threads, memory, f32 exactness,
-  the Imagenette and UCF-101 k-NN accuracy studies, the SSv2 head-fidelity numbers, and the
-  dtype-recommendation table.
-- **[C API](api.md)** — the complete `include/jepa.h` reference, generated from the header itself.
+On 32 CPU threads the engine runs **1.1–1.8× faster than PyTorch** on the models where the comparison
+is like-for-like, and 2.1–2.2× on 96 threads, at half to a quarter of the memory; a CUDA build is
+9–21× faster again on one RTX 4500 Ada. Fidelity is measured rather than assumed: f32 files reproduce
+their PyTorch reference to cosine 1.000000 per token, preprocessing is bit-exact against torchvision,
+and quantized files are scored on real datasets — Imagenette k-NN within **0.13 pp** of PyTorch at
+f16 and q8_0 (0.16 pp on the parameter-free centroid metric), UCF-101 k-NN within one clip of it.
 
-## Design and formats
+## Where to go
 
-**[architecture.md](architecture.md)** — the shortest complete description of the engine: the repo
-layout, the single ViT graph all six families share, the per-family deltas (tokenizer, position scheme,
-extras), the full V-JEPA 2 / 2.1 3-D RoPE specification down to the tiled-vs-interleaved frequency
-table, and the parity protocol. Read this before touching `src/`.
+| page | what is on it |
+|---|---|
+| [Getting started](getting-started.md) | build (CPU and CUDA), one-time Python environment, download and convert every supported checkpoint, one worked example per tool, running the test suite |
+| [Architecture](architecture.md) | the shared ViT graph, the family matrix, the 3-D RoPE specification, preprocessing, attention and precision, batching, the GPU backend, the runtime switches, and the parity methodology |
+| [GGUF format](gguf-schema.md) | the file format, version 1: every metadata key, the canonical tensor names, the token order, the quantization rules |
+| [Performance](performance.md) | the speed and memory scores: CPU and CUDA encoders against PyTorch, end-to-end classification, predictors, batching, thread scaling, quantization |
+| [Accuracy](accuracy.md) | the fidelity and task scores: f32 exactness, f16/q8_0 and GPU cosines, Imagenette and UCF-101 k-NN, SSv2 head agreement, the dtype recommendation per backend |
+| [C API](api.md) | the complete `include/jepa.h` reference, generated from the header |
+| Internals | the [converter](converter.md), the [V-JEPA tensor and RoPE notes](vjepa-notes.md), the [ggml-level notes](ggml-notes.md) behind the video graph, and the [fixtures](fixtures.md) the parity tests replay |
+| Appendix | the raw measurement reports the curated pages draw from — [parity](parity.md), [benchmarks](benchmarks.md), [quantization](quantization.md), [image accuracy](accuracy-image.md), [video accuracy](accuracy-video.md) |
 
-**[gguf-schema.md](gguf-schema.md)** — the file format, version 1. Every `general.*` and `jepa.*`
-metadata key with its type and meaning, the canonical tensor names for encoder / predictor / head, the
-token order, the quantization rules, and the family-specific notes. The converter, the loader and the
-graph builder all implement exactly this document; change it here first.
-
-**[converter.md](converter.md)** — the Python side: one converter module per family, the `JepaWriter`
-helpers (sincos tables, qkv fusing, BatchNorm folding, the f16 dtype rule), and `selftest.py`, a numpy
-forward pass driven straight from a GGUF that serves as the executable spec the C++ graph must match.
-
-**[vjepa-notes.md](vjepa-notes.md)** — the V-JEPA 2 / 2.1 tensor maps and the 3-D RoPE derivation
-(tiled vs interleaved cos/sin layouts, `interpolate_rope`) cited throughout the schema, architecture
-and parity pages.
-
-**[fixtures.md](fixtures.md)** — the parity fixtures: which media files, how `dump_reference.py`
-produces the PyTorch golden `.npy` dumps, and the per-model tensor list each
-`ref/<model>/manifest.json` carries.
-
-## Correctness
-
-**[parity.md](parity.md)** — the correctness page. Per-token cosine, `rel_max`, pooled/logit agreement
-and per-item timing for every shipped GGUF × dtype, images and video, plus the predictors. Contains the
-`POLICY` threshold table `test-parity` judges with (family class × file-type tier, including the
-length-aware `REL(N)` bound), the analysis of why V-JEPA 2 ViT-L f16 tokens scatter while its pooled
-outputs do not, the flash-attention K/V dtype policy, and the preprocessing-parity table showing
-resize + crop + normalisation are bit-exact against torchvision.
-
-**[quantization.md](quantization.md)** — `tools/jepa-quantize`: which tensors are re-typed, the CLI,
-the K-quant per-tensor fallback, GGUF file sizes for all ten types, and the measured accuracy of each
-type against the PyTorch references (weight-only: the quantized GGUF is dequantized in Python and pushed
-through the numpy graph). Ends with a use-case → dtype recommendation table.
-
-## Performance
-
-**[benchmarks.md](benchmarks.md)** — every timing in the repo, from `tools/jepa-bench` on synthetic but
-deterministic input, so it reproduces without fixtures or Python. Encoder, attentive-pool head, masked
-predictor and LeWM rollout, at 32 and 96 threads, each dtype, with the PyTorch CPU baseline and its
-provenance, a memory table, a thread-scaling table, a sub-8-bit size/speed table, and a cross-check
-against parity.md's independent timings. Machine-readable twin:
-[`tests/results/benchmarks.json`](https://github.com/aselimc/jepa.cpp/blob/main/tests/results/benchmarks.json).
-
-**[ggml-notes.md](ggml-notes.md)** — the ggml-level findings the video graph needed: what
-`ggml_flash_attn_ext` wants (shapes, dtypes, which kernel runs), the block-causal mask recipe, measured
-attention accuracy and wall time, memory behaviour, this box's matmul throughput per dtype, and the
-gotchas collected on the way. Read it before adding an op.
-
-**[gpu-notes.md](gpu-notes.md)** — the optional CUDA backend (`-DJEPA_CUDA=ON`, `--gpu [N]`), both
-halves: the feasibility audit that preceded it — op-by-op kernel coverage at our exact shapes, the two
-blockers and their fixes, the TF32/F16-accumulation numerics findings, the silent-wrong-answer hazard
-that makes graph validation mandatory — and §8, the port as built and measured: **9–21× our 32-thread
-CPU engine, 38–62 % of PyTorch on the same card**, quantized weights the fastest GPU path, and the two
-open numeric questions (f16 overflow, the one-pass `ggml_norm`) closed with a dump of real activations.
-The parity consequence — there is no f32 tier on a GPU — is in [parity.md](parity.md#parity-on-a-gpu-gpu).
-
-## Accuracy on real data
-
-**[accuracy-image.md](accuracy-image.md)** — frozen-feature k-NN on Imagenette (10 classes), PyTorch vs
-jepa.cpp per dtype, for I-JEPA ViT-H/14, LeJEPA ViT-S/16 (CLS and patch-mean) and LeWM. Nothing is
-trained: the encoders are frozen and the classifier is a cosine vote over gallery features. Also carries
-the flip analysis, the JPEG-decoder floor, an end-to-end throughput table, and a graph-compute-only
-table. Machine-readable twin:
-[`tests/results/accuracy-image.json`](https://github.com/aselimc/jepa.cpp/blob/main/tests/results/accuracy-image.json).
-
-**[accuracy-video.md](accuracy-video.md)** — the same protocol on a UCF-101 subset for V-JEPA 2 ViT-L/16
-and V-JEPA 2.1 ViT-B/384, plus an SSv2-head fidelity section scoring 105 independent 174-way argmaxes
-against PyTorch's. Machine-readable twin:
-[`tests/results/accuracy-video.json`](https://github.com/aselimc/jepa.cpp/blob/main/tests/results/accuracy-video.json).
-
-The accuracy benchmarks need the datasets from `scripts/download_datasets.sh`
-(Imagenette-160 and the UCF101 subset, ~400 MB into `data/`).
-
-## Building this site
-
-```bash
-pip install -r docs/requirements.txt
-mkdocs serve          # live preview at http://127.0.0.1:8000
-```
-
-The site deploys to GitHub Pages automatically on every push to `main`
-(`.github/workflows/docs.yml`; the `api.md` page is generated from `include/jepa.h` by
-`scripts/gen_api_md.py`).
+Machine-readable twins of the measured tables live in
+[`tests/results/*.json`](https://github.com/aselimc/jepa.cpp/tree/main/tests/results): `benchmarks.json`,
+`accuracy-image.json`, `accuracy-video.json`, `batching.json`.

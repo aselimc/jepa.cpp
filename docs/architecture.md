@@ -1,106 +1,330 @@
-# jepa.cpp — architecture brief
+# Architecture
 
-Inference engine only. No training code, ever. C++17, ggml (submodule at `ggml/`), no other runtime deps.
-Scratch files go in `tmp/` (git-ignored). Weights go in `models/` (git-ignored). Python is used only for
-conversion and reference dumps (`.venv/`, created with `uv`).
+jepa.cpp is an inference engine and nothing else: C++17, ggml (submodule at `ggml/`), no other runtime
+dependency, no training code. Python appears only in conversion and reference dumping.
 
-## Layout
+## The engine in one page
+
+A model is a **GGUF bundle**: one file holding an encoder, optionally a predictor and optionally a
+head, together with the metadata that describes them — dimensions, depth, head count, patch and
+tubelet geometry, positional-encoding scheme, preprocessing recipe, class labels, licence. The
+[GGUF schema](gguf-schema.md) is the contract; the converter, the loader and the graph builder all
+implement exactly it.
+
+The graph is **built from that metadata, not from per-model code**. `jepa_model_load` reads the
+hyperparameters and the tensor table; `jepa_context_new` allocates a compute arena; `jepa_encode`
+builds a ggml graph for the requested shape and runs it on the context's backend. A new checkpoint of
+a known family therefore needs no C++ change — the converter writes the metadata and the loader picks
+the branches, which is why six models of five families share one builder.
+
+Around that sit four layers: preprocessing (pixels to a normalised tensor, host-side), the shared ViT
+graph, the optional heads, and pooling. The public surface is one C header, `include/jepa.h`
+([reference](api.md)).
+
+## The shared ViT graph
+
+Every family runs the same encoder graph:
+
+```
+tokens = patch_embed(rearranged pixels) [+ pos_embed] [+ cls/reg] [+ modality vec]
+for each block:  x += attn(ln1(x)) ;  x += ffn(ln2(x))     # pre-LN, GELU(erf), qkv bias, optional layer-scale
+x = norm(x)
+```
+
+The patch "convolution" is a host-side rearrangement of the pixels into `[N, C·T·P·P]` followed by one
+`ggml_mul_mat` — mathematically identical to the strided convolution of the reference implementations
+and far friendlier to a matmul-shaped backend. Attention always goes through `ggml_flash_attn_ext`
+unless it is explicitly disabled. Positions are added either as a baked table or as rotary factors
+applied inside the attention, depending on the family.
+
+Heads are separate graphs over the encoder output: the attentive pooler plus 174-way classifier for
+SSv2, the masked predictor for V-JEPA 2 / 2.1, and the action-conditioned predictor for LeWorldModel.
+
+## Family matrix
+
+| family | tokenizer | positions | extras |
+|---|---|---|---|
+| `ijepa` | 2-D patch 14/16 | `sincos2d` table, baked by the converter | no CLS; the feature is the mean of the patch tokens |
+| `vjepa` | 2×16×16 tubelet | `sincos3d` table | — |
+| `vjepa2` | 2×16×16 tubelet | `rope3d`, tiled layout | predictor 384-d / 12 L / 10 mask tokens; attentive-pool head |
+| `vjepa2_1` | 2×16×16 tubelet **and** 1×16×16 image embed | `rope3d`, interleaved layout, plus `interpolate_rope` | modality vectors; per-hierarchy-layer norms (inference uses the last); 8 mask tokens |
+| `hfvit` | 2-D patch | `learned`, with CLS and optional registers | DINOv2-style; optional layer-scale; the LeJEPA community checkpoint and the LeWM encoder |
+| `lewm` | `hfvit` encoder (ViT-Ti/14) | inherited from `hfvit` | predictor 192-d / 6 L over 3 frames plus an action embedding (10 → 192); BatchNorm MLPs folded at conversion |
+
+## 3-D RoPE
+
+The V-JEPA 2 and 2.1 encoders and predictors use a three-axis rotary embedding that must match
+Hugging Face's `VJEPA2RopeAttention` exactly.
+
+- Per axis, `d = 2 · ((head_dim // 3) // 2)` dimensions are rotated — 20/20/20 for `head_dim` 64, with
+  the remaining 4 dimensions untouched. The predictors have `head_dim` 32, so `d = 10` per axis.
+- Token *i* maps to `t = i // (gh·gw)`, `h = (i % (gh·gw)) // gw`, `w = i % gw`.
+- Frequencies are `omega_k = 1 / 10000**(2k/d)` for `k` in `[0, d/2)`.
+- The rotation acts on **interleaved pairs** `(x[2k], x[2k+1])`: `x·cos + rotate90(x)·sin`, where
+  `rotate90(y1, y2) = (−y2, y1)`.
+- It is applied to q and k (not v), after the qkv projection and before scaling.
+
+**Two cos/sin table layouts exist, and the family selects one** (`jepa.enc.rope_freq_layout`,
+`jepa_rope3d_params::variant`):
+
+| layout | table | used by |
+|---|---|---|
+| tiled | `table[j] = f(pos · omega_{j mod d/2})` — the two members of a pair see *different* angles | V-JEPA 2 (both the Hugging Face and the Meta implementation) |
+| interleaved | `table[2k] = table[2k+1] = f(pos · omega_k)` — a true rotation | V-JEPA 2.1 |
+
+The tiled layout is a quirk Meta's own code documents and keeps for weight compatibility. It is not
+optional and not interchangeable: applying the wrong one gives per-token cosine ≈ 0.63 against the
+V-JEPA 2 reference and ≈ 0.91 against the 2.1 reference — the graph runs, the numbers look plausible,
+and the output is wrong. The full derivation with source excerpts is in the
+[V-JEPA tensor and RoPE notes](vjepa-notes.md); the numpy reference is
+`scripts/jepa_convert/vjepa2_numpy_ref.py`.
+
+The V-JEPA 2.1 **encoder** additionally rescales `h` and `w` (not `t`) by
+`(rope_ref_grid − 1) / (grid − 1)` — `interpolate_rope`, with `rope_ref_grid = 256 / patch_size`, i.e.
+16 for the released 384-px checkpoints and *not* `img_size / patch`. Its predictor does not rescale.
+
+Implementation: ggml's `ggml_rope_multi` uses half-split rotation and a single theta scale and is
+therefore unusable here. `src/rope3d.cpp` precomputes `[N, head_dim]` cos/sin tables on the host and
+applies them with stock ops — one `ggml_roll` for the pair swap plus a multiply and an add, with the
+sign of the rotation carried in the sin table. `jepa_rope3d_tables_ids` produces rows for masked or
+subsampled token ids, which is what the predictors need. `tests/test-ops.cpp` checks both layouts
+against `tests/vectors/rope3d/`, generated by `scripts/gen_rope_ref.py`.
+
+That five-node form replaced a thirteen-node one, bit-identically, and it is a deliberate trade: it
+costs **+4.8 % on the CPU** at the ViT-L 16-frame encoder shape (790.6 → 828.3 ms) and it is what
+keeps the chain resident on a GPU. The older form emitted a `ggml_roll` over a strided view of the
+fused qkv tensor, which no CUDA kernel accepts — see the graph-validation paragraph under
+[GPU backend](#gpu-backend) for what a backend does with such a node when nothing checks.
+
+## Preprocessing
+
+`src/preprocess.cpp` turns pixels into the normalised tensor the graph expects, driven by the
+`jepa.pre.*` metadata: shortest-edge resize, centre crop, scale to `[0, 1]`, then subtract the
+per-channel mean and divide by the per-channel std. `jepa_resize_antialias_u8` is a faithful port of
+the integer antialiased path that `torchvision.transforms.v2.functional.resize(antialias=True)` runs
+on x86 CPUs, so the tensor entering the network is **bit-exact** against the reference pipeline given
+the same decoded pixels ([measured](parity.md#preprocessing-parity)).
+
+The caveat is decoding, not resizing. jepa.cpp decodes JPEGs with `stb_image`, which differs from
+PIL/libjpeg by ±1–2 levels on about 2 % of pixels. That decoder floor is `1 − cos` of 6.3e-6 to
+1.7e-5 on the final features — larger than what f16 weights add. Video frames are decoded outside the
+engine and handed in as uint8, so the video path has no decoder floor at all.
+
+## Attention and precision
+
+Attention runs through `ggml_flash_attn_ext`. The K/V dtype is **auto**: F32 K/V for f32 model files,
+F16 K/V for f16 and quantized files.
+
+- The F16 cast alone costs roughly three digits of worst-token cosine on I-JEPA ViT-H at f32
+  (0.9910 against 1.000000, `rel_max` 3.5e-2 against 8.6e-5). The cause is F16's 10-bit mantissa, not
+  its range: on the real forward the model's largest linear output is 95 and its largest residual
+  value 151, against F16's ceiling of 65504.
+- For f16 and quantized files weight rounding dominates anyway, and F16 K/V is pure storage rounding —
+  cosine ≥ 0.9999995 against a double-precision reference.
+- The attentive-pool cross-attention always uses F32 K/V: it has a single query row, so ggml takes its
+  per-row kernel, which with F16 K/V would round q and the PV accumulator to F16. At one query row it
+  costs nothing. The same reasoning applies to the LeWM predictor's short sequences.
+- `--no-flash` selects the naive `mul_mat` + `soft_max_ext` path. It is fully F32 and ~15–30 % slower
+  on ViT-H, and its score matrix is `4·N²·H` bytes — 15.3 GB at 18 432 tokens against ~0.05–0.1 GB for
+  flash, so it is a debugging and short-sequence option on the CPU.
+  **On a GPU it is more than that: it is the only F32 attention path there**, since CUDA flash
+  attention converts K/V to F16 unconditionally. Its cost scales with the sequence — 16.5 ms against
+  15.5 for I-JEPA at 256 tokens, i.e. essentially free, but 109.4 ms against 46.5 for the ViT-L
+  16-frame clip, a factor of 2.4 — so it is affordable at image scale and progressively less so
+  beyond it.
+
+Overrides: `JEPA_KV_F16` / `JEPA_KV_F32` (`--kv-f16` / `--kv-f32` in the tools).
+
+On the CUDA backend the picture differs and jepa.cpp cannot change it:
+
+| | CPU | CUDA |
+|---|---|---|
+| `mul_mat`, f32 weights | strict FP32 | **TF32** — ggml passes `CUBLAS_GEMM_DEFAULT_TENSOR_OP` to every `cublasGemmEx` and never calls `cublasSetMathMode`, and `ggml_mul_mat_set_prec` only selects the compute type |
+| `mul_mat`, f16 weights | F32 accumulation | F16 accumulation unless `GGML_PREC_F32` is set, which jepa.cpp sets by default on a GPU |
+| `flash_attn_ext` | F32 K/V honoured | K/V always converted to F16, PV accumulator `half2`; `ggml_flash_attn_ext_set_prec` is a no-op |
+| `ggml_norm` | centred two-pass variance | one-pass `E[x²] − mean²` |
+
+`GGML_PREC_F32` on every `mul_mat` is the GPU default and takes the f16 matmul error from 4.6e-03 to
+2.6e-05, i.e. below the CPU's own 3.0e-04. It is not free, and what it costs depends on how much work
+there is to hide it behind: on one matmul, **−21 % throughput at N = 2048 and +9 % at N = 8192**; end
+to end, **1.76× at I-JEPA's 256 tokens against 1.06× at 8 192**. Quantized weights never reach cuBLAS,
+so for them it costs nothing. `$JEPA_GPU_PREC=f16` opts out; on the CPU the call is a no-op. The one-pass variance is a per-row *scale* error that cosine is structurally blind to, which is
+why every GPU parity tier gates `rel_max` as well; over 1.66 M real pre-LayerNorm rows the ratio that
+governs its failure peaks at 2.72, far from the 100–2000 where it degrades.
+
+## Batching
+
+`jepa_encode` folds up to `jepa_context_max_batch()` image items (default 32, `$JEPA_MAX_BATCH`,
+`jepa-embed --batch`) into **one** graph on ggml's batch dimension: activations are `[D, N, B]`,
+attention tensors `[head_dim, n_head, N, B]`, and both `ggml_flash_attn_ext` and `ggml_mul_mat` walk
+`ne[3]` as an outer loop, so items never mix.
+
+Guarantees:
+
+- On the CPU the batched rows are **bit-identical** to the per-item path at every dtype measured
+  (`tests/test-batch`, ctest entry `batch`).
+- On CUDA batched and per-item runs agree to ~1e-7 cosine but are not bit-identical, because GEMM
+  tiling varies with the batch shape.
+
+Video is deliberately excluded. What batching buys is the fixed per-call cost, ~5 ms on the image
+models; a V-JEPA 2 clip runs 908–9 000 ms, so the saving is under 1 %, while a batched clip graph
+would multiply the largest arena in the engine. `jepa_encode` keeps a per-clip loop for video, and
+`n_batch = 2` is two calls' worth and bit-identical to two `n_batch = 1` calls
+(`tests/test-batch --video`). Inputs larger than the cap are encoded in several graphs rather than one
+giant one.
+
+## GPU backend
+
+A CUDA build (`-DJEPA_CUDA=ON`) runs the same graphs on a device. The design has three load-bearing
+properties.
+
+**One backend, never a split graph.** A context owns exactly one backend and the model's weights live
+on it; `ggml_backend_sched` is not used. Its job is to *partition* a graph, and a partitioned jepa.cpp
+graph is a defect, not a feature — one unsupported node per transformer block would shuttle the fused
+qkv tensor across PCIe four times per block. Device selection goes through the backend-agnostic ggml
+registry (`ggml_backend_load_all`, then the *N*-th device of type GPU), so no CUDA header appears in
+jepa.cpp and the same code path would light up another backend if one were built. A context whose
+device differs from its model's is rejected rather than silently split.
+
+**Graph validation is mandatory.** A single CUDA backend performs no `supports_op` check of its own:
+it dispatches every node, and a kernel handed a tensor it cannot really run returns a *wrong answer
+with no error and no warning* — an answer that can still pass an f16 cosine gate.
+`jepa_graph_validate()` therefore walks the graph before every compute and refuses the first node for
+which `ggml_backend_dev_supports_op` is false, naming it. `tests/test-backend.cpp` builds a node known
+to have that property and checks the refusal fires. `$JEPA_VALIDATE_GRAPH=0` disables the walk and is
+a debugging switch only.
+
+**The predictors take the naive attention path.** No CUDA flash-attention kernel exists for
+`head_dim` 32, which is what the V-JEPA 2 and 2.1 masked predictors have, so `src/predictor.cpp`
+selects `mul_mat + soft_max_ext` there. That path is fully F32 and stays one graph split — it is
+*more* accurate than a CUDA flash kernel would be — but it runs at roughly 3 TFLOP/s against flash's
+50–70, which is why the masked predictor gains 2.7–2.9× on a GPU where the encoder of the same
+model on the same clip gains 17.6×.
+
+Its score matrix is `4·N²·H` bytes over `n_context + n_target` rows, and that sets a hard ceiling:
+0.80 GB for the ViT-L 16-frame clip and 4.1 GB for the V-JEPA 2.1 16-frame clip both fit comfortably
+on a 24 GB card, 12.9 GB for the ViT-L 64-frame clip is tight next to the weights, and **the V-JEPA
+2.1 64-frame predictor needs ~65 GB and cannot run on this card at all** — that shape belongs on the
+CPU. The engine checks the requirement against free device memory before building and refuses with
+both sizes printed, rather than failing inside the allocator.
+
+**There is no f32 tier on a GPU.** TF32 matmuls and F16-accumulating flash attention are backend
+properties, so an f32 GGUF on CUDA behaves like its f16 file and is judged with the f16 bars. f16 and
+quantized files hold their own bars there, and quantized weights are additionally the fastest GPU
+path, because ggml's CUDA `mmq` INT8 tensor-core kernel covers every type jepa.cpp ships. Use the CPU
+when f32 exactness is the requirement.
+
+**One device per process.** `--gpu N` selects a single device; there is no tensor-parallel split
+across cards, and none is planned — splitting a ViT forward, which is one dependency chain, would
+mean a partitioned graph with peer copies per layer, the very thing the single-backend design exists
+to avoid. Two cards are two independent streams: one model and one context per device, each
+processing different items. That falls out of `--gpu N` with no engine work.
+
+**The first two calls are slower.** ggml's CUDA backend captures a CUDA graph once it has seen the
+same topology at the same tensor addresses twice in a row. jepa.cpp rebuilds its graph on every call
+but with identical topology and a reused allocator, so from the third call the encoder is one graph
+launch instead of roughly 700 kernel launches. Capture requires an unsplit graph, which is another
+reason a single backend beats a scheduler; every measurement on this site warms up twice for it.
+
+## Runtime switches
+
+| variable | tool flag | effect |
+|---|---|---|
+| `JEPA_DEVICE=cuda:N` \| `cpu` \| `N` | `--gpu [N]` | select the compute device; default CPU |
+| `JEPA_GPU_PREC=f16` | `--gpu-prec f16` (`jepa-bench`) | opt out of the default `GGML_PREC_F32` matmuls on a GPU. Bench-only and not parity-gated: read its numbers as a measured upper bound, not a shipping configuration |
+| `JEPA_VALIDATE_GRAPH=0` | — | disable the pre-compute graph validation. Debugging only — without it an unsupported node on a single CUDA backend computes a silently wrong answer |
+| `JEPA_MAX_BATCH` | `--batch B` | image items per encoder graph; default 32 |
+| `JEPA_MAX_GRAPH_MIB` | — | cap on the compute arena; larger inputs are split across graphs |
+| `JEPA_KV_F16` / `JEPA_KV_F32` | `--kv-f16` / `--kv-f32` | override the automatic flash-attention K/V dtype (CPU; on CUDA F16 is forced and the request is logged once) |
+
+`jepa_context_set_mul_mat_prec_f32(ctx, false)` is the API form of `JEPA_GPU_PREC=f16`.
+
+## Repository layout
 
 ```
 include/jepa.h        public C API (opaque handles, plain structs)
 src/jepa.cpp          model struct, GGUF load, graph build, run (encoder / predictor / head)
 src/jepa-gguf.cpp     GGUF metadata + tensor lookup helpers, hparam parsing
-src/preprocess.cpp    image/video → normalized float tensors (stb_image; bilinear/bicubic resize matching PIL/torchvision)
-src/rope3d.cpp        V-JEPA 3D RoPE: cos/sin table generation + graph application
+src/preprocess.cpp    image/video -> normalised float tensors (stb_image; resize matching PIL/torchvision)
+src/rope3d.cpp        3-D RoPE: cos/sin table generation + graph application
+src/predictor.cpp     masked predictors (V-JEPA 2 / 2.1)
+src/lewm.cpp          LeWorldModel projector and action-conditioned predictor
 src/npy.h             header-only .npy reader/writer (fixtures, tool output)
-third_party/json.hpp  nlohmann/json 3.12 (manifests, hparam dumps); stb_image*.h for image decode/resize
-tools/jepa-info       print GGUF hparams/tensors
-tools/jepa-embed      image/video → features (.npy / text)
-tools/jepa-classify   video → top-k labels (attentive-pool head)
-tools/jepa-worldmodel LeWM: image → world-model state → K-step action rollout; --ref-check against fixtures/ref
-tools/jepa-quantize   f32/f16 GGUF → q8_0 / q4_k ...
-tools/jepa-bench      timing: encoder / head / predictor / lewm-step / lewm-rollout, thread sweep, --md / --json
-tests/test-parity     load fixtures/ref/<model>/manifest.json + .npy, run model, report cosine / max-abs / top-k agreement, exit non-zero on regression
-tests/test-predictor  same for the predictors (V-JEPA 2 masked, V-JEPA 2.1 image/video modality, LeWM) against the reference encoder tokens
-tests/test-attn       flash vs naive attention: accuracy against a double-precision reference, K/V dtype policy, timing
-tests/test-ops        rope3d and friends against tests/vectors/ (from scripts/gen_rope_ref.py)
-scripts/convert.py    HF safetensors / torch.hub .pt → GGUF (docs/gguf-schema.md)
-scripts/dump_reference.py   PyTorch golden outputs for tests/fixtures/media/* → tests/fixtures/ref/<model>/{manifest.json, <sample>.<tensor>.npy}
-scripts/compare.py    python-side comparison of .npy outputs / ref dirs (cosine, max-abs, rel, top-k; non-zero exit on regression)
-scripts/knn_eval.py   the frozen-feature k-NN / nearest-centroid protocol shared by both accuracy benchmarks
-scripts/bench_all.sh + gen_benchmarks_md.py   the benchmark sweep and the generator for docs/benchmarks.md
-scripts/bench_accuracy_{image,video}.py       the Imagenette / UCF-101 accuracy sweeps → tests/results/accuracy-*.json
-docs/index.md         one paragraph per document; start here
-docs/{architecture,gguf-schema}.md            this brief and the GGUF format
-docs/{parity,quantization}.md                 measured correctness per model × dtype, and the dtype recommendation
-docs/{benchmarks,ggml-notes}.md               measured speed/memory, and the ggml-level findings behind the graph
-docs/accuracy-{image,video}.md                frozen-feature k-NN against PyTorch on real datasets
+third_party/          nlohmann/json 3.12 (manifests, hparam dumps); stb_image*.h for decode/resize
+
+tools/jepa-info       print GGUF hparams/tensors, list devices
+tools/jepa-embed      image/video -> features (.npy / text)
+tools/jepa-classify   video -> top-k labels (attentive-pool head)
+tools/jepa-worldmodel LeWM: image -> state -> K-step action rollout; --ref-check against fixtures
+tools/jepa-quantize   f32/f16 GGUF -> q8_0 / q4_k / ...
+tools/jepa-bench      timing: encoder / head / predictor / lewm-step / lewm-rollout, --md / --json
+
+tests/test-parity     replay the golden dumps: cosine / max-abs / top-k, non-zero exit on regression
+tests/test-predictor  the same for the three predictors, against the reference encoder tokens
+tests/test-batch      batched vs per-item bit-exactness
+tests/test-attn       flash vs naive attention against a double-precision reference; K/V policy; timing
+tests/test-ops        rope3d and friends against tests/vectors/
+tests/test-backend    GPU graph validation and CPU/GPU agreement; skips cleanly without a GPU
+
+scripts/convert.py          HF safetensors / torch.hub .pt -> GGUF
+scripts/dump_reference.py   PyTorch golden outputs -> tests/fixtures/ref/<model>/
+scripts/compare.py          .npy / ref-dir comparison (cosine, max-abs, rel, top-k)
+scripts/knn_eval.py         the frozen-feature k-NN protocol shared by both accuracy benchmarks
+scripts/bench_all.sh + gen_benchmarks_md.py       the benchmark sweep and its document generator
+scripts/bench_accuracy_{image,video}.py           the Imagenette / UCF-101 sweeps
 ```
 
-## The shared graph
+Scratch files go in `tmp/` and weights in `models/`; both are git-ignored.
 
-```
-tokens = patch_embed(rearranged pixels) [+ pos_embed] [+ cls/reg] [+ modality vec]
-for each block: x += attn(ln1(x)) ; x += ffn(ln2(x))         # pre-LN, GELU(erf), qkv bias, optional layer-scale
-x = norm(x)
-```
-Attention always goes through `ggml_flash_attn_ext`; K/V dtype is **auto** — F32 K/V for f32 model files
-(the F16 cast alone costs ~3 digits of worst-token cosine on I-JEPA ViT-H — not an overflow: a hook
-dump of the real forward puts its largest linear output at 95 and its largest residual value at 151,
-so the cost is mantissa, not range, see `docs/gpu-notes.md` §8),
-F16 K/V for f16/quantized files (pure storage rounding, cosine ≥ 0.9999995). Sequences reach 18k tokens;
-naive `mul_mat + soft_max_ext` would need a 15.3 GB score matrix there vs ~0.05–0.1 GB for flash (`docs/ggml-notes.md`). For tiny
-sequences (N_q < 64, e.g. the LeWM predictor) the CPU one_chunk kernel rounds q to F16 — use F32 K/V there
-(see `docs/ggml-notes.md`).
-Patch "conv" is a host-side rearrangement into `[N, C*T*P*P]` followed by one `ggml_mul_mat`.
+## Testing and parity methodology
 
-## Family deltas
+Correctness is measured against PyTorch, per model, per dtype, per backend.
 
-| family | tokenizer | positions | extras |
-|---|---|---|---|
-| `ijepa` | 2D patch 14/16 | `sincos2d` table (converter bakes it) | no CLS; features = mean of patch tokens |
-| `vjepa` | 2×16×16 tubelet | `sincos3d` table | |
-| `vjepa2` | 2×16×16 | `rope3d` (custom, see below) | predictor 384-d/12L/10 mask tokens; attentive pooler head |
-| `vjepa2_1` | 2×16×16 video **and** 1×16×16 image embed | `rope3d` + `interpolate_rope` | modality vectors; per-hier-layer norms (inference: last one); 8 mask tokens |
-| `hfvit` | 2D patch | `learned` (+CLS, optional registers) | DINOv2-style; optional layer-scale; used by community LeJEPA + LeWM encoder |
-| `lewm` | `hfvit` encoder (ViT-tiny/14) | | predictor 192-d/6L over 3 frames + action embed (10→192); BatchNorm MLPs folded at conversion |
+**Golden dumps.** `scripts/dump_reference.py --model <name>` runs the reference implementation and
+writes `tests/fixtures/ref/<name>/manifest.json` plus one float32 C-order `.npy` per tensor per
+sample: the preprocessed input (layout recorded in the manifest), `last_hidden_state`, the pooled
+feature, and where a head exists the pooler output and logits. Video samples also carry the raw
+sampled frames as uint8, so the engine's own preprocessing can be exercised from identical pixels.
+The per-model tensor lists are in [fixtures](fixtures.md).
 
-### V-JEPA 2 3D RoPE (must match HF `VJEPA2RopeAttention` exactly)
-- `d = 2 * ((head_dim // 3) // 2)` per axis (20/20/20 for head_dim 64; remaining 4 dims untouched).
-- token i → `t = i // (gh*gw)`, `h = (i % (gh*gw)) // gw`, `w = i % gw`.
-- per axis, frequencies `omega_k = 1 / 10000**(2k/d)`, k in [0, d/2).
-- rotation on **interleaved pairs** `(x[2k], x[2k+1])` : `x*cos + rotate90(x)*sin` where `rotate90(y1,y2) = (-y2, y1)`.
-- **cos/sin table layout differs per family** (`jepa.enc.rope_freq_layout`): V-JEPA 2 (HF + Meta) *tiles* the
-  d/2 frequencies, `table[j] = f(pos*omega_{j mod d/2})`, so the two halves of a pair see different angles
-  (Meta's "subtle bug", kept for checkpoint compatibility); V-JEPA 2.1 uses `repeat_interleave`,
-  `table[2k] = table[2k+1] = f(pos*omega_k)` (true rotation). Using the wrong one gives cosine 0.63 / 0.91
-  against the reference. Full derivation + code excerpts: `scripts/jepa_convert/VJEPA_NOTES.md` §4;
-  numpy reference: `scripts/jepa_convert/vjepa2_numpy_ref.py`.
-- V-JEPA 2.1 encoder additionally rescales `h, w` by `(rope_ref_grid-1)/(grid-1)` (`interpolate_rope`, ref grid 16);
-  its predictor does not. Predictor head_dim is 32 → d = 10 per axis.
-- applied to q and k (not v), after the qkv projection, before scaling.
-- ggml's `ggml_rope_multi` uses half-split rotation and one theta scale — do **not** use it. Precompute cos/sin tables `[N, head_dim]` on the host (`rope3d.cpp`) and apply with `ggml_mul` + `ggml_add` on views, or with a small custom op.
-- **Two layouts exist** (see `src/rope3d.h` for the exact math + source citations): HF / V-JEPA 2 *tile* the per-pair cos/sin over the axis chunk (`repeat(1,1,1,2)`: the two members of a pair get different frequencies — Meta's code calls it a bug kept for weight compatibility); V-JEPA 2.1 *interleaves* them (`repeat_interleave(2)`, a true rotation) and adds `interpolate_rope`, which rescales h/w (not t) as `h * (pretrained_grid - 1) / (grid_h - 1)` with `pretrained_grid = 256 / patch_size` hard-coded (16 for the released 384-px checkpoints — *not* `img_size / patch`). `jepa_rope3d_params::variant` selects the layout; `jepa_rope3d_apply` builds it from stock ops (`roll`/`mul`/`add`), and `jepa_rope3d_tables_ids` gives rows for masked/subsampled token ids (predictor). Unit test: `tests/test-ops.cpp` against `tests/vectors/rope3d/` (from `scripts/gen_rope_ref.py`).
+**Two passes per file.** `test-parity <model.gguf> <ref dir>` first feeds the **stored preprocessed
+tensor**, bypassing jepa.cpp's preprocessor, and reports per-token cosine, `rel_max` and top-1/top-5
+agreement; then it runs its own preprocessor from the stored pixels and reports the same. The first
+pass isolates the graph; the second adds the preprocessing and, for images, the JPEG-decoder floor.
 
-## Parity protocol (every phase ends with this)
-1. `scripts/dump_reference.py --model <name>` writes `tests/fixtures/ref/<name>/manifest.json` plus one float32 C-order `.npy` per tensor per sample (`<sample>.<tensor>.npy`; `frames_u8` uint8, `top5_idx` int64) containing, per fixture: preprocessed input tensor (`input`, layout stated in the manifest), `last_hidden_state`, pooled feature, and (if a head exists) logits / pooler output; video samples also carry the raw sampled frames (`frames_u8`). Schema and per-model tensor lists: `tests/fixtures/README.md`.
-2. `test-parity <model.gguf> <ref dir>` feeds the **same preprocessed tensor** (bypassing our preprocessor) and reports per-sample cosine similarity, max abs error; then runs our own preprocessor (from `frames_u8` for video) and reports the same, plus top-1/top-5 agreement for heads. `scripts/compare.py` is the Python side for ad-hoc `.npy` comparison (same metrics); its `--min-cos`/`--max-rel` are flat and do **not** implement the POLICY table.
-3. Pass thresholds are **table-driven, per model family × file-type tier** (`POLICY` in
-   `tests/test-parity.cpp`, reproduced in `docs/parity.md` "Thresholds"), because the low-cosine token
-   tail of the f16/quantized video encoders is not something the image ViTs show:
-   * image families (`ijepa`, `hfvit`, `lewm`) — f32: every token cos ≥ 0.9999 and `rel_max` ≤ REL(N);
-     f16: token-map mean ≥ 0.9999, worst ≥ 0.99, derived ≥ 0.9995; q8 tier: token-map mean ≥ 0.98,
-     derived mean ≥ 0.999 / worst row ≥ 0.98;
-   * video families (`vjepa2`, `vjepa2_1`) — f32 as above plus the median; f16: token-map median
-     ≥ 0.999, mean ≥ 0.99, derived ≥ 0.9995; q8: median ≥ 0.99, mean ≥ 0.95, derived ≥ 0.995;
-   * files below 8 bits per weight (q4/q5/q6/iq) are advisory: results printed with a "below the
-     recommended quantization for parity" note, only the derived tensors (≥ 0.99) and the top-1 label
-     gated;
-   * classifiers reproduce the reference top-1 exactly and ≥ 4 of its top-5; the own-preprocessing pass
-     keeps only the mean/median gates with no bar stricter than 0.99 and no worst-token or rel_max bound
-     at all (it carries JPEG-decoder variance on top of the model error).
-   `REL(N) = max(1e-3, 1e-3·√(N/2048))`: `rel_max` is a max-abs difference, which grows with the length
-   of the graph's reductions while the cosine does not (the 8192-token V-JEPA 2 clip sits at 1.22e-3
-   with cosine 1.000000 on every token). `tests/test-predictor.cpp` uses the image-family rows and the
-   same REL(N).
-4. Numbers get written to `docs/parity.md` (model, dtype, cosine, max-abs, top-k, time per sample on this box).
+**Thresholds are a table, not a constant.** `POLICY` in `tests/test-parity.cpp` is indexed by
+**backend × family class × file-type tier**, and `test-parity` prints the row it judged with. Family
+class matters because the long low-cosine token tail of the f16 and quantized *video* encoders is a
+property those checkpoints have and the image ViTs do not; tier comes from `general.file_type`, with
+anything below 8 bits per weight treated as advisory — reported, with only the derived tensors and the
+top-1 label gated. `tests/test-predictor.cpp` uses the image-family rows. The full tables, CPU and
+GPU, are in [parity](parity.md#thresholds-per-backend-model-family-file-type-tier).
+
+**`REL(N) = max(1e-3, 1e-3·√(N/2048))`** is the f32 `rel_max` bound. `rel_max` is a max-abs
+difference, and max|a−b| grows with the length of the reductions feeding it (~√N over N tokens) while
+the cosine does not. The 8192-token V-JEPA 2 clip measures 1.22e-3 with cosine 1.000000 on *every*
+token; a flat 1e-3 bound would call that a failure. The widened bound still sits ~40× above the
+observed f32 noise floor: perturbing one encoder weight tensor by +1 % pushes a clean 4.0e-5 run to
+2.09e-3 and fails.
+
+**Video tiers gate the median.** For f16 and quantized *video* files the token map is judged on the
+median per-token cosine rather than the worst token, because the tail is a checkpoint property that no
+implementation can remove, while the median still collapses for a real graph defect — a wrong RoPE
+layout puts *every* token at ~0.63. The strict bars live on the pooled and logit outputs, which is
+where the tail does not reach. Every f32 file keeps the hard "every token ≥ 0.9999" bar, and every
+family ships one, so each family stays anchored at a configuration with no slack.
+
+**GPU tiers gate `rel_max` in every cell**, not only at f32. A wrong `ggml_norm` variance is a per-row
+scale error, and cosine cannot see it: a relative error of 5.7 has been measured with per-row cosine
+still reading 1.0000000. The GPU bars are otherwise set just outside the worst measured fixture value,
+and two of the image-family bars are looser than their CPU counterparts, which makes the GPU image
+tier roughly half as sensitive to weight-level errors as the CPU one — the f32-on-CPU run stays the
+sensitive configuration for any real investigation.
+
+**What else the tests cover.** `test-batch` checks batched-versus-per-item bit-exactness, `test-ops`
+the RoPE tables against generated vectors, `test-attn` flash attention against a double-precision
+reference including the K/V dtype policy, and `test-backend` the GPU graph validation plus CPU/GPU
+agreement. `test-predictor` adds structural checks the reference cannot provide: causal-prefix
+equality and rollout-versus-predict identity on LeWorldModel, which are bit-exact on both backends.
+
+Results: [Accuracy](accuracy.md) for the curated view, [parity](parity.md) for every row.

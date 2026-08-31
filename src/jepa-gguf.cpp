@@ -438,7 +438,7 @@ jepa_model * jepa_model_load_ex(const char * gguf_path, const jepa_model_params 
     // tensors: ctx_meta already holds one (unallocated) ggml_tensor per GGUF tensor.
     // ggml_backend_alloc_ctx_tensors + ggml_backend_tensor_set below both dispatch through the
     // backend interface, so putting the weights on a GPU is exactly this one choice of backend
-    // (docs/gpu-notes.md §6.1.2). Every context built from this model computes on it.
+    // (docs/architecture.md "GPU backend"). Every context built from this model computes on it.
     m->device  = mp.device;
     m->dev     = mp.device >= 0 ? dev : nullptr;
     m->backend = mp.device >= 0 ? ggml_backend_dev_init(dev, nullptr) : ggml_backend_cpu_init();
