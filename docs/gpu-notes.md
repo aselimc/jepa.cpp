@@ -156,6 +156,22 @@ I-JEPA (N=256) and the small image models that costs almost nothing; for a 18 43
 score matrix is 15.3 GB and does not fit in 24 GB, so f32-parity-on-GPU is an image-model-only
 option. §6 turns this into a policy.
 
+### 1.6 LayerNorm is not fused on CUDA (RMSNorm is)
+
+`ggml-cuda.cu:3962-3980` fuses `{RMS_NORM, MUL, ADD}` and `{RMS_NORM, MUL}` into single kernels —
+the LLM shape. There is **no `{NORM, MUL, ADD}` pattern**, and ViTs use LayerNorm
+(`GGML_OP_NORM`), so `jepa_build_layer_norm`'s `norm → mul → add` stays three kernels and three
+full read/write passes over `[D, N]`.
+
+Cost at the 64-frame ViT-L shape: `[1024, 8192]` F32 is 33.5 MB, so the two extra passes are
+~134 MB of traffic per LN × 48 LNs ≈ **6.4 GB, or ~15 ms at 432 GB/s** — real but not dominant.
+At I-JEPA's 256 tokens the bytes are negligible and what matters is the 144–192 extra kernel
+launches, which the CUDA-graph capture in §6.1 absorbs.
+
+This is not a blocker and needs no jepa.cpp change; it is the most obvious **upstream** contribution
+the port would motivate (`{NORM, MUL, ADD}` next to the RMS_NORM patterns), and it would speed up
+every ViT on ggml-CUDA, not only ours.
+
 ## 2. RoPE portability plan
 
 ### 2.1 What the current apply emits
