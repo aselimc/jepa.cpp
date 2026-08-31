@@ -45,8 +45,26 @@ jepa_context * jepa_context_new(jepa_model * model, jepa_context_params params) 
     }
     ggml_backend_cpu_set_n_threads(ctx->backend, ctx->n_threads);
     ctx->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(ctx->backend));
+    // encoder batching knobs, overridable without touching the caller (JEPA_MAX_BATCH=1 = no batching)
+    if (const char * s = getenv("JEPA_MAX_BATCH")) {
+        const int v = atoi(s);
+        if (v > 0) ctx->max_batch = v;
+    }
+    if (const char * s = getenv("JEPA_MAX_GRAPH_MIB")) {
+        const long long v = atoll(s);
+        if (v > 0) ctx->max_graph_bytes = (size_t) v << 20;
+    }
     return ctx;
 }
+
+void jepa_context_set_max_batch(jepa_context * ctx, int n) {
+    if (ctx) ctx->max_batch = n > 0 ? n : 0;
+}
+int jepa_context_max_batch(const jepa_context * ctx) {
+    if (!ctx) return 0;
+    return ctx->max_batch > 0 ? ctx->max_batch : JEPA_DEFAULT_MAX_BATCH;
+}
+int jepa_context_last_batch(const jepa_context * ctx) { return ctx ? ctx->last_batch : 0; }
 
 void jepa_context_free(jepa_context * ctx) {
     if (!ctx) return;
@@ -149,27 +167,32 @@ ggml_tensor * jepa_build_mlp2(ggml_context * ctx, ggml_tensor * x,
 void jepa_build_qkv(ggml_context * ctx, ggml_tensor * x, const jepa_layer & L, int n_head, int head_dim,
                     ggml_tensor ** q, ggml_tensor ** k, ggml_tensor ** v) {
     const int64_t N = x->ne[1];
+    const int64_t B = x->ne[2];                                        // batched items (1 = one sequence)
     const int64_t inner = (int64_t) n_head * head_dim;
     if (L.qkv_w) {
-        ggml_tensor * qkv = jepa_build_linear(ctx, x, L.qkv_w, L.qkv_b);   // [3*inner, N]
+        ggml_tensor * qkv = jepa_build_linear(ctx, x, L.qkv_w, L.qkv_b);   // [3*inner, N, B]
         GGML_ASSERT(qkv->ne[0] == 3 * inner);
         const size_t es = ggml_element_size(qkv);
-        *q = ggml_view_3d(ctx, qkv, head_dim, n_head, N, head_dim * es, qkv->nb[1], 0);
-        *k = ggml_view_3d(ctx, qkv, head_dim, n_head, N, head_dim * es, qkv->nb[1], inner * es);
-        *v = ggml_view_3d(ctx, qkv, head_dim, n_head, N, head_dim * es, qkv->nb[1], 2 * inner * es);
+        // [head_dim, n_head, N, B]; for B == 1 these are byte-for-byte the old ggml_view_3d views
+        // (view_3d sets nb[3] = nb[2]*ne[2] = qkv->nb[2], which is what is passed here).
+        *q = ggml_view_4d(ctx, qkv, head_dim, n_head, N, B, head_dim * es, qkv->nb[1], qkv->nb[2], 0);
+        *k = ggml_view_4d(ctx, qkv, head_dim, n_head, N, B, head_dim * es, qkv->nb[1], qkv->nb[2], inner * es);
+        *v = ggml_view_4d(ctx, qkv, head_dim, n_head, N, B, head_dim * es, qkv->nb[1], qkv->nb[2], 2 * inner * es);
     } else {
         GGML_ASSERT(L.q_w && L.k_w && L.v_w);
-        *q = ggml_reshape_3d(ctx, jepa_build_linear(ctx, x, L.q_w, L.q_b), head_dim, n_head, N);
-        *k = ggml_reshape_3d(ctx, jepa_build_linear(ctx, x, L.k_w, L.k_b), head_dim, n_head, N);
-        *v = ggml_reshape_3d(ctx, jepa_build_linear(ctx, x, L.v_w, L.v_b), head_dim, n_head, N);
+        *q = ggml_reshape_4d(ctx, jepa_build_linear(ctx, x, L.q_w, L.q_b), head_dim, n_head, N, B);
+        *k = ggml_reshape_4d(ctx, jepa_build_linear(ctx, x, L.k_w, L.k_b), head_dim, n_head, N, B);
+        *v = ggml_reshape_4d(ctx, jepa_build_linear(ctx, x, L.v_w, L.v_b), head_dim, n_head, N, B);
     }
 }
 
 ggml_tensor * jepa_build_attention(ggml_context * ctx, ggml_tensor * q, ggml_tensor * k, ggml_tensor * v,
                                    const jepa_attn_opts & opts) {
-    const int64_t hd = q->ne[0], n_head = q->ne[1], n_q = q->ne[2];
+    const int64_t hd = q->ne[0], n_head = q->ne[1], n_q = q->ne[2], B = q->ne[3];
     const float scale = opts.scale > 0.0f ? opts.scale : 1.0f / sqrtf((float) hd);
-    // [hd, n_head, N] -> [hd, N, n_head]
+    // [hd, n_head, N, B] -> [hd, N, n_head, B]: the item index stays on ne[3], which both
+    // ggml_flash_attn_ext and ggml_mul_mat iterate as an outer batch loop — no item ever sees
+    // another item's keys (docs/ggml-notes.md §1: q/k/v [D, N, H, ne3], res [D, H, N, ne3]).
     ggml_tensor * qp = ggml_permute(ctx, q, 0, 2, 1, 3);
     ggml_tensor * kp = ggml_permute(ctx, k, 0, 2, 1, 3);
     ggml_tensor * vp = ggml_permute(ctx, v, 0, 2, 1, 3);
@@ -178,17 +201,17 @@ ggml_tensor * jepa_build_attention(ggml_context * ctx, ggml_tensor * q, ggml_ten
             kp = ggml_cast(ctx, kp, opts.kv_type);
             vp = ggml_cast(ctx, vp, opts.kv_type);
         }
-        ggml_tensor * out = ggml_flash_attn_ext(ctx, qp, kp, vp, opts.mask, scale, 0.0f, 0.0f);  // [hd, n_head, n_q]
+        ggml_tensor * out = ggml_flash_attn_ext(ctx, qp, kp, vp, opts.mask, scale, 0.0f, 0.0f);  // [hd, n_head, n_q, B]
         ggml_flash_attn_ext_set_prec(out, GGML_PREC_F32);
-        return ggml_reshape_2d(ctx, out, hd * n_head, n_q);
+        return ggml_reshape_3d(ctx, out, hd * n_head, n_q, B);
     }
     // naive: softmax(k^T q * scale) v
-    ggml_tensor * kq = ggml_mul_mat(ctx, kp, qp);                       // [n_kv, n_q, n_head]
+    ggml_tensor * kq = ggml_mul_mat(ctx, kp, qp);                       // [n_kv, n_q, n_head, B]
     kq = ggml_soft_max_ext(ctx, kq, opts.mask, scale, 0.0f);
-    ggml_tensor * vt = ggml_cont(ctx, ggml_permute(ctx, v, 1, 2, 0, 3)); // [n_kv, hd, n_head]
-    ggml_tensor * kqv = ggml_mul_mat(ctx, vt, kq);                      // [hd, n_q, n_head]
-    ggml_tensor * out = ggml_cont(ctx, ggml_permute(ctx, kqv, 0, 2, 1, 3)); // [hd, n_head, n_q]
-    return ggml_reshape_2d(ctx, out, hd * n_head, n_q);
+    ggml_tensor * vt = ggml_cont(ctx, ggml_permute(ctx, v, 1, 2, 0, 3)); // [n_kv, hd, n_head, B]
+    ggml_tensor * kqv = ggml_mul_mat(ctx, vt, kq);                      // [hd, n_q, n_head, B]
+    ggml_tensor * out = ggml_cont(ctx, ggml_permute(ctx, kqv, 0, 2, 1, 3)); // [hd, n_head, n_q, B]
+    return ggml_reshape_3d(ctx, out, hd * n_head, n_q, B);
 }
 
 ggml_tensor * jepa_build_block(ggml_context * ctx, ggml_tensor * x, const jepa_layer & L, const jepa_block_opts & opts) {
@@ -282,15 +305,22 @@ ggml_tensor * jepa_build_encoder_image(jepa_context * ctx, ggml_tensor * inp, in
     ggml_context * g = ctx->ctx_g;
     const int64_t D = e.embed_dim;
     const int64_t n_patches = (int64_t) gh * gw;
+    const int64_t B = inp->ne[2];      // items in this graph; every tensor below carries them on ne[2]
     GGML_ASSERT(inp->ne[1] == n_patches);
 
-    ggml_tensor * x = jepa_build_linear(g, inp, m->patch_embed_w, m->patch_embed_b);   // [D, N]
+    ggml_tensor * x = jepa_build_linear(g, inp, m->patch_embed_w, m->patch_embed_b);   // [D, N, B]
+    // The prefix tokens are the same vector for every item, but ggml_concat wants matching ne[2],
+    // so they are broadcast to [D, n_prefix, B] first (a copy; B == 1 keeps the old op sequence).
     if (e.n_registers > 0) {
         GGML_ASSERT(m->reg_tokens && m->reg_tokens->ne[1] == e.n_registers);
-        x = ggml_concat(g, m->reg_tokens, x, 1);
+        ggml_tensor * reg = m->reg_tokens;
+        if (B > 1) reg = ggml_repeat_4d(g, reg, D, e.n_registers, B, 1);
+        x = ggml_concat(g, reg, x, 1);
     }
     if (e.cls_token) {
-        x = ggml_concat(g, ggml_reshape_2d(g, m->cls_token, D, 1), x, 1);
+        ggml_tensor * cls = ggml_reshape_2d(g, m->cls_token, D, 1);
+        if (B > 1) cls = ggml_repeat_4d(g, cls, D, 1, B, 1);
+        x = ggml_concat(g, cls, x, 1);
     }
     if (m->pos_embed) {
         if (m->pos_embed->ne[1] != x->ne[1]) {
@@ -316,7 +346,25 @@ static size_t encoder_graph_nodes(const jepa_model * m) {
     return (size_t) m->hp.enc.n_layer * 40 + 64;
 }
 
-// One graph per (batch, frame) slice: the image families have no temporal dimension.
+// Rough peak of the ggml activation arena for one encoder graph of `n` items x `n_tokens` tokens:
+// the fused qkv (3D wide), the FFN hidden (ffn_dim) and a handful of D-wide residuals/norms alive at
+// the same time, all F32. It is a deliberate *ceiling* — the real arena reuses blocks, so measured
+// peak RSS grows by ~3.0 MiB per LeJEPA item against the 4.3 MiB predicted here, and ~11.5 MiB per
+// I-JEPA ViT-H item against 18.8 MiB. That is all a "this B is absurd" guard needs.
+static size_t encoder_graph_bytes(const jepa_model * m, int64_t n, int64_t n_tokens) {
+    const jepa_enc_hparams & e = m->hp.enc;
+    const double per_token = 3.0 * e.embed_dim + (double) e.ffn_dim + 8.0 * e.embed_dim;
+    const double bytes = (double) n * (double) n_tokens * per_token * sizeof(float);
+    return bytes >= (double) SIZE_MAX ? SIZE_MAX : (size_t) bytes;
+}
+
+// One graph for up to ctx->max_batch (batch, frame) slices. The image families have no temporal
+// dimension, so every slice is an independent sequence: it gets its own column of the ggml batch
+// dimension (ne[2] on [D, N, B] activations, ne[3] on the [head_dim, N, n_head, B] attention
+// tensors), which both ggml_mul_mat and ggml_flash_attn_ext iterate as an outer loop. No item ever
+// attends to another item's tokens, and every per-item dot product runs over exactly the same
+// values in the same order as the B == 1 graph — hence the bit-identical rows tests/test-batch.cpp
+// asserts. Output rows stay concatenated in (batch, frame) order.
 static int jepa_encode_image(jepa_context * ctx, const jepa_input * in, jepa_output * out) {
     const jepa_model * m = ctx->model;
     const jepa_enc_hparams & e = m->hp.enc;
@@ -327,39 +375,80 @@ static int jepa_encode_image(jepa_context * ctx, const jepa_input * in, jepa_out
     const int gh = in->height / e.patch_size, gw = in->width / e.patch_size;
     const int64_t n_patches = (int64_t) gh * gw;
     const int64_t n_tokens  = n_patches + (e.cls_token ? 1 : 0) + e.n_registers;
+    const int64_t D = e.embed_dim;
     const int64_t K = (int64_t) e.in_chans * e.patch_size * e.patch_size;
     const int64_t n_items = (int64_t) in->n_batch * in->n_frames;
     const size_t  plane = (size_t) in->height * in->width;
 
-    out->n_tokens = n_items * n_tokens;
-    out->dim = e.embed_dim;
-    out->data = (float *) malloc((size_t) out->n_tokens * out->dim * sizeof(float));
-    if (!out->data) return -1;
-
-    std::vector<float> chw((size_t) e.in_chans * plane), rows, res;
-    double total_ms = 0;
-    for (int64_t item = 0; item < n_items; item++) {
-        const int64_t b = item / in->n_frames, t = item % in->n_frames;
-        // gather the (b, t) slice into CHW
-        for (int c = 0; c < e.in_chans; c++) {
-            const float * src = in->data + (((size_t) b * in->n_chans + c) * in->n_frames + t) * plane;
-            memcpy(chw.data() + (size_t) c * plane, src, plane * sizeof(float));
-        }
-        jepa_patchify(chw.data(), e.in_chans, 1, in->height, in->width, e.patch_size, 1, rows, nullptr, nullptr, nullptr);
-
-        jepa_graph_begin(ctx, encoder_graph_nodes(m));
-        ggml_tensor * inp = ggml_new_tensor_2d(ctx->ctx_g, GGML_TYPE_F32, K, n_patches);
-        ggml_set_name(inp, "patches");
-        ggml_set_input(inp);
-        ggml_tensor * y = jepa_build_encoder_image(ctx, inp, gh, gw);
-        if (!y) { free(out->data); out->data = nullptr; return -1; }
-        if (jepa_graph_run(ctx, inp, rows.data(), rows.size() * sizeof(float), y, res) != 0) {
-            free(out->data); out->data = nullptr;
+    // how many items go into one graph
+    int64_t bmax = ctx->max_batch > 0 ? ctx->max_batch : JEPA_DEFAULT_MAX_BATCH;
+    if (bmax > n_items) bmax = n_items;
+    const size_t budget = ctx->max_graph_bytes ? ctx->max_graph_bytes : JEPA_DEFAULT_MAX_GRAPH_BYTES;
+    if (encoder_graph_bytes(m, bmax, n_tokens) > budget) {
+        // shrink rather than fail when a single item still fits — only a genuinely absurd request errors
+        while (bmax > 1 && encoder_graph_bytes(m, bmax, n_tokens) > budget) bmax /= 2;
+        const double mib = 1024.0 * 1024.0;
+        if (encoder_graph_bytes(m, 1, n_tokens) > budget) {
+            jepa_log("jepa: one %lld-token item of '%s' needs about %.1f MiB of graph activations, over the "
+                     "%.1f MiB limit ($JEPA_MAX_GRAPH_MIB); feed a smaller input\n",
+                     (long long) n_tokens, m->hp.name.c_str(),
+                     (double) encoder_graph_bytes(m, 1, n_tokens) / mib, (double) budget / mib);
             return -1;
         }
-        total_ms += ctx->last_compute_ms;
-        memcpy(out->data + (size_t) item * n_tokens * e.embed_dim, res.data(), res.size() * sizeof(float));
+        if (ctx->params.verbose) {
+            jepa_log("jepa: batch capped at %lld items (~%.1f MiB of graph activations, limit %.1f MiB)\n",
+                     (long long) bmax, (double) encoder_graph_bytes(m, bmax, n_tokens) / mib,
+                     (double) budget / mib);
+        }
     }
+
+    const int64_t out_rows = n_items * n_tokens;
+    if (out_rows <= 0 || (double) out_rows * (double) D * sizeof(float) >= (double) SIZE_MAX) {
+        jepa_log("jepa: %lld items x %lld tokens x %lld dims does not fit in memory\n",
+                 (long long) n_items, (long long) n_tokens, (long long) D);
+        return -1;
+    }
+    out->n_tokens = out_rows;
+    out->dim = D;
+    out->data = (float *) malloc((size_t) out_rows * (size_t) D * sizeof(float));
+    if (!out->data) {
+        jepa_log("jepa: could not allocate %.1f MiB for %lld output rows\n",
+                 (double) out_rows * (double) D * sizeof(float) / (1024.0 * 1024.0), (long long) out_rows);
+        return -1;
+    }
+
+    std::vector<float> chw((size_t) e.in_chans * plane), rows, batch_rows;
+    double total_ms = 0;
+    for (int64_t base = 0; base < n_items; base += bmax) {
+        const int64_t nb = std::min(bmax, n_items - base);
+        batch_rows.resize((size_t) nb * n_patches * K);
+        for (int64_t j = 0; j < nb; j++) {
+            const int64_t item = base + j, b = item / in->n_frames, t = item % in->n_frames;
+            // gather the (b, t) slice into CHW
+            for (int c = 0; c < e.in_chans; c++) {
+                const float * src = in->data + (((size_t) b * in->n_chans + c) * in->n_frames + t) * plane;
+                memcpy(chw.data() + (size_t) c * plane, src, plane * sizeof(float));
+            }
+            jepa_patchify(chw.data(), e.in_chans, 1, in->height, in->width, e.patch_size, 1, rows, nullptr, nullptr, nullptr);
+            memcpy(batch_rows.data() + (size_t) j * n_patches * K, rows.data(), rows.size() * sizeof(float));
+        }
+
+        jepa_graph_begin(ctx, encoder_graph_nodes(m));
+        ggml_tensor * inp = ggml_new_tensor_3d(ctx->ctx_g, GGML_TYPE_F32, K, n_patches, nb);
+        ggml_set_name(inp, "patches");
+        ggml_set_input(inp);
+        ggml_tensor * y = jepa_build_encoder_image(ctx, inp, gh, gw);   // [D, n_tokens, nb]
+        if (!y) { free(out->data); out->data = nullptr; return -1; }
+        ggml_build_forward_expand(ctx->gf, y);
+        if (!jepa_graph_alloc(ctx)) { free(out->data); out->data = nullptr; return -1; }
+        ggml_backend_tensor_set(inp, batch_rows.data(), 0, batch_rows.size() * sizeof(float));
+        if (jepa_graph_compute(ctx) != 0) { free(out->data); out->data = nullptr; return -1; }
+        total_ms += ctx->last_compute_ms;
+        // y is contiguous [D, n_tokens, nb], i.e. exactly nb * n_tokens rows of D in item order
+        ggml_backend_tensor_get(y, out->data + (size_t) base * n_tokens * D, 0,
+                                (size_t) nb * n_tokens * D * sizeof(float));
+    }
+    ctx->last_batch = (int) bmax;
     ctx->last_compute_ms = total_ms;
     return 0;
 }
@@ -514,6 +603,7 @@ static int jepa_encode_video(jepa_context * ctx, const jepa_input * in, jepa_out
         total_ms += ctx->last_compute_ms;
         ggml_backend_tensor_get(y, out->data + (size_t) b * N * D, 0, (size_t) N * D * sizeof(float));
     }
+    ctx->last_batch = 1;      // still one clip per graph, see the note in jepa_encode()
     ctx->last_compute_ms = total_ms;
     return 0;
 }
@@ -682,11 +772,16 @@ int jepa_encode(jepa_context * ctx, const jepa_input * in, jepa_output * out) {
         case JEPA_FAMILY_IJEPA:
         case JEPA_FAMILY_HFVIT:
         case JEPA_FAMILY_LEWM:
-            // every (batch, frame) slice is encoded independently, rows concatenated in that order
+            // every (batch, frame) slice is encoded independently, rows concatenated in that order;
+            // up to jepa_context_max_batch() of them share one graph (the ggml batch dimension)
             return jepa_encode_image(ctx, in, out);
         case JEPA_FAMILY_VJEPA2:
         case JEPA_FAMILY_VJEPA2_1:
-            // one graph per clip: tubelet patchify + 3-D RoPE over the whole T x H x W token grid
+            // One graph per clip: tubelet patchify + 3-D RoPE over the whole T x H x W token grid.
+            // n_batch > 1 loops here rather than sharing a graph, on purpose: batching buys the
+            // fixed per-call cost, ~5 ms on the image models, which is under 1 % of a clip's
+            // 908-9000 ms, while a batched clip graph would multiply the engine's largest arena.
+            // The loop is bit-identical to n_batch separate calls (tests/test-batch --video).
             return jepa_encode_video(ctx, in, out);
         default:
             jepa_log("jepa: jepa_encode: family '%s' is not implemented\n", m->hp.family_str.c_str());

@@ -91,7 +91,7 @@ In each case the two backends agree on 19 of the 20 nearest gallery clips and di
 
 **The SSv2 head is where q8_0 finally costs something.** f16 reaches the same 174-way argmax as PyTorch on 99.0 % of the 105 clips (logit cosine 0.999970); q8_0 drops to 94.3 % (6 clips of 105) with logit cosine 0.998922 and a largest logit error of 1.04. The PyTorch top-1 stays inside the jepa.cpp top-5 on 100.0 % of clips at both dtypes, so the ranking is intact and only near-ties at the top move. This is the sharpest measurement in the document: an argmax over 174 classes has no averaging to hide behind, unlike a pooled 1024-vector whose cosine stays at 0.9999 — which is exactly why `docs/parity.md`'s advice to prefer f16 over q8_0 for head/classifier work, and q8_0 only for pooled retrieval features, holds up on 105 real clips.
 
-**Throughput.** On the same 32 threads, per model and dtype — jepa.cpp ahead on the larger model and level with PyTorch on the smaller one: V-JEPA 2 ViT-L/16 (fpc64-256) 1.18–1.21 clips/s over f16/q8_0 against PyTorch's 0.87 (1.35–1.39x); V-JEPA 2.1 ViT-B/16 @384 1.01–1.05 clips/s over f32/f16/q8_0 against PyTorch's 1.01 (1.00–1.04x). **Neither side is charged a per-clip model load, and neither batches.** The PyTorch loop keeps one `VJEPA2Model` resident and starts its timer after `from_pretrained` returns; `build/jepa-embed-clips` mmaps the GGUF once and then walks the whole 405-clip list inside that one process (`tools/jepa-embed` *would* reload per clip, which is why the driver exists). Both do their own preprocessing per clip, and both run one clip per forward.
+**Throughput.** On the same 32 threads, per model and dtype — jepa.cpp ahead on the larger model and level with PyTorch on the smaller one: V-JEPA 2 ViT-L/16 (fpc64-256) 1.18–1.21 clips/s over f16/q8_0 against PyTorch's 0.87 (1.35–1.39x); V-JEPA 2.1 ViT-B/16 @384 1.01–1.05 clips/s over f32/f16/q8_0 against PyTorch's 1.01 (1.00–1.04x). **Neither side is charged a per-clip model load, and neither batches.** The PyTorch loop keeps one `VJEPA2Model` resident and starts its timer after `from_pretrained` returns; `jepa-embed --frames-list` mmaps the GGUF once and then walks the whole 405-clip list inside that one process. Both do their own preprocessing per clip, and both run one clip per forward: a V-JEPA 2 clip is already 2048-18432 tokens, so jepa.cpp keeps one graph per clip there and batches only the image families.
 
 The PyTorch rows pass `skip_predictor=True`. `VJEPA2Model.forward` otherwise also runs a full `VJEPA2Predictor` pass whose output this benchmark discards — an earlier version of this table timed the baseline doing it, which is not a like-for-like comparison against an encoder-only jepa.cpp graph. V-JEPA 2 ViT-L/16 (fpc64-256): 0.63 clips/s with the discarded predictor vs 0.87 without (1.39x). The encoder output is unaffected: the two runs agree bit for bit on all 405 clips.
 
@@ -110,10 +110,6 @@ export PATH=$HOME/.local/bin:$PATH
 git submodule update --init ggml
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j 32 --target jepa-embed jepa-classify jepa-info
-# batch driver (out-of-tree; see the note below)
-g++ -O2 -std=c++17 -I include -I src -I third_party -I ggml/include \
-    scripts/jepa_embed_clips.cpp build/libjepa.a -L build/ggml/src \
-    -lggml -lggml-base -lggml-cpu -Wl,-rpath,$PWD/build/ggml/src -o build/jepa-embed-clips
 
 PY=.venv/bin/python                     # torch 2.13 CPU, transformers 5.16, av, numpy
 export HF_HOME=$PWD/tmp/hf-home TORCH_HOME=$PWD/tmp OMP_NUM_THREADS=32
@@ -149,4 +145,4 @@ $B report --out-json tests/results/accuracy-video.json --out-md docs/accuracy-vi
 
 Every stage writes into `tmp/accuracy-video/` (git-ignored) and can be re-run alone; `lists` fixes the clip order once in `tmp/accuracy-video/clips.json`, which every feature `.npy` is indexed by, and `tmp/frames/index.json` records the sampled frame indices per clip.
 
-`build/jepa-embed-clips` exists because `tools/jepa-embed` takes one `--frames-npy` per process: a 405-clip sweep would re-load the weights 405 times and write 405 one-row `.npy` files. The driver links `libjepa` directly and does exactly what `jepa-embed --frames-npy F --pool mean` does per clip — same `jepa_preprocess_frames_rgb`, `jepa_encode`, `jepa_pool_mean` — verified bit-for-bit on `v_Archery_g01_c04` (both print `|x| = 48.7494`, first four components `-0.18624, -0.27707, 0.20074, -0.71871`). What `jepa-embed` is missing for this job is a `--frames-list`/multi-clip mode with one `[n_clips, D]` output.
+`jepa-embed --frames-list list.txt` walks a whole clip list in one process — one model load, one `jepa_context`, one `[n_clips, D]` `.npy` in list order, `--logits` for the attentive-pool head and `--json` for the timings. It replaced the out-of-tree `jepa-embed-clips` driver this benchmark used to need (removed); the features it writes are bit-identical to that driver's and to `jepa-embed --frames-npy F --pool mean` per clip.

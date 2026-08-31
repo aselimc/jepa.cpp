@@ -231,7 +231,17 @@ struct jepa_context {
     ggml_cgraph *       gf      = nullptr;   // current graph
     size_t              graph_max_nodes = 0;
     double              last_compute_ms = 0; // wall time of the last ggml_backend_graph_compute
+    int                 max_batch = 0;       // image items per encoder graph (0 -> JEPA_DEFAULT_MAX_BATCH)
+    int                 last_batch = 1;      // items in the graph built last (jepa_context_last_batch)
+    size_t              max_graph_bytes = 0; // refuse a batched graph bigger than this (0 -> default)
 };
+
+// Image items folded into one encoder graph unless the caller says otherwise. Measured peak-RSS
+// growth from B = 1 to B = 32 (docs/results.md): LeJEPA ViT-S/16 52 -> 148 MiB, LeWM ViT-Ti/14
+// 48 -> 107 MiB, I-JEPA ViT-H/14 f16 1230 -> 1597 MiB — i.e. ~3-11 MiB of arena per extra item.
+#define JEPA_DEFAULT_MAX_BATCH 32
+// Hard ceiling on the estimated activation bytes of one encoder graph ($JEPA_MAX_GRAPH_MIB).
+#define JEPA_DEFAULT_MAX_GRAPH_BYTES ((size_t) 8 << 30)
 
 // ---------------------------------------------------------------------------------------------
 // 4. graph builders (all tensors in ggml order: ne[0] = feature dim)
@@ -265,14 +275,17 @@ ggml_tensor * jepa_build_act(ggml_context * ctx, ggml_tensor * x, jepa_act_id ac
 // 2-layer MLP: w2(act(w1 x + b1)) + b2
 ggml_tensor * jepa_build_mlp2(ggml_context * ctx, ggml_tensor * x,
                               ggml_tensor * w1, ggml_tensor * b1, ggml_tensor * w2, ggml_tensor * b2, jepa_act_id act);
-// Multi-head attention. q: [head_dim, n_head, N_q], k/v: [head_dim, n_head, N_kv] (row-contiguous
-// views are fine). Returns [n_head*head_dim, N_q] contiguous F32.
+// Multi-head attention. q: [head_dim, n_head, N_q, B], k/v: [head_dim, n_head, N_kv, B]
+// (row-contiguous views are fine; B = ne[3] is the independent-item batch, 1 for a single sequence).
+// Returns [n_head*head_dim, N_q, B] contiguous F32 (== [n_head*head_dim, N_q] when B == 1).
 ggml_tensor * jepa_build_attention(ggml_context * ctx, ggml_tensor * q, ggml_tensor * k, ggml_tensor * v,
                                    const jepa_attn_opts & opts);
-// q/k/v projection of a block: returns the three [head_dim, n_head, N] views (fused or separate).
+// q/k/v projection of a block: returns the three [head_dim, n_head, N, B] views (fused or separate),
+// with B = x->ne[2] the batch of independent items.
 void jepa_build_qkv(ggml_context * ctx, ggml_tensor * x, const jepa_layer & L, int n_head, int head_dim,
                     ggml_tensor ** q, ggml_tensor ** k, ggml_tensor ** v);
-// Pre-LN transformer block: x += ls1*attn(ln1(x)); x += ls2*ffn(ln2(x)). x: [D, N] F32.
+// Pre-LN transformer block: x += ls1*attn(ln1(x)); x += ls2*ffn(ln2(x)). x: [D, N] or [D, N, B] F32
+// (B independent items; every op broadcasts the weights over it and attention keeps the items apart).
 ggml_tensor * jepa_build_block(ggml_context * ctx, ggml_tensor * x, const jepa_layer & L, const jepa_block_opts & opts);
 
 // ---------------------------------------------------------------------------------------------
@@ -301,8 +314,9 @@ int  jepa_graph_run(jepa_context * ctx, ggml_tensor * inp, const float * inp_dat
 int64_t jepa_patchify(const float * cthw, int C, int T, int H, int W, int patch, int tubelet,
                       std::vector<float> & rows, int * gt, int * gh, int * gw);
 
-// Build the encoder graph for one image/clip of `n_patches` patch rows already uploaded to `inp`
-// ([C*T*P*P, n_patches] F32). Returns the [D, n_tokens] output tensor (after enc.norm).
+// Build the encoder graph for B images of `n_patches` patch rows already uploaded to `inp`
+// ([C*P*P, n_patches, B] F32, B = inp->ne[2]). Returns the [D, n_tokens, B] output tensor (after
+// enc.norm) — contiguous, so its rows are the B items' token blocks back to back.
 // Only the ijepa / hfvit / lewm image families are handled here; video builders live elsewhere.
 ggml_tensor * jepa_build_encoder_image(jepa_context * ctx, ggml_tensor * inp, int gh, int gw);
 

@@ -1,0 +1,839 @@
+{
+ "task": "encoder batching: one ggml graph for B image items (jepa_encode)",
+ "generated": "2026-08-31T22:03:41+03:00",
+ "jepa_version": "0.1.0-dev",
+ "environment": {
+  "cpu": "AMD Ryzen Threadripper PRO 7995WX (96 cores / 192 threads, AVX-512)",
+  "memory_gb": 250,
+  "compiler": "gcc 13.3.0, -O3 -march=native",
+  "ggml": "36da5713 (v0.22.0), GGML_LLAMAFILE=ON, OpenMP",
+  "threads": 32,
+  "OMP_NUM_THREADS": 32,
+  "note": "every timed pass ran alone; the loadavg recorded per row is the 1-minute average at its start, so back-to-back 32-thread passes show their own predecessor's load, not foreign contention (the box had no other user)"
+ },
+ "commands": {
+  "bit_exactness": "./build/test-batch --media tests/fixtures/media --threads 8 --images 8 --image models/gguf/lejepa-vits16-pretrain-in1k-f32.gguf --image models/gguf/lewm-pusht-f32.gguf --images 4 --image models/gguf/ijepa_vith14_1k-f16.gguf --clip-frames 4 --video models/gguf/vjepa2_1-vitb-384-f16.gguf --clip A.npy --clip B.npy",
+  "image_throughput": "./build/jepa-embed -m models/gguf/<gguf> -i <561 imagenette val JPEGs> --pool <p> -o out.npy -t 32 --print-n 0 --batch <B> --time",
+  "graph": "./build/jepa-bench -m models/gguf/<gguf> --threads 32 --repeat 3 --batch <B> --json ...",
+  "clips": "./build/jepa-embed -m models/gguf/<gguf> --frames-list list.txt -o feats.npy --pool mean -t 32 --json ...",
+  "accuracy": "scripts/bench_accuracy_image.py --limit 400 --models lejepa-vits16,lewm-pusht --dtypes f32 --batch {1,32} --out tmp/measure/acc-b{1,32}.json"
+ },
+ "bit_exactness": {
+  "gate": "f32 models must match the per-item path bit for bit (rows, pooled mean, pooled cls); other file types are gated at worst-row cosine >= 1 - 1e-6",
+  "measured": "every case below reported bit-diff 0, max|d| 0, cos_min 1.000000000",
+  "cases": [
+   {
+    "model": "lejepa-vits16-pretrain-in1k",
+    "dtype": "f32",
+    "items": 8,
+    "rows": 1576,
+    "cases": [
+     "batched (max_batch 8)",
+     "chunked (max_batch 3)"
+    ],
+    "bit_diff": 0,
+    "max_abs": 0.0,
+    "cos_min": 1.0
+   },
+   {
+    "model": "lewm-pusht",
+    "dtype": "f32",
+    "items": 8,
+    "rows": 2056,
+    "cases": [
+     "batched (max_batch 8)",
+     "chunked (max_batch 3)"
+    ],
+    "bit_diff": 0,
+    "max_abs": 0.0,
+    "cos_min": 1.0
+   },
+   {
+    "model": "ijepa_vith14_1k",
+    "dtype": "f16",
+    "items": 4,
+    "rows": 1024,
+    "cases": [
+     "batched (max_batch 4)",
+     "chunked (max_batch 3)"
+    ],
+    "bit_diff": 0,
+    "max_abs": 0.0,
+    "cos_min": 1.0
+   },
+   {
+    "model": "ijepa_vith14_1k",
+    "dtype": "f16",
+    "items": 8,
+    "rows": 2048,
+    "cases": [
+     "batched (max_batch 8)",
+     "chunked (max_batch 3)"
+    ],
+    "bit_diff": 0,
+    "max_abs": 0.0,
+    "cos_min": 1.0,
+    "note": "run by hand, outside the ctest budget"
+   },
+   {
+    "model": "vjepa2_1_vitb_dist_vitG_384",
+    "dtype": "f16",
+    "items": 2,
+    "rows": 2304,
+    "cases": [
+     "n_batch=2 vs two n_batch=1 calls, 4-frame clips"
+    ],
+    "bit_diff": 0,
+    "max_abs": 0.0,
+    "cos_min": 1.0
+   },
+   {
+    "model": "vjepa2_1_vitb_dist_vitG_384",
+    "dtype": "f16",
+    "items": 2,
+    "rows": 9216,
+    "cases": [
+     "n_batch=2 vs two n_batch=1 calls, 16-frame clips"
+    ],
+    "bit_diff": 0,
+    "max_abs": 0.0,
+    "cos_min": 1.0,
+    "note": "run by hand, outside the ctest budget"
+   }
+  ],
+  "tool_level": [
+   {
+    "check": "jepa-embed --pool none over the 8 fixture JPEGs, lejepa f32: sha256 of the [1576, 384] feature matrix against the pre-batching build",
+    "modes": [
+     "--batch 1",
+     "--batch 3",
+     "--batch 8",
+     "--no-batch",
+     "JEPA_MAX_BATCH=1",
+     "default (max_batch 32, one graph)",
+     "JEPA_MAX_GRAPH_MIB=20 (split into 4 per graph)"
+    ],
+    "sha256_prefix": "b654069fb9ffdbff",
+    "identical_to_pre_batching_build": true
+   },
+   {
+    "check": "jepa-embed --frames-list vs the removed scripts/jepa_embed_clips.cpp driver",
+    "models": [
+     "vjepa2_1-vitb-384-f16",
+     "vjepa2-vitl-fpc16-256-ssv2-f16",
+     "vjepa2-vitl-fpc64-256-f16"
+    ],
+    "features_bit_identical": true,
+    "logits_bit_identical": true
+   }
+  ]
+ },
+ "image_throughput": {
+  "dataset": "imagenette2-160 val, every 7th file of the sorted list (561 JPEGs, 10 classes)",
+  "includes": "JPEG decode + preprocess + encode + one GGUF load per process",
+  "passes": 2,
+  "rows": [
+   {
+    "model": "ijepa",
+    "dtype": "f16",
+    "batch": 1,
+    "n_images": 561,
+    "wall_s": [
+     91.07,
+     91.51
+    ],
+    "img_per_s": [
+     6.16,
+     6.13
+    ],
+    "img_per_s_best": 6.16,
+    "graph_ms_per_image": 160.69,
+    "preprocess_ms_per_image": 0.52,
+    "encoder_calls": 561,
+    "loadavg_start": [
+     23.72,
+     29.72
+    ]
+   },
+   {
+    "model": "ijepa",
+    "dtype": "f16",
+    "batch": 8,
+    "n_images": 561,
+    "wall_s": [
+     81.08,
+     81.03
+    ],
+    "img_per_s": [
+     6.92,
+     6.92
+    ],
+    "img_per_s_best": 6.92,
+    "graph_ms_per_image": 142.32,
+    "preprocess_ms_per_image": 0.46,
+    "encoder_calls": 71,
+    "loadavg_start": [
+     30.22,
+     31.5
+    ]
+   },
+   {
+    "model": "ijepa",
+    "dtype": "f16",
+    "batch": 32,
+    "n_images": 561,
+    "wall_s": [
+     82.84,
+     83.5
+    ],
+    "img_per_s": [
+     6.77,
+     6.72
+    ],
+    "img_per_s_best": 6.77,
+    "graph_ms_per_image": 146.01,
+    "preprocess_ms_per_image": 0.44,
+    "encoder_calls": 18,
+    "loadavg_start": [
+     31.53,
+     31.89
+    ]
+   },
+   {
+    "model": "ijepa",
+    "dtype": "q8_0",
+    "batch": 1,
+    "n_images": 561,
+    "wall_s": [
+     81.44,
+     80.78
+    ],
+    "img_per_s": [
+     6.89,
+     6.94
+    ],
+    "img_per_s_best": 6.94,
+    "graph_ms_per_image": 141.74,
+    "preprocess_ms_per_image": 0.54,
+    "encoder_calls": 561,
+    "loadavg_start": [
+     32.14,
+     32.0
+    ]
+   },
+   {
+    "model": "ijepa",
+    "dtype": "q8_0",
+    "batch": 8,
+    "n_images": 561,
+    "wall_s": [
+     73.8,
+     74.17
+    ],
+    "img_per_s": [
+     7.6,
+     7.56
+    ],
+    "img_per_s_best": 7.6,
+    "graph_ms_per_image": 130.47,
+    "preprocess_ms_per_image": 0.47,
+    "encoder_calls": 71,
+    "loadavg_start": [
+     32.14,
+     32.0
+    ]
+   },
+   {
+    "model": "ijepa",
+    "dtype": "q8_0",
+    "batch": 32,
+    "n_images": 561,
+    "wall_s": [
+     76.54,
+     76.06
+    ],
+    "img_per_s": [
+     7.33,
+     7.38
+    ],
+    "img_per_s_best": 7.38,
+    "graph_ms_per_image": 132.7,
+    "preprocess_ms_per_image": 0.44,
+    "encoder_calls": 18,
+    "loadavg_start": [
+     32.07,
+     32.0
+    ]
+   },
+   {
+    "model": "lejepa",
+    "dtype": "f16",
+    "batch": 1,
+    "n_images": 561,
+    "wall_s": [
+     8.38,
+     8.53
+    ],
+    "img_per_s": [
+     66.97,
+     65.74
+    ],
+    "img_per_s_best": 66.97,
+    "graph_ms_per_image": 13.16,
+    "preprocess_ms_per_image": 0.83,
+    "encoder_calls": 561,
+    "loadavg_start": [
+     21.06,
+     32.02
+    ]
+   },
+   {
+    "model": "lejepa",
+    "dtype": "f16",
+    "batch": 8,
+    "n_images": 561,
+    "wall_s": [
+     5.94,
+     6.0
+    ],
+    "img_per_s": [
+     94.37,
+     93.43
+    ],
+    "img_per_s_best": 94.37,
+    "graph_ms_per_image": 8.66,
+    "preprocess_ms_per_image": 0.81,
+    "encoder_calls": 71,
+    "loadavg_start": [
+     22.89,
+     32.01
+    ]
+   },
+   {
+    "model": "lejepa",
+    "dtype": "f16",
+    "batch": 32,
+    "n_images": 561,
+    "wall_s": [
+     5.95,
+     5.94
+    ],
+    "img_per_s": [
+     94.36,
+     94.52
+    ],
+    "img_per_s_best": 94.52,
+    "graph_ms_per_image": 7.98,
+    "preprocess_ms_per_image": 0.79,
+    "encoder_calls": 18,
+    "loadavg_start": [
+     23.62,
+     32.01
+    ]
+   },
+   {
+    "model": "lewm",
+    "dtype": "f16",
+    "batch": 1,
+    "n_images": 561,
+    "wall_s": [
+     5.92,
+     5.88
+    ],
+    "img_per_s": [
+     94.77,
+     95.44
+    ],
+    "img_per_s_best": 95.44,
+    "graph_ms_per_image": 9.28,
+    "preprocess_ms_per_image": 0.44,
+    "encoder_calls": 561,
+    "loadavg_start": [
+     24.29,
+     32.01
+    ]
+   },
+   {
+    "model": "lewm",
+    "dtype": "f16",
+    "batch": 8,
+    "n_images": 561,
+    "wall_s": [
+     3.81,
+     3.78
+    ],
+    "img_per_s": [
+     147.25,
+     148.51
+    ],
+    "img_per_s_best": 148.51,
+    "graph_ms_per_image": 5.0,
+    "preprocess_ms_per_image": 0.45,
+    "encoder_calls": 71,
+    "loadavg_start": [
+     24.91,
+     32.01
+    ]
+   },
+   {
+    "model": "lewm",
+    "dtype": "f16",
+    "batch": 32,
+    "n_images": 561,
+    "wall_s": [
+     3.55,
+     3.53
+    ],
+    "img_per_s": [
+     158.03,
+     158.96
+    ],
+    "img_per_s_best": 158.96,
+    "graph_ms_per_image": 4.52,
+    "preprocess_ms_per_image": 0.43,
+    "encoder_calls": 18,
+    "loadavg_start": [
+     23.0,
+     29.53
+    ]
+   }
+  ],
+  "pytorch_baseline_batch32": {
+   "source": "docs/accuracy-image.md (torch 2.13.0+cpu, 32 threads, model load excluded)",
+   "lejepa-vits16": [
+    86.4,
+    89.15
+   ],
+   "lewm-pusht": [
+    189.66,
+    206.16
+   ],
+   "ijepa-vith14-1k": [
+    5.45,
+    5.51
+   ]
+  }
+ },
+ "graph_only": {
+  "note": "jepa-bench: ggml_backend_graph_compute wall time on synthetic input, no decode",
+  "rows": [
+   {
+    "model": "ijepa_vith14_1k",
+    "dtype": "f16",
+    "shape": "224x224",
+    "batch": 1,
+    "threads": 32,
+    "ms_mean": 148.77,
+    "ms_per_item": 148.77,
+    "tokens": 256,
+    "tokens_per_s": 1721,
+    "peak_rss_mib": 1229.6,
+    "weights_mib": 1206.2
+   },
+   {
+    "model": "ijepa_vith14_1k",
+    "dtype": "f16",
+    "shape": "224x224 x32",
+    "batch": 32,
+    "threads": 32,
+    "ms_mean": 4489.64,
+    "ms_per_item": 140.3,
+    "tokens": 8192,
+    "tokens_per_s": 1825,
+    "peak_rss_mib": 1597.4,
+    "weights_mib": 1206.2
+   },
+   {
+    "model": "ijepa_vith14_1k",
+    "dtype": "f16",
+    "shape": "224x224 x8",
+    "batch": 8,
+    "threads": 32,
+    "ms_mean": 1102.89,
+    "ms_per_item": 137.86,
+    "tokens": 2048,
+    "tokens_per_s": 1857,
+    "peak_rss_mib": 1290.6,
+    "weights_mib": 1206.2
+   },
+   {
+    "model": "ijepa_vith14_1k",
+    "dtype": "q8_0",
+    "shape": "224x224",
+    "batch": 1,
+    "threads": 32,
+    "ms_mean": 139.42,
+    "ms_per_item": 139.42,
+    "tokens": 256,
+    "tokens_per_s": 1836,
+    "peak_rss_mib": 658.8,
+    "weights_mib": 643.7
+   },
+   {
+    "model": "ijepa_vith14_1k",
+    "dtype": "q8_0",
+    "shape": "224x224 x32",
+    "batch": 32,
+    "threads": 32,
+    "ms_mean": 4153.81,
+    "ms_per_item": 129.81,
+    "tokens": 8192,
+    "tokens_per_s": 1972,
+    "peak_rss_mib": 993.2,
+    "weights_mib": 643.7
+   },
+   {
+    "model": "ijepa_vith14_1k",
+    "dtype": "q8_0",
+    "shape": "224x224 x8",
+    "batch": 8,
+    "threads": 32,
+    "ms_mean": 1037.96,
+    "ms_per_item": 129.75,
+    "tokens": 2048,
+    "tokens_per_s": 1973,
+    "peak_rss_mib": 717.0,
+    "weights_mib": 643.7
+   },
+   {
+    "model": "lejepa-vits16-pretrain-in1k",
+    "dtype": "f16",
+    "shape": "224x224",
+    "batch": 1,
+    "threads": 32,
+    "ms_mean": 12.64,
+    "ms_per_item": 12.64,
+    "tokens": 197,
+    "tokens_per_s": 15581,
+    "peak_rss_mib": 52.2,
+    "weights_mib": 42.1
+   },
+   {
+    "model": "lejepa-vits16-pretrain-in1k",
+    "dtype": "f16",
+    "shape": "224x224 x32",
+    "batch": 32,
+    "threads": 32,
+    "ms_mean": 236.25,
+    "ms_per_item": 7.38,
+    "tokens": 6304,
+    "tokens_per_s": 26684,
+    "peak_rss_mib": 148.1,
+    "weights_mib": 42.1
+   },
+   {
+    "model": "lejepa-vits16-pretrain-in1k",
+    "dtype": "f16",
+    "shape": "224x224 x8",
+    "batch": 8,
+    "threads": 32,
+    "ms_mean": 64.42,
+    "ms_per_item": 8.05,
+    "tokens": 1576,
+    "tokens_per_s": 24466,
+    "peak_rss_mib": 64.6,
+    "weights_mib": 42.1
+   },
+   {
+    "model": "lewm-pusht",
+    "dtype": "f16",
+    "shape": "224x224",
+    "batch": 1,
+    "threads": 32,
+    "ms_mean": 9.69,
+    "ms_per_item": 9.69,
+    "tokens": 257,
+    "tokens_per_s": 26526,
+    "peak_rss_mib": 47.7,
+    "weights_mib": 37.6
+   },
+   {
+    "model": "lewm-pusht",
+    "dtype": "f16",
+    "shape": "224x224 x32",
+    "batch": 32,
+    "threads": 32,
+    "ms_mean": 139.7,
+    "ms_per_item": 4.37,
+    "tokens": 8224,
+    "tokens_per_s": 58870,
+    "peak_rss_mib": 106.6,
+    "weights_mib": 37.6
+   },
+   {
+    "model": "lewm-pusht",
+    "dtype": "f16",
+    "shape": "224x224 x8",
+    "batch": 8,
+    "threads": 32,
+    "ms_mean": 38.13,
+    "ms_per_item": 4.77,
+    "tokens": 2056,
+    "tokens_per_s": 53920,
+    "peak_rss_mib": 60.2,
+    "weights_mib": 37.6
+   },
+   {
+    "model": "vjepa2_1_vitb_dist_vitG_384",
+    "dtype": "f16",
+    "shape": "16f 384x384",
+    "batch": 1,
+    "threads": 32,
+    "ms_mean": 908.26,
+    "ms_per_item": 908.26,
+    "tokens": 4608,
+    "tokens_per_s": 5073,
+    "peak_rss_mib": 380.1,
+    "weights_mib": 209.6
+   },
+   {
+    "model": "vjepa2_1_vitb_dist_vitG_384",
+    "dtype": "f16",
+    "shape": "16f 384x384 x2",
+    "batch": 2,
+    "threads": 32,
+    "ms_mean": 1831.9,
+    "ms_per_item": 915.95,
+    "tokens": 9216,
+    "tokens_per_s": 5031,
+    "peak_rss_mib": 418.1,
+    "weights_mib": 209.6
+   }
+  ]
+ },
+ "clips": {
+  "note": "--frames-list over the repository's reference clips; the video families still build one graph per clip, so this measures the driver replacement, not batching",
+  "rows": [
+   {
+    "model": "vjepa2-vitl-fpc64-256-f16",
+    "n_clips": 4,
+    "threads": 32,
+    "wall_s": 15.5,
+    "clips_per_s": 0.258,
+    "encode_s": 14.95,
+    "preprocess_s": 0.488,
+    "model_load_s": 0.27
+   },
+   {
+    "model": "vjepa2_1-vitb-384-f16",
+    "n_clips": 2,
+    "threads": 32,
+    "wall_s": 2.19,
+    "clips_per_s": 0.911,
+    "encode_s": 2.06,
+    "preprocess_s": 0.09,
+    "model_load_s": 0.1
+   },
+   {
+    "model": "vjepa2-vitl-fpc16-256-ssv2-f16",
+    "n_clips": 2,
+    "threads": 32,
+    "wall_s": 1.87,
+    "clips_per_s": 1.069,
+    "encode_s": 1.8,
+    "preprocess_s": 0.051,
+    "model_load_s": 0.34
+   },
+   {
+    "model": "vjepa2-vitl-fpc64-256-f16",
+    "n_clips": 4,
+    "threads": 32,
+    "wall_s": 15.53,
+    "clips_per_s": 0.258,
+    "tool": "jepa-embed-clips (removed driver, reference)"
+   },
+   {
+    "model": "vjepa2_1-vitb-384-f16",
+    "n_clips": 2,
+    "threads": 32,
+    "wall_s": 2.19,
+    "clips_per_s": 0.914,
+    "tool": "jepa-embed-clips (removed driver, reference)"
+   }
+  ]
+ },
+ "accuracy_unchanged": {
+  "note": "scripts/bench_accuracy_image.py --limit 400, LeJEPA + LeWM at f32, run once with --batch 1 and once with --batch 32; the cpp feature cache was deleted in between",
+  "payload_identical": true,
+  "rows_batch1": [
+   {
+    "model": "lejepa-vits16",
+    "backend": "pytorch",
+    "dtype": "f32",
+    "feature": "cls",
+    "gallery": "train2000",
+    "n_gallery": 200,
+    "n_query": 400,
+    "knn_top1": 0.8925,
+    "centroid_top1": 0.85,
+    "agreement": 1.0,
+    "feat_cos_mean": 1.0,
+    "feat_cos_min": 1.0,
+    "margin_all_median": 0.19198918342590332
+   },
+   {
+    "model": "lejepa-vits16",
+    "backend": "jepa.cpp",
+    "dtype": "f32",
+    "feature": "cls",
+    "gallery": "train2000",
+    "n_gallery": 200,
+    "n_query": 400,
+    "knn_top1": 0.8925,
+    "centroid_top1": 0.85,
+    "agreement": 1.0,
+    "feat_cos_mean": 0.9999836802635462,
+    "feat_cos_min": 0.9999171927316779,
+    "margin_all_median": 0.19198918342590332
+   },
+   {
+    "model": "lejepa-vits16",
+    "backend": "pytorch",
+    "dtype": "f32",
+    "feature": "cls",
+    "gallery": "train_full",
+    "n_gallery": 400,
+    "n_query": 400,
+    "knn_top1": 0.9025,
+    "centroid_top1": 0.8625,
+    "agreement": 1.0,
+    "feat_cos_mean": 1.0,
+    "feat_cos_min": 1.0,
+    "margin_all_median": 0.182869553565979
+   },
+   {
+    "model": "lejepa-vits16",
+    "backend": "jepa.cpp",
+    "dtype": "f32",
+    "feature": "cls",
+    "gallery": "train_full",
+    "n_gallery": 400,
+    "n_query": 400,
+    "knn_top1": 0.905,
+    "centroid_top1": 0.865,
+    "agreement": 0.9975,
+    "feat_cos_mean": 0.9999836802635462,
+    "feat_cos_min": 0.9999171927316779,
+    "margin_all_median": 0.182869553565979
+   },
+   {
+    "model": "lejepa-vits16",
+    "backend": "pytorch",
+    "dtype": "f32",
+    "feature": "mean",
+    "gallery": "train2000",
+    "n_gallery": 200,
+    "n_query": 400,
+    "knn_top1": 0.84,
+    "centroid_top1": 0.845,
+    "agreement": 1.0,
+    "feat_cos_mean": 1.0,
+    "feat_cos_min": 1.0,
+    "margin_all_median": 0.05811008810997009
+   },
+   {
+    "model": "lejepa-vits16",
+    "backend": "jepa.cpp",
+    "dtype": "f32",
+    "feature": "mean",
+    "gallery": "train2000",
+    "n_gallery": 200,
+    "n_query": 400,
+    "knn_top1": 0.84,
+    "centroid_top1": 0.845,
+    "agreement": 1.0,
+    "feat_cos_mean": 0.999988033409832,
+    "feat_cos_min": 0.999922497153424,
+    "margin_all_median": 0.05811008810997009
+   },
+   {
+    "model": "lejepa-vits16",
+    "backend": "pytorch",
+    "dtype": "f32",
+    "feature": "mean",
+    "gallery": "train_full",
+    "n_gallery": 400,
+    "n_query": 400,
+    "knn_top1": 0.845,
+    "centroid_top1": 0.845,
+    "agreement": 1.0,
+    "feat_cos_mean": 1.0,
+    "feat_cos_min": 1.0,
+    "margin_all_median": 0.05423092842102051
+   },
+   {
+    "model": "lejepa-vits16",
+    "backend": "jepa.cpp",
+    "dtype": "f32",
+    "feature": "mean",
+    "gallery": "train_full",
+    "n_gallery": 400,
+    "n_query": 400,
+    "knn_top1": 0.845,
+    "centroid_top1": 0.845,
+    "agreement": 0.995,
+    "feat_cos_mean": 0.999988033409832,
+    "feat_cos_min": 0.999922497153424,
+    "margin_all_median": 0.05423092842102051
+   },
+   {
+    "model": "lewm-pusht",
+    "backend": "pytorch",
+    "dtype": "f32",
+    "feature": "emb",
+    "gallery": "train2000",
+    "n_gallery": 200,
+    "n_query": 400,
+    "knn_top1": 0.195,
+    "centroid_top1": 0.15,
+    "agreement": 1.0,
+    "feat_cos_mean": 1.0,
+    "feat_cos_min": 1.0,
+    "margin_all_median": 0.017705857753753662
+   },
+   {
+    "model": "lewm-pusht",
+    "backend": "jepa.cpp",
+    "dtype": "f32",
+    "feature": "emb",
+    "gallery": "train2000",
+    "n_gallery": 200,
+    "n_query": 400,
+    "knn_top1": 0.1925,
+    "centroid_top1": 0.15,
+    "agreement": 0.9925,
+    "feat_cos_mean": 0.9999936823037112,
+    "feat_cos_min": 0.9999171688578365,
+    "margin_all_median": 0.017705857753753662
+   }
+  ],
+  "img_per_s_batch1": {
+   "torch|lejepa-vits16|f32|train_full": 92.05,
+   "torch|lejepa-vits16|f32|val": 93.98,
+   "torch|lewm-pusht|f32|train2000": 199.24,
+   "torch|lewm-pusht|f32|val1000": 210.7,
+   "cpp|lejepa-vits16|f32|train_full": 67.99,
+   "cpp|lejepa-vits16|f32|val": 67.91,
+   "cpp|lewm-pusht|f32|train2000": 94.83,
+   "cpp|lewm-pusht|f32|val1000": 95.9
+  },
+  "img_per_s_batch32": {
+   "torch|lejepa-vits16|f32|train_full": 92.05,
+   "torch|lejepa-vits16|f32|val": 93.98,
+   "torch|lewm-pusht|f32|train2000": 199.24,
+   "torch|lewm-pusht|f32|val1000": 210.7,
+   "cpp|lejepa-vits16|f32|train_full": 96.48,
+   "cpp|lejepa-vits16|f32|val": 96.27,
+   "cpp|lewm-pusht|f32|train2000": 162.89,
+   "cpp|lewm-pusht|f32|val1000": 167.75
+  }
+ },
+ "switches": {
+  "jepa_context_set_max_batch(ctx, n)": "n <= 0 restores the default, n == 1 is the per-item path",
+  "JEPA_MAX_BATCH": "read at jepa_context_new; an explicit set_max_batch / --batch overrides it",
+  "JEPA_MAX_GRAPH_MIB": "ceiling on the estimated activation bytes of one encoder graph (default 8192); the batch is halved until it fits, and a single item that still does not fit is a clear error",
+  "jepa-embed": "--batch B / --no-batch; --time prints '<N> per graph' when a call was split",
+  "jepa-bench": "--batch B raises max_batch to B so the whole batch really is one graph",
+  "estimator_vs_measured_arena": "the estimate is a ceiling: 4.3 MiB per LeJEPA item against a measured arena growth of ~3.0 MiB per item (peak RSS 52 -> 148 MiB from B=1 to B=32)"
+ }
+}

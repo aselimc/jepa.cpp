@@ -33,10 +33,12 @@ Feature per model (its own convention):
   lewm-pusht       emb = enc.proj(CLS), the world-model state              (--pool lewm)  [sanity row]
 
 Throughput is end-to-end wall time over a whole split (JPEG decode + preprocess + encode): PyTorch
-runs batch 32 with the model loaded once and the load excluded, jepa-embed encodes ONE image per
-call inside a process that is handed a chunk of 512 images and reloads the GGUF once per chunk (that
-load IS in the number).  The asymmetry is deliberate -- it is what each backend's normal path costs
--- and is reported as such.
+runs batch 32 with the model loaded once and the load excluded, jepa-embed runs `--batch` images
+(default 32, the same as PyTorch) through one encoder graph inside a process that is handed a chunk
+of 512 images and reloads the GGUF once per chunk (that load IS in the number).  The remaining
+asymmetry -- the per-chunk model load -- is deliberate: it is what the tool's normal path costs.
+Batching changes only the throughput columns; the features are bit-identical to `--batch 1`
+(tests/test-batch.cpp), so every accuracy number in this file is unaffected by it.
 """
 from __future__ import annotations
 
@@ -302,7 +304,7 @@ def run_torch(name: str, paths: list[str], out_prefix: Path, models_dir: Path, t
 # jepa.cpp feature extraction
 # --------------------------------------------------------------------------------------------------
 def run_cpp(name: str, dtype: str, paths: list[str], out_prefix: Path, root: Path, gguf_dir: Path,
-            threads: int, chunk: int, log: Path) -> dict:
+            threads: int, chunk: int, log: Path, batch: int = 32) -> dict:
     cfg = MODELS[name]
     gguf = gguf_dir / cfg["gguf"].format(dtype=dtype)
     if not gguf.exists():
@@ -321,7 +323,8 @@ def run_cpp(name: str, dtype: str, paths: list[str], out_prefix: Path, root: Pat
             cmd = [str(embed), "-m", str(gguf)]
             for p in part:
                 cmd += ["-i", p]
-            cmd += ["--pool", cfg["pool"], "-o", str(cpath), "-t", str(threads), "--print-n", "0"]
+            cmd += ["--pool", cfg["pool"], "-o", str(cpath), "-t", str(threads), "--print-n", "0",
+                    "--batch", str(batch)]
             t0 = time.time()
             r = subprocess.run(cmd, stdout=lf, stderr=lf)
             wall += time.time() - t0
@@ -344,6 +347,7 @@ def run_cpp(name: str, dtype: str, paths: list[str], out_prefix: Path, root: Pat
     # per chunk; that is the number a user would see running the tool, so it is the one reported.
     return {"n": len(paths), "wall_s": wall, "img_per_s": len(paths) / wall,
             "chunk": chunk, "n_chunks": (len(paths) + chunk - 1) // chunk, "gguf": gguf.name,
+            "batch": batch,
             "loadavg_start": la0, "loadavg_end": loadavg(), "occupancy": occ.close()}
 
 
@@ -369,8 +373,9 @@ def run_graph_time(name: str, dtype: str, paths: list[str], root: Path, gguf_dir
     cmd = [str(root / "build" / "jepa-embed"), "-m", str(gguf)]
     for q in paths:
         cmd += ["-i", q]
+    # --batch 1: this stage reports the graph cost of ONE image, so it must not be a batched graph
     cmd += ["--pool", cfg["pool"], "-t", str(threads), "--time", "--repeat", str(repeat),
-            "--print-n", "0"]
+            "--print-n", "0", "--batch", "1"]
     la0, occ = loadavg(), Occupancy()
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
@@ -432,6 +437,9 @@ def main() -> None:
     ap.add_argument("--models", default=",".join(MODELS))
     ap.add_argument("--dtypes", default="", help="restrict the cpp dtypes (comma separated)")
     ap.add_argument("--threads", type=int, default=32)
+    ap.add_argument("--batch", type=int, default=32,
+                    help="cpp stage: images per jepa-embed encoder graph (default 32, PyTorch's batch; "
+                         "features are bit-identical for any value, only throughput changes)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--per-class", type=int, default=200)
     ap.add_argument("--val-per-class", type=int, default=100)
@@ -514,7 +522,7 @@ def main() -> None:
                         print(f"skip cpp {m} {dt} {sp} (cached, {len(splits[sp]['paths'])} rows)")
                         continue
                     t = run_cpp(m, dt, splits[sp]["paths"], pre, root, a.gguf_dir, a.threads,
-                                cfg["chunk"], root / "tmp" / "logs" / f"{m}.{dt}.{sp}.log")
+                                cfg["chunk"], root / "tmp" / "logs" / f"{m}.{dt}.{sp}.log", a.batch)
                     timing[f"cpp|{m}|{dt}|{sp}"] = t
                     timing_path.write_text(json.dumps(timing, indent=1))
                     print(f"cpp {m} {dt} {sp}: {t['wall_s']:.1f} s, {t['img_per_s']:.2f} img/s", flush=True)

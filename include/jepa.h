@@ -209,6 +209,24 @@ int jepa_lewm_predict(jepa_context * ctx, const float * embs, const float * acti
 int jepa_lewm_rollout(jepa_context * ctx, const float * embs, int n_seed,
                       const float * actions, int n_steps, float * out);
 
+// ======================================================================================
+// APPEND-ONLY: encoder batching (src/jepa.cpp).
+// ======================================================================================
+
+// How many image items (`n_batch * n_frames` slices of one jepa_input) the encoder folds into ONE
+// ggml graph. The items stay independent — they live on the graph's batch dimension, so attention
+// never mixes them — and the output rows are the same, in the same (batch, frame) order, as the
+// one-graph-per-item path; f32 is bit-identical (tests/test-batch.cpp gates this).
+// Only the image families (ijepa / hfvit / lewm) batch; V-JEPA 2 / 2.1 still run one clip per graph.
+//   n <= 0 : restore the default (32, or $JEPA_MAX_BATCH when the context was created)
+//   n == 1 : the old per-item path — the debug switch (`jepa-embed --no-batch`, `JEPA_MAX_BATCH=1`)
+// Inputs larger than n are encoded in ceil(n_items / n) graphs, so this caps memory, not batch size.
+void jepa_context_set_max_batch(jepa_context * ctx, int n);
+int  jepa_context_max_batch(const jepa_context * ctx);
+// Items in the last graph the encoder built (1 unless batching kicked in) — for tools that report
+// per-item timings from jepa_context_last_compute_ms().
+int  jepa_context_last_batch(const jepa_context * ctx);
+
 #ifdef __cplusplus
 }
 #endif
