@@ -348,8 +348,9 @@ static size_t encoder_graph_nodes(const jepa_model * m) {
 
 // Rough peak of the ggml activation arena for one encoder graph of `n` items x `n_tokens` tokens:
 // the fused qkv (3D wide), the FFN hidden (ffn_dim) and a handful of D-wide residuals/norms alive at
-// the same time, all F32. Measured against ggml_gallocr_get_buffer_size() it is within ~2x (it is a
-// ceiling on the real arena, which reuses blocks), which is all a "this B is absurd" guard needs.
+// the same time, all F32. It is a deliberate *ceiling* — the real arena reuses blocks, so measured
+// peak RSS grows by ~3.0 MiB per LeJEPA item against the 4.3 MiB predicted here, and ~11.5 MiB per
+// I-JEPA ViT-H item against 18.8 MiB. That is all a "this B is absurd" guard needs.
 static size_t encoder_graph_bytes(const jepa_model * m, int64_t n, int64_t n_tokens) {
     const jepa_enc_hparams & e = m->hp.enc;
     const double per_token = 3.0 * e.embed_dim + (double) e.ffn_dim + 8.0 * e.embed_dim;

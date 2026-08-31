@@ -236,8 +236,9 @@ struct jepa_context {
     size_t              max_graph_bytes = 0; // refuse a batched graph bigger than this (0 -> default)
 };
 
-// Image items folded into one encoder graph unless the caller says otherwise. 32 x LeJEPA ViT-S/16
-// costs ~0.2 GiB of ggml activations, 32 x I-JEPA ViT-H/14 ~1.7 GiB (docs/results.md).
+// Image items folded into one encoder graph unless the caller says otherwise. Measured peak-RSS
+// growth from B = 1 to B = 32 (docs/results.md): LeJEPA ViT-S/16 52 -> 148 MiB, LeWM ViT-Ti/14
+// 48 -> 107 MiB, I-JEPA ViT-H/14 f16 1230 -> 1597 MiB — i.e. ~3-11 MiB of arena per extra item.
 #define JEPA_DEFAULT_MAX_BATCH 32
 // Hard ceiling on the estimated activation bytes of one encoder graph ($JEPA_MAX_GRAPH_MIB).
 #define JEPA_DEFAULT_MAX_GRAPH_BYTES ((size_t) 8 << 30)
