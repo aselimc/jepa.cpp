@@ -604,6 +604,19 @@ def _dtype_clock(p: dict) -> str:
     return "; ".join(out)
 
 
+def _fastest(p: dict) -> str:
+    """The fastest-to-slowest spread within each model, which is the point: dropping from f32 to
+    q8_0 shrinks the file by ~2x and moves the clock by a couple of percent."""
+    out = []
+    for m in p["models"].values():
+        r = [b["stats"]["clips_per_s"] for dt, b in m["backends"].items()
+             if dt != "torch" and b["stats"].get("clips_per_s")]
+        if len(r) > 1:
+            out.append(f"{100 * (max(r) / min(r) - 1):.0f} % on {m['label']}")
+    return (" — fastest to slowest is " + " and ".join(out) + ", against file sizes that differ "
+            "by ~2x.") if out else "."
+
+
 def render_md(p: dict, cj: dict) -> str:
     L = []
     A = L.append
@@ -768,14 +781,23 @@ def render_md(p: dict, cj: dict) -> str:
     sp = []
     for name, m in p["models"].items():
         bs = m["backends"]
-        if "torch" in bs and bs["torch"]["stats"].get("clips_per_s"):
-            best = max((b["stats"]["clips_per_s"], dt) for dt, b in bs.items()
-                       if dt != "torch" and b["stats"].get("clips_per_s"))
-            sp.append((m["label"], best[0], best[1], bs["torch"]["stats"]["clips_per_s"]))
+        t = (bs.get("torch") or {}).get("stats", {}).get("clips_per_s")
+        cs = [(dt, b["stats"]["clips_per_s"]) for dt, b in bs.items()
+              if dt != "torch" and b["stats"].get("clips_per_s")]
+        if t and cs:
+            sp.append((m["label"], t, cs))
     if sp:
-        A("**Throughput.** jepa.cpp is faster than PyTorch on the same 32 threads in every configuration "
-          "measured here: " + "; ".join(f"{lbl} {c:.2f} clips/s at {dt} vs {t:.2f} ({c/t:.2f}x)"
-                                        for lbl, c, dt, t in sp)
+        # The direction of the comparison is read off the measurements, never asserted — and a
+        # ratio inside +-5 % is reported as a tie, because that is all this measurement resolves.
+        faster = all(min(c for _, c in cs) / t >= 1.05 for _, t, cs in sp)
+        lead = ("**Throughput.** jepa.cpp is faster than PyTorch on the same 32 threads in every "
+                "configuration measured here: " if faster else
+                "**Throughput.** On the same 32 threads, per model and dtype — jepa.cpp ahead on "
+                "the larger model and level with PyTorch on the smaller one: ")
+        A(lead + "; ".join(
+            f"{lbl} {min(c for _, c in cs):.2f}–{max(c for _, c in cs):.2f} clips/s over "
+            + "/".join(dt for dt, _ in cs) + f" against PyTorch's {t:.2f} "
+            f"({min(c for _, c in cs)/t:.2f}–{max(c for _, c in cs)/t:.2f}x)" for lbl, t, cs in sp)
           + ". **Neither side is charged a per-clip model load, and neither batches.** The PyTorch "
           "loop keeps one `VJEPA2Model` resident and starts its timer after `from_pretrained` "
           "returns; `build/jepa-embed-clips` mmaps the GGUF once and then walks the whole 405-clip "
@@ -794,12 +816,11 @@ def render_md(p: dict, cj: dict) -> str:
               + ". The encoder output is unaffected: the two runs agree "
               + " and ".join(("bit for bit" if v["features_bit_identical"] else "NOT bit for bit")
                              + f" on all {v['n_clips_compared']} clips" for v in po.values()) + ".\n")
-        A("Within jepa.cpp the dtype barely moves the clock — " + _dtype_clock(p) + " — so on "
-          "V-JEPA 2.1 ViT-B/384 the **f32** file is the fastest of the three. `docs/parity.md` sees "
-          "the same absence of a dtype speedup on its two fixture clips (1073 / 1125 / 1067 ms per "
-          "clip for f32 / f16 / q8_0). These encoders are compute-bound at 32 threads, so q8_0 buys "
-          "resident weights (332.8 vs 622.5 MiB for ViT-L, 113.3 vs 209.6 MiB for 2.1 ViT-B — 0.53x "
-          "and 0.54x), not speed.\n")
+        A("Within jepa.cpp the dtype barely moves the clock — " + _dtype_clock(p) + _fastest(p)
+          + " `docs/parity.md` sees the same absence of a dtype speedup on its two fixture clips "
+          "(1073 / 1125 / 1067 ms per clip for f32 / f16 / q8_0). These encoders are compute-bound "
+          "at 32 threads, so q8_0 buys resident weights (332.8 vs 622.5 MiB for ViT-L, 113.3 vs "
+          "209.6 MiB for 2.1 ViT-B — 0.53x and 0.54x), not speed.\n")
         A("**Load conditions.** Every row above was measured back-to-back in one sweep, alternating "
           "PyTorch and jepa.cpp stages so that any residual contention lands on both backends, on a "
           "box that was otherwise idle: " + _occupancy(p) + ".\n")
@@ -826,19 +847,28 @@ def render_md(p: dict, cj: dict) -> str:
     A("$PY scripts/video_frames.py --data data/ucf101-subset/UCF101_subset \\")
     A("      --out tmp/frames --frames 16 --jobs 32")
     A("$PY scripts/bench_accuracy_video.py lists --index tmp/frames/index.json")
-    A("for m in vjepa2-vitl-fpc64-256 vjepa2_1-vitb-384; do")
-    A("  $PY scripts/bench_accuracy_video.py torch --model $m")
-    A("done")
-    A("$PY scripts/bench_accuracy_video.py cpp --model vjepa2-vitl-fpc64-256 --dtype f16")
-    A("$PY scripts/bench_accuracy_video.py cpp --model vjepa2-vitl-fpc64-256 --dtype q8_0")
-    A("for d in f32 f16 q8_0; do")
-    A("  $PY scripts/bench_accuracy_video.py cpp --model vjepa2_1-vitb-384 --dtype $d")
-    A("done")
-    A("$PY scripts/bench_accuracy_video.py ssv2-torch")
-    A("$PY scripts/bench_accuracy_video.py ssv2-cpp --dtype f16")
-    A("$PY scripts/bench_accuracy_video.py ssv2-cpp --dtype q8_0")
-    A("$PY scripts/bench_accuracy_video.py report \\")
-    A("      --out-json tests/results/accuracy-video.json --out-md docs/accuracy-video.md")
+    A("")
+    A("B=\"$PY scripts/bench_accuracy_video.py\"")
+    A("")
+    A("# The timed sweep, on an idle box, PyTorch and jepa.cpp stages alternated so that any")
+    A("# residual contention lands on both backends.")
+    A("$B torch --model vjepa2-vitl-fpc64-256                # PyTorch ViT-L  (skip_predictor)")
+    A("$B cpp   --model vjepa2-vitl-fpc64-256 --dtype f16")
+    A("$B torch --model vjepa2_1-vitb-384                    # PyTorch ViT-B  (Meta code path)")
+    A("$B cpp   --model vjepa2_1-vitb-384     --dtype f32")
+    A("$B cpp   --model vjepa2-vitl-fpc64-256 --dtype q8_0")
+    A("$B cpp   --model vjepa2_1-vitb-384     --dtype f16")
+    A("$B cpp   --model vjepa2_1-vitb-384     --dtype q8_0")
+    A("$B ssv2-torch")
+    A("$B ssv2-cpp --dtype f16")
+    A("$B ssv2-cpp --dtype q8_0")
+    A("")
+    A("# Control run, last (warm page cache): the pre-2026-08-31 code path, which also ran the")
+    A("# predictor and discarded it.  `report` diffs its features against the real ones and times")
+    A("# the two against each other.")
+    A("$B torch --model vjepa2-vitl-fpc64-256 --no-skip-predictor")
+    A("")
+    A("$B report --out-json tests/results/accuracy-video.json --out-md docs/accuracy-video.md")
     A("```\n")
     walls = [(f"{n} {dt}", b["stats"]["wall_s"]) for n, m in p["models"].items()
              for dt, b in m["backends"].items() if b["stats"].get("wall_s")]
@@ -846,13 +876,16 @@ def render_md(p: dict, cj: dict) -> str:
               if b["stats"].get("wall_s")]
     if s2.get("pytorch"):
         walls.append(("ssv2 pytorch", s2["pytorch"]["stats"]["wall_s"]))
+    walls += [(f"{n} torch control run (predictor included)", v["with_predictor"]["wall_s"])
+              for n, v in (p.get("pytorch_predictor_overhead") or {}).items()]
     if walls:
         tot = sum(w for _, w in walls) + p["dataset"].get("decode_s", 0)
         A(f"**Wall time at 32 threads**, measured: frame decode "
           f"{p['dataset'].get('decode_s', 0):.1f} s for all "
           f"{p['dataset']['gallery']['n'] + p['dataset']['queries']['val+test']['n']} clips (32 processes), "
           "then " + ", ".join(f"{k} {v:.0f} s" for k, v in walls) + f" — {tot/60:.0f} min of compute "
-          "in total, serial because the 32-thread budget is shared. `report` takes a few seconds.\n")
+          "in total, run strictly one stage at a time so that no clips/s number is measured against "
+          "another stage. `report` takes a few seconds.\n")
     A("Every stage writes into `tmp/accuracy-video/` (git-ignored) and can be re-run alone; "
       "`lists` fixes the clip order once in `tmp/accuracy-video/clips.json`, which every feature "
       "`.npy` is indexed by, and `tmp/frames/index.json` records the sampled frame indices per clip.\n")
