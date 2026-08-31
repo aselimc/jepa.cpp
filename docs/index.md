@@ -14,12 +14,12 @@ at 384 px (image *and* video, with a predictor for both). They expose image and 
 classification, latent-space prediction and action-conditioned world-model rollout, through four
 command-line tools and one C header.
 
-On 32 CPU threads the engine runs 1.1–2.2× faster than PyTorch on the models where the comparison is
-like-for-like, at half to a quarter of the memory; a CUDA build is 9–21× faster again on one RTX 4500
-Ada. Fidelity is measured rather than assumed: f32 files reproduce their PyTorch reference to cosine
-1.000000 per token, preprocessing is bit-exact against torchvision, and quantized files are scored on
-real datasets — Imagenette k-NN within 0.05 pp of PyTorch at f16 and q8_0, UCF-101 k-NN within one
-clip of it.
+On 32 CPU threads the engine runs **1.1–1.8× faster than PyTorch** on the models where the comparison
+is like-for-like, and 2.1–2.2× on 96 threads, at half to a quarter of the memory; a CUDA build is
+9–21× faster again on one RTX 4500 Ada. Fidelity is measured rather than assumed: f32 files reproduce
+their PyTorch reference to cosine 1.000000 per token, preprocessing is bit-exact against torchvision,
+and quantized files are scored on real datasets — Imagenette k-NN within **0.13 pp** of PyTorch at
+f16 and q8_0 (0.16 pp on the parameter-free centroid metric), UCF-101 k-NN within one clip of it.
 
 ## Where to go
 

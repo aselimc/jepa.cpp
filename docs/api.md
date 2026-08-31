@@ -237,7 +237,9 @@ int jepa_lewm_rollout(jepa_context * ctx, const float * embs, int n_seed,
 // How many image items (`n_batch * n_frames` slices of one jepa_input) the encoder folds into ONE
 // ggml graph. The items stay independent — they live on the graph's batch dimension, so attention
 // never mixes them — and the output rows are the same, in the same (batch, frame) order, as the
-// one-graph-per-item path; f32 is bit-identical (tests/test-batch.cpp gates this).
+// one-graph-per-item path; on the CPU f32 is bit-identical (tests/test-batch.cpp gates this). On a
+// CUDA device the two agree to ~1e-7 cosine but not bit-for-bit: GEMM tiling varies with the batch
+// shape.
 // Only the image families (ijepa / hfvit / lewm) batch; V-JEPA 2 / 2.1 still run one clip per graph.
 //   n <= 0 : restore the default (32, or $JEPA_MAX_BATCH when the context was created)
 //   n == 1 : the old per-item path — the debug switch (`jepa-embed --no-batch`, `JEPA_MAX_BATCH=1`)

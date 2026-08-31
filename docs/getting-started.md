@@ -38,9 +38,21 @@ build-cuda/jepa-info --devices          # list what the ggml backend registry ca
 
 `JEPA_NATIVE=ON` resolves `CMAKE_CUDA_ARCHITECTURES` to `native`, which is right for a from-source
 build and wrong for a distributed binary — pass an explicit
-`-DCMAKE_CUDA_ARCHITECTURES=89-real;80-virtual` for one of those. Every tool then takes `--gpu [N]`
-(or `$JEPA_DEVICE=cuda:N`); see [Architecture → GPU backend](architecture.md#gpu-backend) for what
-changes on a device, and [Accuracy](accuracy.md#backends-and-precision) for which dtype to use there.
+`-DCMAKE_CUDA_ARCHITECTURES=89-real;80-virtual` for one of those. Under CUDA 13 the toolkit no longer
+offers the 50/61/70 virtual architectures, so a non-native build starts at `75-virtual`.
+
+Budget for the build: 138 CUDA translation units, about 171 s wall at `-j8` for a single
+architecture, 114 MB of build tree, and the 45 MB `libggml-cuda.so` at the end of it.
+
+Every tool then takes `--gpu [N]` (or `$JEPA_DEVICE=cuda:N`); see
+[Architecture → GPU backend](architecture.md#gpu-backend) for what changes on a device, and
+[Accuracy](accuracy.md#backends-and-precision) for which dtype to use there. `--gpu N` picks one
+device per process — there is no split across cards, so two GPUs means two processes.
+
+**Other backends.** The device lookup is the backend-agnostic ggml registry, so a Vulkan, Metal or
+ROCm build would appear in `jepa-info --devices` with no engine change. Vulkan is not buildable on
+this box as it stands: `-DGGML_VULKAN=ON` needs `glslc` (shaderc) and the Vulkan/SPIRV headers, which
+are a prerequisite to install rather than a code change.
 
 ## Python, once
 
@@ -100,7 +112,7 @@ build/jepa-info --devices                                       # GPU devices th
 build/jepa-embed -m models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf \
     -i tests/fixtures/media/coco_000000000139.jpg --pool cls -t 32 --time
 
-# many images in one graph (bit-identical to one at a time, 1.7-2.2x faster on the small models)
+# many images in one graph (bit-identical to one at a time on the CPU, 1.7-2.2x faster on the small models)
 build/jepa-embed -m models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf \
     -i a.jpg -i b.jpg -i c.jpg --batch 32 -o feats.npy -t 32
 
@@ -208,10 +220,14 @@ ctest --test-dir build
 Nine suites: five parity and predictor replays of the PyTorch golden dumps, plus `batch` (batched vs
 per-item bit-exactness), `ops` (3-D RoPE against generated vectors), `attn` (flash vs naive attention
 against a double-precision reference) and `backend` (GPU graph validation and CPU/GPU agreement,
-which exits 0 with a skip line when the build has no GPU). The parity suites register at CMake
-configure time and need `models/gguf/` and `tests/fixtures/ref/` populated, so re-run `cmake` once
-after downloading and converting. The methodology is in
-[Architecture → testing and parity](architecture.md#testing-and-parity-methodology).
+which exits 0 with a skip line when the build has no GPU, so one `ctest` invocation covers both kinds
+of machine). The parity suites register at CMake configure time and need `models/gguf/` and
+`tests/fixtures/ref/` populated, so re-run `cmake` once after downloading and converting. The
+methodology is in [Architecture → testing and parity](architecture.md#testing-and-parity-methodology).
+
+There is **no build or test CI**: `.github/workflows/` holds only the documentation job, so `ctest`
+runs on developer machines. A CPU build-and-test job and a compile-only CUDA job are the obvious
+additions whenever CI is set up.
 
 ## Documentation
 

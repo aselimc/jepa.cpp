@@ -254,8 +254,9 @@ struct jepa_context {
 };
 
 // Image items folded into one encoder graph unless the caller says otherwise. Measured peak-RSS
-// growth from B = 1 to B = 32 (docs/performance.md "Batched image encoding"): LeJEPA ViT-S/16 52 -> 148 MiB, LeWM ViT-Ti/14
-// 48 -> 107 MiB, I-JEPA ViT-H/14 f16 1230 -> 1597 MiB — i.e. ~3-11 MiB of arena per extra item.
+// growth from B = 1 to B = 32 (docs/performance.md "Batched image encoding"): LeJEPA ViT-S/16
+// 52 -> 148 MiB, LeWM ViT-Ti/14 48 -> 107 MiB, I-JEPA ViT-H/14 f16 1230 -> 1597 MiB — i.e.
+// ~3-11 MiB of arena per extra item.
 #define JEPA_DEFAULT_MAX_BATCH 32
 // Hard ceiling on the estimated activation bytes of one encoder graph ($JEPA_MAX_GRAPH_MIB).
 #define JEPA_DEFAULT_MAX_GRAPH_BYTES ((size_t) 8 << 30)
@@ -321,7 +322,8 @@ void jepa_graph_begin(jepa_context * ctx, size_t max_nodes);
 // true when the whole graph runs on the backend; otherwise logs each offending node and returns
 // false. NOT optional on a GPU: ggml_backend_cuda_graph_compute dispatches every node without
 // consulting supports_op, so an unsupported node produces a wrong answer with no error at all
-// (docs/architecture.md "GPU backend" — the pre-refactor RoPE chain scored cosine 0.99996, which would have
+// (docs/architecture.md "GPU backend" — the pre-refactor RoPE chain scored cosine 0.99996,
+// which would have
 // passed the f16 parity gate). Runs whenever the backend is not the CPU; $JEPA_VALIDATE_GRAPH=1
 // forces it on the CPU too and =0 turns it off.
 bool jepa_graph_validate(jepa_context * ctx);

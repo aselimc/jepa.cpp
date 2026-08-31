@@ -104,7 +104,8 @@ int main(int argc, char ** argv) {
     {
         jepa_context * ctx = jepa_context_new(gpu_model, cp);
         if (!ctx) return 2;
-        printf("\n-- graph validation (the check docs/architecture.md 'GPU backend' makes mandatory)\n");
+        printf("\n-- graph validation (the check docs/architecture.md 'GPU backend'"
+               " makes mandatory)\n");
         printf("   the next lines are the expected refusal, not a failure:\n");
         const bool strided_ok = build_roll_graph(ctx, /*contiguous =*/ false);
         report("ggml_roll on a strided qkv view is REFUSED", !strided_ok,

@@ -148,7 +148,7 @@ policy, parity thresholds — is on the [documentation site](https://aselimc.git
 ## Testing
 
 ```bash
-ctest --test-dir build        # 8 suites: parity, predictors, batching, RoPE vectors, attention
+ctest --test-dir build        # 9 suites: parity, predictors, batching, RoPE vectors, attention, backend
 ```
 
 `test-parity` replays PyTorch golden dumps through the engine and gates per-token cosine, pooled
@@ -174,7 +174,9 @@ are the *fastest* GPU path), and the CPU when you need f32 exactness. The design
 ## Limitations
 
 - **Batching is images only** — `jepa_encode` puts up to 32 image items through one ggml graph
-  (`jepa-embed --batch`, bit-identical to one-at-a-time), worth 1.7–2.1× of encoder time and taking
+  (`jepa-embed --batch`, bit-identical to one-at-a-time on the CPU; on CUDA the two agree to ~1e-7
+  cosine but not bit-for-bit, because GEMM tiling varies with the batch shape), worth 1.7–2.1× of
+  encoder time and taking
   end-to-end throughput at 32 threads from 67 to 94 img/s on LeJEPA ViT-S/16 and 95 to 159 on LeWM
   against PyTorch batch-32's 86–89 and 190–206, and 6.2 to 6.9 (7.6 at q8_0) on I-JEPA ViT-H/14
   against 5.5. So LeJEPA now passes PyTorch, LeWM is still 0.77–0.84× of it, and a V-JEPA 2 clip is

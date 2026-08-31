@@ -49,11 +49,11 @@ and [parity.md](parity.md#results-video-encoders-v-jepa-2-v-jepa-21).*
 
 | model | ftype | cos mean | cos med | cos min | derived |
 |---|---|---|---|---|---|
-| LeJEPA ViT-S/16 | f16 | 0.999999 | – | 0.999994 | `cls` ≥ 0.9998 |
-| LeJEPA ViT-S/16 | q8_0 | 0.999263 | – | 0.995193 | `cls` ≥ 0.9997 |
+| LeJEPA ViT-S/16 | f16 | 0.999999 | – | 0.999994 | `cls` passes the ≥ 0.9995 bar |
+| LeJEPA ViT-S/16 | q8_0 | 0.999263 | – | 0.995193 | `cls` ≥ 0.9997 ᵃ |
 | LeWM ViT-Ti/14 | f16 | 1.000000 | – | 1.000000 | `emb` 1.000000 |
 | LeWM ViT-Ti/14 | q8_0 | 0.999913 | – | 0.999895 | `emb_seq` 0.999895 |
-| I-JEPA ViT-H/14 | f16 | 0.999984 | – | 0.997583 | `pooled_mean` ≥ 0.9998 |
+| I-JEPA ViT-H/14 | f16 | 0.999984 | – | 0.997583 | `pooled_mean` passes the ≥ 0.9995 bar |
 | I-JEPA ViT-H/14 | q8_0 | 0.987843 | – | 0.432576 | `pooled_mean` 0.999748 |
 | V-JEPA 2 ViT-L, 2 048 tok | f16 | 0.997144 | 0.999897 | 0.5088 | `pooled_mean` 0.999991 |
 | V-JEPA 2 ViT-L, 2 048 tok | q8_0 | 0.966128 | 0.996770 | 0.2305 | `pooled_mean` 0.999876 |
@@ -62,20 +62,41 @@ and [parity.md](parity.md#results-video-encoders-v-jepa-2-v-jepa-21).*
 | V-JEPA 2.1 ViT-B, 4 608 tok | f16 | 0.999952 | 0.999991 | 0.9697 | `pooled_mean` 1.000000 |
 | V-JEPA 2.1 ViT-B, 4 608 tok | q8_0 | 0.999076 | 0.999578 | 0.8302 | `pooled_mean` 0.999986 |
 
-All nine image files and all fifteen video rows pass their family's thresholds, on the stored input and
-on jepa.cpp's own preprocessing alike.
+All nine image files and all fifteen video rows pass their family's thresholds, on the stored input
+and on jepa.cpp's own preprocessing alike. The image rows report per-file derived values only where
+`parity.md` lists them individually; where it does not, the cell names the bar the file cleared —
+≥ 0.9995 for the image f16 tier.
 
-**V-JEPA 2 ViT-L scatters individual tokens under f16 rounding.** That is a property of the
-checkpoint's activation range, not an engine defect: running the numpy executable specification with
-f16 weights and float32 activations reproduces the same effect, and the damage is spread across the
-whole network — holding any single matrix at f16 while quantizing the rest leaves the worst token at
-0.29–0.49. Everything downstream is unaffected: `pooled_mean` stays ≥ 0.9998, the predictor output
-0.9998, the logits 0.9999 with identical top-1 and top-5. **Use f32 for dense per-token work on that
-model**; f16 is correct everywhere else, and pooled features are safe at q8_0 on every model.
+ᵃ `parity.md` reports the image q8_0 files together: pooled, `cls` and `emb` stay ≥ 0.9997 on every
+one of them, with I-JEPA's `pooled_mean` at 0.999748 and LeWM's `emb_seq` at 0.999895 the two worst.
 
-The same effect in miniature explains the image rows: the tokens that degrade are the ones with the
-smallest variance before the final LayerNorm, which divides by that variance and amplifies whatever
-error quantization injected. Only 0.4 % of I-JEPA's tokens fall below 0.99 at q8_0.
+**V-JEPA 2 ViT-L scatters individual tokens at f16, and the cause is activation rounding.** An f16
+`mul_mat` rounds its *activations* to F16 as well — `GGML_LLAMAFILE`'s AVX-512 kernel has only an
+F16×F16 path — so all 24 ViT-L layers carry activations at about three decimal digits, and what that
+destroys is a degenerate low-norm token cluster this checkpoint contains. The numpy executable
+specification separates the two halves on the same clip, f16 weights throughout:
+
+| ssv2 bowling_f16, f16 weights | mean cos | worst token | tokens < 0.999 |
+|---|---|---|---|
+| numpy spec, **f32** activations | 0.9999968 | 0.999036 | 0 / 2048 |
+| numpy spec, **F16** activations | 0.9971802 | 0.557581 | 420 / 2048 |
+| jepa.cpp f16 | 0.997144 | 0.508778 | 414 / 2048 |
+
+The weights alone cost nothing; the F16 activations cost the whole tail, and jepa.cpp reproduces the
+specification's F16-activation run to four digits, on a neighbouring row of the same low-norm cluster.
+Flash attention is not involved — `--kv-f32` and `--no-flash` give the same spread (421 and 420 tokens
+below 0.999).
+
+Everything downstream is unaffected: at f16 `pooled_mean` stays at 0.999991, the masked predictor at
+0.9999996 and the SSv2 logits at 0.999935 with identical top-1 and top-5. **Use f32 for dense
+per-token work on that model**; f16 is correct everywhere else. V-JEPA 2.1 ViT-B is far more
+forgiving — worst token 0.9697 at f16 and 0.8302 at q8_0.
+
+The q8_0 rows have a related but distinct cause, and it is spread across the whole network: holding
+any single matrix family at f16 while quantizing the rest still leaves the ViT-L worst token at
+0.29–0.49. The tokens that degrade are the ones with the smallest variance before the final
+LayerNorm, which divides by that variance and amplifies whatever error the quantized weights
+injected. Only 0.4 % of I-JEPA's tokens fall below 0.99 at q8_0.
 
 *Source: [parity.md](parity.md#what-the-f32-rows-prove-and-why-f16-tokens-scatter) and
 [quantization.md](quantization.md#reading-the-numbers).*
@@ -151,8 +172,10 @@ rather than a fixture replay.
 | | jepa.cpp | q8_0 | 94.50 | 87.64 | 99.87 | 0.999843 |
 | | jepa.cpp | q4_k | 94.22 | 87.67 | 99.08 | 0.988725 |
 
-Over those two models and both LeJEPA features — ten comparisons — no jepa.cpp row is further than
-**0.28 pp** from its PyTorch row, and none further than **0.13 pp** at f32, f16 or q8_0.
+Over those two models and both LeJEPA features — ten comparisons — no jepa.cpp k-NN row is further
+than **0.28 pp** from its PyTorch row, and none further than **0.13 pp** at f32, f16 or q8_0
+(worst cases: q4_k 0.2803 pp on I-JEPA, q8_0 0.1274 pp on LeJEPA `cls`). On the parameter-free
+centroid metric the same rows stay within **0.16 pp** (q8_0 0.1529 pp on LeJEPA `mean`).
 
 The f32 row is not at 100 % agreement because `stb_image` and PIL/libjpeg differ by ±1–2 levels on
 about 2 % of pixels. That decoder floor, `1 − cos` of 6.3e-6 to 1.7e-5, is larger than what f16 adds,
@@ -218,10 +241,10 @@ intact and only near-ties at the top move. **Use f16 for head and classifier wor
 | use | CPU | CUDA | evidence |
 |---|---|---|---|
 | default deployment | **f16** | **f16** | pooled, CLS and logit outputs ≥ 0.9998 on every model; 0.5× f32 |
-| pooled features, retrieval, k-NN, LeWM rollouts | **q8_0** | **q8_0** | pooled cosine ≥ 0.99995 on every model, 0.53× f16; within 0.05 pp of PyTorch on Imagenette and within one clip on UCF-101 |
+| pooled features, retrieval, k-NN, LeWM rollouts | **q8_0** | **q8_0** | engine-measured pooled cosine ≥ 0.9997 for the mean-pooled features and 0.9966 for the SSv2 attentive pooler; 0.53–0.61× the resident f16 weights; within 0.13 pp (k-NN) and 0.16 pp (centroid) of PyTorch on Imagenette and within one clip on UCF-101 |
 | classification with the attentive-pool head | **f16** | **f16** | 99.0 % top-1 agreement on 105 clips against 94.3 % at q8_0 |
 | dense per-token features | **f32** for V-JEPA 2 ViT-L, q8_0 elsewhere | not available — use the CPU | that checkpoint's worst token is 0.51 at f16 and 0.23 at q8_0 while its `pooled_mean` stays ≥ 0.9998; a GPU has no f32 tier |
-| smallest footprint, pooled ≈ 0.99 is enough | **q4_k**, advisory | **q4_k**, advisory *and the fastest path there* | 0.29× f16, pooled cosine 0.992–0.998; `test-parity` reports but does not gate files below 8 bits per weight |
+| smallest footprint, pooled ≈ 0.99 is enough | **q4_k**, advisory | **q4_k**, advisory *and the fastest path there* | 0.29–0.40× the resident f16 weights; pooled cosine 0.992–0.998 in the weight-only study and 0.978–0.998 through the engine, the SSv2 pooler at 0.9807 and its logits at 0.9781 being the two that miss the advisory bar; `test-parity` reports but does not gate files below 8 bits per weight |
 
 The accuracy column of this table does not change with the backend; the *speed* column does. On the
 CPU q4_k is the slowest type; on CUDA it ties q8_0 and beats f16 (see
