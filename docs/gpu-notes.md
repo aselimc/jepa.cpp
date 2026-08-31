@@ -382,7 +382,9 @@ loud failure (`ggml_backend_graph_compute` returns an error) instead of a silent
    Sizes fit easily: ViT-H f32 2.4 GB, ViT-L f32 1.3 GB, everything else smaller, against 24 GB.
    The public API needs the device though: `jepa_model_load(const char *, bool verbose)` has no
    slot for it, so add `jepa_model_load_ex(const char * path, const jepa_model_params *)` (or a
-   `jepa_model_params` with `{ verbose, gpu_device }`) and keep the old symbol as a wrapper.
+   `jepa_model_params` with `{ verbose, gpu_device }`) and keep the old symbol as a wrapper — there
+   are 7 `jepa_model_load` call sites (4 tools, 2 tests, the header), and with a wrapper only the
+   4 tools that gain `--gpu` have to change.
    **The model must be loaded onto the device it will run on**; a `jepa_context` whose
    `gpu_device` differs from the model's must be rejected, not silently split.
 3. **Transfer points.** Exactly three, all already funnelled through helpers:
