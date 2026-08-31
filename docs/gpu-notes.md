@@ -93,11 +93,25 @@ rows and the RoPE tables, run, download `[D, N]`.
 ### 1.3 `mul_mat` precision: cuBLAS picks F16 compute for F16 weights
 
 `ggml_cuda_mul_mat_cublas` (`ggml-cuda.cu:1623`) sets `compute_type = src0->type` and only falls back
-to F32 when `dst->op_params[0] == GGML_PREC_F32`. jepa.cpp never calls `ggml_mul_mat_set_prec`, so an
-**f16 GGUF would run every projection as an HGEMM with F16 accumulation on the GPU**, where the CPU
-path accumulates in F32 (`docs/ggml-notes.md` §5 measures F16 mul_mat at 3.0e-4 max rel err on CPU;
-F16 accumulation over a 1024-long reduction is worse). Quantized weights take the `mmq` path
-(INT8 tensor cores, INT32 accumulate, F32 rescale) and are unaffected. F32 weights compute in F32.
+to F32 when `dst->op_params[0] == GGML_PREC_F32`. jepa.cpp never calls `ggml_mul_mat_set_prec`, and
+`ggml_cuda_should_use_mmf` refuses any `mul_mat` with more than 16 activation columns (`mmf.cu:176`),
+so at every one of our shapes an **f16 GGUF runs every projection through cuBLAS with
+`batched_mul_mat_traits<GGML_TYPE_F16>::compute_type = CUBLAS_COMPUTE_16F`** (`ggml-cuda.cu:1398`).
+That is *F16 accumulation*, and because `prefer_f32_output` is only set on Volta / RDNA4 / CDNA
+(`ggml-cuda.cu:1512`), on Ada the **GEMM output is written as `half` too** and converted back to F32
+afterwards. The CPU path accumulates in F32 throughout (`docs/ggml-notes.md` §5 measures F16 mul_mat
+at 3.0e-4 max rel err there).
+
+Two consequences, one of them potentially fatal:
+- a wider error band at f16 on GPU than the `docs/parity.md` f16 rows describe, and
+- **a real overflow risk**: `half` saturates at 65504, and `docs/architecture.md` records I-JEPA
+  ViT-H activations reaching ~2e4. An FFN output stored as `half` is one factor of 3 away from `inf`.
+  §5.4 checks for non-finite outputs explicitly.
+
+F32 weights are safe — `batched_mul_mat_traits<GGML_TYPE_F32>` uses `CUBLAS_COMPUTE_32F` with
+`CUDA_R_32F`, i.e. **strict FP32, not TF32** (ggml never calls `cublasSetMathMode`), so an f32 GGUF
+gets Ada's ~24 TFLOP/s FP32 rather than its ~48 TFLOP/s tensor-core rate. Quantized weights take the
+`mmq` path (INT8 tensor cores, INT32 accumulate, F32 rescale) and are unaffected.
 
 **Consequence for the port:** call `ggml_mul_mat_set_prec(t, GGML_PREC_F32)` on every `mul_mat` in
 `jepa_build_linear` when the backend is a GPU (it is a no-op on CPU — `docs/ggml-notes.md` §6), or
