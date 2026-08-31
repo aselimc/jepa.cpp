@@ -1,0 +1,63 @@
+site_name: jepa.cpp
+site_description: CPU inference for the JEPA family (I-JEPA, V-JEPA 2 / 2.1, LeJEPA, LeWorldModel) in plain C/C++ on ggml
+site_url: https://aselimc.github.io/jepa.cpp/
+repo_url: https://github.com/aselimc/jepa.cpp
+repo_name: aselimc/jepa.cpp
+edit_uri: blob/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: deep orange
+      toggle: { icon: material/weather-night, name: Dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: deep orange
+      toggle: { icon: material/weather-sunny, name: Light mode }
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - search.suggest
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.snippets:
+      base_path: [".", "docs"]
+      check_paths: true
+
+validation:
+  links:
+    absolute_links: ignore
+    unrecognized_links: warn
+    not_found: warn
+
+nav:
+  - Overview: index.md
+  - Results: results.md
+  - C API: api.md
+  - Design:
+      - Architecture: architecture.md
+      - GGUF schema: gguf-schema.md
+      - Converter: converter.md
+      - V-JEPA tensor & RoPE notes: vjepa-notes.md
+      - Fixtures & golden references: fixtures.md
+  - Correctness:
+      - Parity: parity.md
+      - Quantization: quantization.md
+  - Performance:
+      - Benchmarks: benchmarks.md
+      - ggml notes: ggml-notes.md
+  - Accuracy:
+      - Images (Imagenette): accuracy-image.md
+      - Video (UCF-101): accuracy-video.md

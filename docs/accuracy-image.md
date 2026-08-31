@@ -13,12 +13,12 @@ passes were alternated inside one sweep, and every pass records how much CPU tim
 *not* its own (see "Throughput"). Total sweep: 87 min wall, 86.7 of them inside the encoders — the
 splits, the graph-timing stage and the scoring together account for 25 s of it.
 
-Machine-readable copy of every number below: [`tests/results/accuracy-image.json`](../tests/results/accuracy-image.json);
-the split definition: [`tests/results/accuracy-image-splits.json`](../tests/results/accuracy-image-splits.json).
+Machine-readable copy of every number below: [`tests/results/accuracy-image.json`(https://github.com/aselimc/jepa.cpp/blob/main/tests/results/accuracy-image.json);
+the split definition: [`tests/results/accuracy-image-splits.json`(https://github.com/aselimc/jepa.cpp/blob/main/tests/results/accuracy-image-splits.json).
 
 ## Protocol
 
-Implemented once in [`scripts/knn_eval.py`](../scripts/knn_eval.py) and applied unchanged to every
+Implemented once in [`scripts/knn_eval.py`(https://github.com/aselimc/jepa.cpp/blob/main/scripts/knn_eval.py) and applied unchanged to every
 backend, so a number can only move because the *features* moved.
 
 1. L2-normalise every feature vector; similarity = cosine (a dot product after the normalisation).

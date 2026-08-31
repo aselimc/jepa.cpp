@@ -18,3 +18,5 @@ __pycache__/
 .DS_Store
 # accuracy-benchmark datasets (in-repo, never committed)
 /data/
+# mkdocs output
+/site/

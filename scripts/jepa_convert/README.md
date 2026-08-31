@@ -1,7 +1,7 @@
 # jepa_convert — checkpoint → GGUF converters
 
 Python side of jepa.cpp. Turns the reference PyTorch checkpoints into the GGUF layout
-defined in [`docs/gguf-schema.md`](../../docs/gguf-schema.md). Inference only; no training code.
+defined in [`docs/gguf-schema.md`(https://github.com/aselimc/jepa.cpp/blob/main/docs/gguf-schema.md). Inference only; no training code.
 
 ```
 scripts/convert.py              CLI entry point (dispatches on --family)
