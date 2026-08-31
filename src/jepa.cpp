@@ -100,7 +100,11 @@ int jepa_device_from_env(void) {
     if (p == std::string::npos && !v.empty() && v.find_first_not_of("0123456789") == std::string::npos) {
         return atoi(v.c_str());
     }
-    jepa_log("jepa: ignoring JEPA_DEVICE='%s' (expected cpu, cuda:N, gpu:N or a bare device index)\n", s);
+    static bool warned_device = false;   // the parser runs once per model and once per context
+    if (!warned_device) {
+        warned_device = true;
+        jepa_log("jepa: ignoring JEPA_DEVICE='%s' (expected cpu, cuda:N, gpu:N or a bare device index)\n", s);
+    }
     return -1;
 }
 

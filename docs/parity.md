@@ -410,13 +410,21 @@ tensors — but any of them collapses a norm-scale failure.
 
 `REL` is the same length-aware widening as on the CPU, `max(1, √(N/2048))`.
 
-The one bar that had to be *loosened* rather than mapped across is the image families'
-**worst-token** floor, 0.99 → 0.90. It is one model: I-JEPA ViT-H/14's worst token goes from 0.9976
-on the CPU at f16 to **0.9613** on a GPU, and to 0.9723 with `--no-flash` (F32 attention). That is
-the F16 PV accumulator of every CUDA flash kernel landing on the one token that is already
-degenerate — a low-norm row whose cosine swings between 0.991 and 0.9996 with op order on the CPU
-too ("Deviation from the protocol" above). LeJEPA and LeWM stay at 0.9998 / 0.99999 on the same
-backend, and I-JEPA's *median* stays at 0.999996, so the median is what gates.
+Two bars had to be *loosened* rather than mapped across, both in the image families' token map:
+the **worst-token** floor, 0.99 → 0.90, and the **mean**, 0.9999 → 0.999. Both are one model:
+I-JEPA ViT-H/14's worst token goes from 0.9976 on the CPU at f16 to **0.9613** on a GPU (0.9723
+with `--no-flash`, i.e. F32 attention) and its mean to 0.999788. That is the F16 PV accumulator of
+every CUDA flash kernel plus TF32 landing on token 8 of `coco_000000219578` — a **high-norm outlier
+row** (‖ref row‖ 39.23 against a 32.85 mean; this is a *different* token from the CPU-f16
+low-norm cluster discussed under "Deviation from the protocol"). LeJEPA and LeWM stay at
+0.9998 / 0.99999 on the same backend, and I-JEPA's *median* stays at 0.999996.
+
+Sensitivity note for the GPU image tier: the loosening has a measured cost. A +0.5 % scale on one
+`attn_out` weight matrix of the I-JEPA f16 file **passes** this tier (cos_min 0.9838, rel 0.075)
+where the CPU tier fails it; at +1 % the tier fails — but through `rel_max` (0.1530 vs the 0.150
+bar), not the cosine floors. `rel_max` is the load-bearing gate here, which is why every GPU tier
+carries it; treat the GPU image tier as ~2× less sensitive to weight-level errors than the CPU one,
+with the f32-on-CPU run remaining the sensitive configuration for any real investigation.
 
 ### Results — encoders on CUDA0
 

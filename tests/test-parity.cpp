@@ -178,15 +178,19 @@ static const policy POLICY[BK_COUNT][FAM_COUNT][TIER_COUNT] = {
   },
   { // ============================ GPU ==========================================================
     // Bars from the measured sweep of docs/parity.md's GPU section, each just outside the worst
-    // fixture value. Two differences from the CPU column beyond the f32 -> f16 collapse:
+    // fixture value. Three differences from the CPU column beyond the f32 -> f16 collapse:
     //   * the token map's WORST-token bar drops to 0.90 for the image families. On the CPU
     //     I-JEPA ViT-H f16 bottoms out at 0.9976; on a GPU the same file measures 0.9613, and with
-    //     --no-flash (F32 attention) 0.9723 — that is the F16 PV accumulator of every CUDA fattn
-    //     kernel plus TF32, on the one model whose activations reach ~2e4 and whose worst token is
-    //     a known degenerate low-norm row (docs/parity.md "Deviation from the protocol"). LeJEPA
+    //     --no-flash (F32 attention) 0.9723 — the F16 PV accumulator of every CUDA fattn kernel
+    //     plus TF32, landing on token 8 of coco_000000219578: a HIGH-norm outlier row (|ref row|
+    //     39.23 vs a 32.85 mean; measured activations peak at 95, docs/gpu-notes.md §8). LeJEPA
     //     and LeWM stay at 0.9998 / 0.99999 on the same backend, so this bar is about ViT-H, not
     //     about the port; the MEDIAN stays at 0.9999 and is what actually gates.
-    //   * rel_max is gated in every tier, which the CPU only does at f32 (see the note above).
+    //   * the token map's MEAN bar drops 0.9999 -> 0.999 (I-JEPA GPU f16 measures 0.999788).
+    //   * rel_max is gated in every tier, which the CPU only does at f32 — and it is the
+    //     load-bearing gate: a +1 % single-weight perturbation is caught by rel_max (0.153 vs
+    //     0.15) after the loosened cosine bars let it through; a +0.5 % one passes this tier
+    //     where the CPU tier fails (sensitivity note in docs/parity.md's GPU section).
     { /* f32     */ { {0.999,  0.9999, 0.90,  0.15}, {0.9995, -1.0, -1.0, 1e-2}, true,  false },
       /* f16     */ { {0.999,  0.9999, 0.90,  0.15}, {0.9995, -1.0, -1.0, 1e-2}, true,  false },
       /* q8      */ { {0.98,   0.99,   -1.0,  0.60}, {0.999,  -1.0, 0.98,  5e-2}, true,  false },
@@ -337,7 +341,7 @@ struct sample_result {
 int main(int argc, char ** argv) {
     if (argc < 3) {
         fprintf(stderr, "usage: %s MODEL.gguf REF_DIR [--threads N] [--no-flash] [--kv-f32] [--json out.json] "
-                        "[--pre manifest|model] [--rgb-dir DIR] [--samples a,b] [--quiet]\n", argv[0]);
+                        "[--pre manifest|model] [--rgb-dir DIR] [--samples a,b] [--gpu N] [--quiet]\n", argv[0]);
         return 2;
     }
     const std::string model_path = argv[1], ref_dir = argv[2];

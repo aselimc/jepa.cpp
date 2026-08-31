@@ -112,7 +112,7 @@ at 3.0e-4 max rel err there).
 Two consequences, one of them potentially fatal:
 - a wider error band at f16 on GPU than the `docs/parity.md` f16 rows describe, and
 - **a real overflow risk**: `half` saturates at 65504, and `docs/architecture.md` records I-JEPA
-  ViT-H activations reaching ~2e4. An FFN output stored as `half` is one factor of 3 away from `inf`.
+  ViT-H activations reaching ~2e4 — the audit-time premise, later measured wrong in §8: the true maximum linear output is 414 model-wide and 95 for ViT-H, ~109× below `half`'s 65504. At the feared magnitude an FFN output stored as `half` would have been one factor of 3 away from `inf`.
   The §5.5 encoder runs check for non-finite outputs and found none — but their random weights keep
   activations near ±5, so that is **not** evidence about the real ViT-H. Like the `ggml_norm`
   question of §5.3, it needs a dump of real activations and is a pre-flight check for chunk 3.
@@ -145,7 +145,7 @@ least as fast as q8_0 and a quarter of the weight bytes. Measured in §5.1.
 
 The one-pass form suffers catastrophic cancellation when `mean² ≈ E[x²]`, i.e. when a row has a
 large DC offset relative to its spread. `docs/architecture.md` records that I-JEPA ViT-H activations
-reach ~2e4; at that magnitude `E[x²] ≈ 4e8` in float32 has ~7 significant digits and the subtraction
+were believed to reach ~2e4 (corrected in §8: measured max 95); at that feared magnitude `E[x²] ≈ 4e8` in float32 has ~7 significant digits and the subtraction
 can eat most of them. This is a **backend-intrinsic parity difference that no jepa.cpp flag can turn
 off**. Measured in §5.3.
 
@@ -544,7 +544,7 @@ similarity at 1.0000000 in every row above. jepa.cpp's parity gates are cosine-d
 it. That is worth knowing regardless of whether the port happens.
 
 **What this audit did *not* establish** is whether real ViT residual streams ever reach a mean/sigma
-ratio where it matters. `docs/architecture.md` records I-JEPA ViT-H *activations* reaching ~2e4, but
+ratio where it matters. `docs/architecture.md` recorded I-JEPA ViT-H *activations* reaching ~2e4 (since corrected — §8 measured a 95 peak), but
 that is a max element, not a row mean, and a row with large elements has a large sigma too — the
 `mean 20 000, sigma 30` row (ratio 667, error 4.05e-02) is the realistic worst case and the `mean 0`
 rows are the realistic typical case. Settling this needs a dump of real pre-LN rows, which would
@@ -1045,6 +1045,8 @@ in the port.** §5.7 built its forecast on the §5.5 baseline column, which did 
 §5.5's own `+ GGML_PREC_F32` variant the match is 15.5 vs 15.1 ms and 46.5 vs 43.7 ms, i.e. **+3 %
 and +6 %**, and the residual is the patch embedding and position handling the synthetic encoder
 omitted. With the flag off, the port reproduces the forecast directly (8.8 vs ~7.5, 37.4 vs ~37).
+Note `--gpu-prec f16` is bench-only — not exposed in the runtime tools and not parity-gated — so
+the 8.8 ms class numbers are measured upper bounds, not a shipping configuration.
 The three long-sequence rows, where `GGML_PREC_F32` is nearly free, land at **+6 % to +9 %** of
 forecast with no caveat at all.
 
@@ -1190,3 +1192,12 @@ compile-only CUDA job, and GPU correctness on a self-hosted or manual run. What 
 cheap already exists — `ctest`'s `backend` test runs the whole check and exits 0 with a `SKIP` line
 on a machine without a GPU, so the same `ctest` invocation covers both kinds of runner. It registers
 like the other asset-gated tests (it needs one small GGUF) and costs a CPU-only checkout nothing.
+
+## Runtime switches (reference)
+
+`--gpu N` / `$JEPA_DEVICE=cuda:N` select the device (`cpu` or a bare index also accepted);
+`$JEPA_GPU_PREC=f16` / `jepa_context_set_mul_mat_prec_f32(ctx,false)` opts out of the default
+`GGML_PREC_F32` matmuls; `$JEPA_VALIDATE_GRAPH=0` disables the mandatory pre-compute graph
+validation (`jepa_graph_validate`) — **debug only**: without it an unsupported node on a single
+CUDA backend computes a silently wrong answer (§6), which is exactly what `tests/test-backend.cpp`
+guards against. `$JEPA_MAX_BATCH` / `$JEPA_MAX_GRAPH_MIB` behave as on the CPU.

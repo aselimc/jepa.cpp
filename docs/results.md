@@ -72,6 +72,8 @@ workstation card. `GGML_PREC_F32` (the GPU default) is on unless a row says othe
 3. **f32 is not faster than f16 and sometimes beats it**, which is only true because ggml's CUDA
    "F32" matmul is really TF32 while the f16 path is asked for `GGML_PREC_F32` accumulation. Turning
    that off (`--gpu-prec f16`) buys 15.5 → 8.8 ms on I-JEPA and 46.5 → 37.4 ms on the ViT-L 16-frame
+(bench-only: the flag lives in `jepa-bench`, is not exposed in the runtime tools and has no parity
+gating — read those cells as a measured upper bound, not a shipping configuration)
    clip, at 177× the f16 matmul error; it is off the default path for that reason.
 
 Wall time (the full `jepa_encode` call, host-side patchify and the two transfers included) runs
@@ -110,7 +112,9 @@ sweep.
 image input into **one** graph, carried on ggml's batch dimension: activations are `[D, N, B]`, the
 attention tensors `[head_dim, n_head, N, B]`, and `ggml_flash_attn_ext` / `ggml_mul_mat` walk `ne[3]`
 as an outer loop, so items never mix and the rows come out **bit-identical** to the per-item path at
-every dtype measured (`tests/test-batch`, ctest entry `batch`). Video is deliberately excluded: what
+every dtype measured (`tests/test-batch`, ctest entry `batch`) — a CPU guarantee: on the CUDA
+backend batched and per-item runs agree to ~1e-7 cosine but are not bit-identical (GEMM tiling
+varies with the batch shape). Video is deliberately excluded: what
 batching buys is the *fixed* per-call cost, measured at ~5 ms on the image models (LeJEPA 12.6 →
 7.4 ms), and a V-JEPA 2 clip runs 908–9 000 ms — under 1 % — while a batched clip graph would
 multiply the largest arena in the engine. `jepa_encode` therefore keeps its per-clip loop for video:
