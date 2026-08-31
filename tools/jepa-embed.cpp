@@ -5,6 +5,7 @@
 //   jepa-embed -m vjepa2.gguf --frames-npy clip.npy            # THWC uint8 frames = one clip
 //   jepa-embed -m vjepa2.gguf --frames-list clips.txt -o feats.npy [--logits l.npy] [--json s.json]
 //   jepa-embed -m vjepa2.gguf --as-video -i f0.jpg -i f1.jpg   # the images are frames of one clip
+//   jepa-embed -m levjepa-vitl16.gguf -i cat.jpg --pool cls    # a still image -> repeated to 16 frames
 //
 // Images are encoded --batch at a time: the items go through ONE ggml graph on the batch dimension,
 // which is bit-identical to encoding them one by one (tests/test-batch.cpp) and 1.5-2.6x faster on
@@ -117,6 +118,16 @@ static bool item_frames(const item & it, npy::Array & hold, std::vector<const ui
 // images (`--as-video -i a.jpg -i b.jpg`).  A video model with tubelet t needs a multiple of t
 // frames, so the last frame is repeated here exactly as the HF processor does.
 // Returns a malloc'd [1, 3, T, crop, crop] buffer (free with jepa_free), or nullptr.
+//
+// A still image fed to a video model is a 1-frame clip, and what that should mean is per family.
+// V-JEPA 2 / 2.1 decode RoPE from the ACTUAL grid and are evaluated at 16 and 64 frames alike, so a
+// short clip is run as given (only the tubelet has to divide it), and V-JEPA 2.1 additionally has a
+// native 1-frame tokenizer. LeVJEPA has neither: its model card prescribes repeating the frame
+// along T ("video = image.unsqueeze(2).repeat(1, 1, 16, 1, 1)"), and its block-causal mask over a
+// single temporal slot would make a 1-frame clip a different model rather than a cheaper one. For
+// that family a still image is therefore repeated to jepa.enc.n_frames before anything else.
+static bool repeats_still_image(const std::string & family) { return family == "levjepa"; }
+
 static float * preprocess_item(const jepa_model * model, const item & it, int tubelet, bool video_model,
                                int * out_T, int * out_h, int * out_w, bool warn_pad) {
     npy::Array hold;
@@ -124,6 +135,15 @@ static float * preprocess_item(const jepa_model * model, const item & it, int tu
     std::vector<int> fh, fw;
     if (!item_frames(it, hold, fp, fh, fw)) return nullptr;
     int T = (int) fp.size();
+    const int want = jepa_model_n_frames(model);
+    if (video_model && T == 1 && want > 1 && repeats_still_image(jepa_model_family(model))) {
+        for (int i = 1; i < want; i++) { fp.push_back(fp[0]); fh.push_back(fh[0]); fw.push_back(fw[0]); }
+        T = want;
+        if (warn_pad) {
+            fprintf(stderr, "note: %s: still image repeated %d times along T, which is how '%s' takes "
+                            "an image\n", it.name.c_str(), want, jepa_model_family(model));
+        }
+    }
     if (video_model && tubelet > 1 && T % tubelet != 0 &&
         jepa_token_grid(model, T, jepa_model_img_size(model), jepa_model_img_size(model), nullptr, nullptr, nullptr) == 0) {
         const int pad = tubelet - T % tubelet;
@@ -244,7 +264,7 @@ int main(int argc, char ** argv) {
     const bool quiet_items = !frames_list.empty();
 
     const std::string family = jepa_model_family(model);
-    const bool video_model = family == "vjepa" || family == "vjepa2" || family == "vjepa2_1";
+    const bool video_model = family == "vjepa" || family == "vjepa2" || family == "vjepa2_1" || family == "levjepa";
     const int tubelet = jepa_model_tubelet_size(model);
     const bool clip_mode = !frames_npy.empty() || as_video || (video_model && images.size() > 1 && !as_images);
     // The library never batches video clips (one clip per graph), so grouping clip items only

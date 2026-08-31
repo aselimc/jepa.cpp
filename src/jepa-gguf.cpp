@@ -15,6 +15,7 @@ jepa_family_id jepa_family_from_string(const std::string & s) {
     if (s == "vjepa")    return JEPA_FAMILY_VJEPA;
     if (s == "vjepa2")   return JEPA_FAMILY_VJEPA2;
     if (s == "vjepa2_1") return JEPA_FAMILY_VJEPA2_1;
+    if (s == "levjepa")  return JEPA_FAMILY_LEVJEPA;
     if (s == "hfvit")    return JEPA_FAMILY_HFVIT;
     if (s == "lewm")     return JEPA_FAMILY_LEWM;
     return JEPA_FAMILY_UNKNOWN;
@@ -282,6 +283,14 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
     e.image_patch_embed = r.getb("jepa.enc.image_patch_embed", false);
     e.hier_layers  = r.get_iarr("jepa.enc.hier_layers");
     e.layer_scale  = r.getb("jepa.enc.layer_scale", false);
+    // Absent means "full", so no file written before this key existed changes meaning. An unknown
+    // value is refused rather than silently downgraded to full attention: running levjepa weights
+    // unmasked does not fail, it just returns worse features (docs/gguf-schema.md, levjepa note).
+    e.attn_mode    = r.gets("jepa.enc.attn_mode", "full");
+    if (e.attn_mode != "full" && e.attn_mode != "block_causal") {
+        jepa_log("jepa: unknown jepa.enc.attn_mode '%s' (expected full | block_causal)\n", e.attn_mode.c_str());
+        return false;
+    }
     e.has_proj     = r.has("jepa.enc.proj_act");
     e.proj_act     = jepa_act_from_string(r.gets("jepa.enc.proj_act", "gelu_erf"));
     if (e.embed_dim % e.n_head != 0) {

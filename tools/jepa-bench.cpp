@@ -341,7 +341,7 @@ int main(int argc, char ** argv) {
     const double load_ms = now_ms() - t_load;
 
     const std::string family = jepa_model_family(model);
-    const bool video_model = family == "vjepa" || family == "vjepa2" || family == "vjepa2_1";
+    const bool video_model = family == "vjepa" || family == "vjepa2" || family == "vjepa2_1" || family == "levjepa";
     const int  img = jepa_model_img_size(model);
 
     int H = img, W = img;

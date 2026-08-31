@@ -1,5 +1,6 @@
 // Unit test for src/rope3d.{h,cpp}: V-JEPA 2 / 2.1 3-D RoPE tables + ggml graph application,
-// checked against golden vectors produced by scripts/gen_rope_ref.py (tests/vectors/rope3d/).
+// checked against golden vectors produced by scripts/gen_rope_ref.py (tests/vectors/rope3d/),
+// and for the LeVJEPA block-causal attention mask (jepa_block_causal_mask_f16).
 //
 //   test-ops [vectors_dir]      exit 0 iff every case has max|err| < 1e-5
 //
@@ -10,6 +11,13 @@
 //      identical data, once on a contiguous [D, H, N] tensor and once on a strided view into a fake
 //      fused [3D, H, N] qkv tensor (the layout the encoder will use),
 // then prints timings for the production-sized grids.
+//
+// The mask case checks the buffer entry by entry against the rule in docs/gguf-schema.md and then
+// pushes it through jepa_build_attention on both attention paths (flash and naive), against a
+// double-precision masked softmax on the host. That is what pins the ORIENTATION: the mask is
+// [n_kv, n_q] with the query on the row, so a transposed buffer would pass the entry check of a
+// symmetric rule and fail here.
+#include "jepa-internal.h"
 #include "rope3d.h"
 
 #include "ggml.h"
@@ -254,6 +262,124 @@ static void bench(ggml_backend_t backend, int gt, int gh, int gw, int D, int H, 
            gt, gh, gw, N, D, H, std::chrono::duration<double, std::milli>(t1 - t0).count(), ms);
 }
 
+// --- LeVJEPA block-causal mask -----------------------------------------------------------------
+static bool run_mask_case(ggml_backend_t backend) {
+    const int gt = 4, gh = 4, gw = 4, npre = 1;
+    const int64_t tpf = (int64_t) gh * gw;
+    const int64_t N = npre + (int64_t) gt * tpf;                      // 65
+    std::vector<ggml_fp16_t> mask;
+    jepa_block_causal_mask_f16(gt, gh, gw, npre, mask);
+
+    bool ok = mask.size() == (size_t) N * N;
+    int64_t n_open = 0;
+    for (int64_t i = 0; i < N && ok; i++) {
+        for (int64_t j = 0; j < N; j++) {
+            const float v = ggml_fp16_to_fp32(mask[(size_t) i * N + j]);
+            // query i, key j: prefix rows see everything; a patch query sees a patch key of its own
+            // or an earlier temporal slot, and never a prefix key.
+            const bool want = i < npre ? true
+                            : (j >= npre && (j - npre) / tpf <= (i - npre) / tpf);
+            const bool got = v == 0.0f;
+            if (got != want || (!got && !std::isinf(v))) { ok = false; break; }
+            n_open += got ? 1 : 0;
+        }
+    }
+    const double density = 100.0 * (double) n_open / (double) (N * N);
+    if (!ok) {
+        printf("mask  gt=%d %dx%d +%d prefix: FAIL (entry mismatch)\n", gt, gh, gw, npre);
+        return false;
+    }
+
+    // --- the mask through jepa_build_attention, both paths, against a host reference ------------
+    const int64_t hd = 64, H = 2;
+    std::vector<float> q((size_t) hd * H * N), k(q.size()), v(q.size());
+    uint32_t s = 12345u;
+    auto rnd = [&s]() { s = s * 1664525u + 1013904223u; return (float) (s >> 8) / (float) (1u << 24) - 0.5f; };
+    for (auto & z : q) z = rnd();
+    for (auto & z : k) z = rnd();
+    for (auto & z : v) z = rnd();
+
+    // reference: softmax over the visible keys only, in double precision
+    const double scale = 1.0 / std::sqrt((double) hd);
+    std::vector<double> ref((size_t) hd * H * N);
+    for (int64_t h = 0; h < H; h++) {
+        for (int64_t i = 0; i < N; i++) {
+            std::vector<double> sc((size_t) N, -INFINITY);
+            double mx = -INFINITY;
+            for (int64_t j = 0; j < N; j++) {
+                if (ggml_fp16_to_fp32(mask[(size_t) i * N + j]) != 0.0f) continue;
+                double d = 0;
+                for (int64_t c = 0; c < hd; c++) {
+                    d += (double) q[(size_t) (i * H + h) * hd + c] * (double) k[(size_t) (j * H + h) * hd + c];
+                }
+                sc[(size_t) j] = d * scale;
+                mx = std::max(mx, sc[(size_t) j]);
+            }
+            double sum = 0;
+            for (int64_t j = 0; j < N; j++) { sc[(size_t) j] = std::isinf(sc[(size_t) j]) ? 0.0 : std::exp(sc[(size_t) j] - mx); sum += sc[(size_t) j]; }
+            for (int64_t c = 0; c < hd; c++) {
+                double acc = 0;
+                for (int64_t j = 0; j < N; j++) acc += sc[(size_t) j] * (double) v[(size_t) (j * H + h) * hd + c];
+                ref[(size_t) (i * H + h) * hd + c] = acc / sum;
+            }
+        }
+    }
+
+    auto run = [&](bool flash, bool with_mask, std::vector<float> & out) {
+        const size_t mem = ggml_tensor_overhead() * 256 + ggml_graph_overhead() + (1u << 20);
+        std::vector<uint8_t> buf(mem);
+        ggml_init_params ip = { mem, buf.data(), true };
+        ggml_context * g = ggml_init(ip);
+        ggml_cgraph * gf = ggml_new_graph(g);
+        ggml_tensor * tq = ggml_new_tensor_3d(g, GGML_TYPE_F32, hd, H, N);
+        ggml_tensor * tk = ggml_new_tensor_3d(g, GGML_TYPE_F32, hd, H, N);
+        ggml_tensor * tv = ggml_new_tensor_3d(g, GGML_TYPE_F32, hd, H, N);
+        ggml_tensor * tm = with_mask ? ggml_new_tensor_2d(g, GGML_TYPE_F16, N, N) : nullptr;
+        for (ggml_tensor * t : {tq, tk, tv}) ggml_set_input(t);
+        if (tm) ggml_set_input(tm);
+        jepa_attn_opts o;
+        o.flash = flash;
+        o.kv_type = GGML_TYPE_F32;
+        o.mask = tm;
+        ggml_tensor * y = jepa_build_attention(g, tq, tk, tv, o);
+        ggml_set_output(y);
+        ggml_build_forward_expand(gf, y);
+        ggml_gallocr_t ga = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+        bool good = ggml_gallocr_alloc_graph(ga, gf);
+        if (good) {
+            ggml_backend_tensor_set(tq, q.data(), 0, q.size() * sizeof(float));
+            ggml_backend_tensor_set(tk, k.data(), 0, k.size() * sizeof(float));
+            ggml_backend_tensor_set(tv, v.data(), 0, v.size() * sizeof(float));
+            if (tm) ggml_backend_tensor_set(tm, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
+            good = ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS;
+        }
+        out.resize((size_t) ggml_nelements(y));
+        if (good) ggml_backend_tensor_get(y, out.data(), 0, ggml_nbytes(y));
+        ggml_gallocr_free(ga);
+        ggml_free(g);
+        return good;
+    };
+
+    auto max_err = [&](const std::vector<float> & got) {
+        double e = 0;
+        for (size_t i = 0; i < ref.size(); i++) e = std::max(e, std::fabs((double) got[i] - ref[i]));
+        return e;
+    };
+
+    std::vector<float> y_flash, y_naive, y_nomask;
+    const bool ran = run(true, true, y_flash) && run(false, true, y_naive) && run(false, false, y_nomask);
+    const double e_flash = ran ? max_err(y_flash) : INFINITY;
+    const double e_naive = ran ? max_err(y_naive) : INFINITY;
+    const double e_nomask = ran ? max_err(y_nomask) : 0.0;
+    // The unmasked run is the control: if the mask were dropped somewhere the two would agree.
+    const bool pass = ran && e_flash < 2e-4 && e_naive < 1e-5 && e_nomask > 1e-3;
+    printf("mask  gt=%d %dx%d +%d prefix (N=%lld, %.1f%% open): flash %.2e, naive %.2e, "
+           "no-mask control %.2e  %s\n", gt, gh, gw, npre, (long long) N, density,
+           e_flash, e_naive, e_nomask, pass ? "OK" : "FAIL");
+    return pass;
+}
+
+
 static bool parse_manifest(const std::string & path, std::vector<test_case> & cases) {
     FILE * f = fopen(path.c_str(), "r");
     if (!f) { fprintf(stderr, "cannot open %s\n", path.c_str()); return false; }
@@ -303,6 +429,7 @@ int main(int argc, char ** argv) {
         if (!run_case(backend, dir, tc)) ++n_fail;
     }
     printf("%d/%d cases passed (tolerance %.0e)\n", (int) cases.size() - n_fail, (int) cases.size(), TOL);
+    if (!run_mask_case(backend)) ++n_fail;
 
     if (n_fail == 0) {
         bench(backend, 32, 16, 16, 64, 16, JEPA_ROPE3D_VJEPA2);   // V-JEPA 2 ViT-L, 64 frames @ 256

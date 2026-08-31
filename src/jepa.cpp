@@ -672,13 +672,17 @@ static int jepa_encode_image(jepa_context * ctx, const jepa_input * in, jepa_out
 }
 
 // ---------------------------------------------------------------------------------------------
-// video encoder (V-JEPA 2 / V-JEPA 2.1)
+// video encoder (V-JEPA 2 / V-JEPA 2.1 / LeVJEPA)
 // ---------------------------------------------------------------------------------------------
-// What the two families share: tubelet patchify -> one mul_mat, 3-D RoPE on q/k of every block
-// (host-side cos/sin tables uploaded once per input shape, src/rope3d.*), full attention (no mask),
-// final enc.norm.  V-JEPA 2.1 adds the 1-frame image tokenizer (enc.patch_embed_img) and the
-// img/video modality vector added to every token.  Exact conventions:
-// scripts/jepa_convert/VJEPA_NOTES.md S3-S4 and its numpy twin vjepa2_numpy_ref.py.
+// What the families share: tubelet patchify -> one mul_mat, 3-D RoPE on q/k of every block
+// (host-side cos/sin tables uploaded once per input shape, src/rope3d.*), final enc.norm.
+// V-JEPA 2.1 adds the 1-frame image tokenizer (enc.patch_embed_img) and the img/video modality
+// vector added to every token.  LeVJEPA adds a CLS token in front of the patch tokens (with an
+// identity row in the RoPE tables, because the reference rotates the patch rows only) and the
+// block-causal attention mask below; its tubelet is 1, so a 16-frame clip is 16 token planes.
+// Exact conventions: scripts/jepa_convert/VJEPA_NOTES.md S3-S4 and its numpy twin
+// vjepa2_numpy_ref.py, plus the levjepa note in docs/gguf-schema.md and the numpy oracle
+// scripts/jepa_convert/selftest.py::levjepa_encoder_forward.
 bool jepa_video_shape_for(const jepa_model * m, int n_frames, int height, int width, jepa_video_shape & vs, bool log) {
     const jepa_enc_hparams & e = m->hp.enc;
     const int P = e.patch_size;
@@ -702,6 +706,7 @@ bool jepa_video_shape_for(const jepa_model * m, int n_frames, int height, int wi
     vs.gt = n_frames / vs.tubelet;
     vs.gh = height / P;
     vs.gw = width / P;
+    vs.n_prefix  = (e.cls_token ? 1 : 0) + e.n_registers;   // levjepa: the CLS row (see n_rows())
     vs.n_tokens  = (int64_t) vs.gt * vs.gh * vs.gw;
     vs.patch_dim = (int64_t) e.in_chans * vs.tubelet * P * P;
     ggml_tensor * pe = vs.image_path ? m->patch_embed_img_w : m->patch_embed_w;
@@ -735,11 +740,36 @@ jepa_rope3d_params jepa_encoder_rope_params(const jepa_model * m, int gt, int gh
     return rp;
 }
 
+// Host side of the block-causal mask. F16 serves both consumers: ggml_flash_attn_ext requires it,
+// ggml_soft_max_ext accepts it (docs/ggml-notes.md S2), so one buffer covers the flash and the
+// naive path and both backends. The table is [n_kv, n_q] with the query on the row -- ne[0] is the
+// key axis -- and is built once per (context, shape), not per layer.
+void jepa_block_causal_mask_f16(int gt, int gh, int gw, int n_prefix, std::vector<ggml_fp16_t> & out) {
+    const int64_t tpf = (int64_t) gh * gw;                 // patch tokens per temporal slot
+    const int64_t np  = n_prefix;
+    const int64_t N   = np + (int64_t) gt * tpf;
+    const ggml_fp16_t zero = ggml_fp32_to_fp16(0.0f), ninf = ggml_fp32_to_fp16(-INFINITY);
+    out.assign((size_t) N * N, ninf);
+    for (int64_t i = 0; i < np; i++) {                     // prefix rows read the whole clip
+        for (int64_t j = 0; j < N; j++) out[(size_t) i * N + j] = zero;
+    }
+    for (int64_t q = 0; q < N - np; q++) {                 // patch queries: same slot or earlier
+        const int64_t fq = q / tpf;
+        ggml_fp16_t * row = out.data() + (size_t) (np + q) * N;
+        // the prefix columns stay -inf: the CLS is a read-only sink for the patch tokens
+        for (int64_t k = 0; k <= fq; k++) {
+            for (int64_t j = k * tpf; j < (k + 1) * tpf; j++) row[np + j] = zero;
+        }
+    }
+}
+
 ggml_tensor * jepa_build_encoder_video(jepa_context * ctx, ggml_tensor * inp,
-                                       ggml_tensor * cos_t, ggml_tensor * sin_t, bool image_path) {
+                                       ggml_tensor * cos_t, ggml_tensor * sin_t, bool image_path,
+                                       ggml_tensor * mask) {
     const jepa_model * m = ctx->model;
     const jepa_enc_hparams & e = m->hp.enc;
     ggml_context * g = ctx->ctx_g;
+    const int64_t D = e.embed_dim;
 
     ggml_tensor * pw = image_path ? m->patch_embed_img_w : m->patch_embed_w;
     ggml_tensor * pb = image_path ? m->patch_embed_img_b : m->patch_embed_b;
@@ -752,7 +782,25 @@ ggml_tensor * jepa_build_encoder_video(jepa_context * ctx, ggml_tensor * inp,
         }
         x = ggml_add(g, x, mod);
     }
+    // levjepa: CLS goes in front of the patch tokens, after the patch embedding and with no
+    // position information of any kind -- the RoPE tables carry an identity row for it instead
+    // (jepa_encode_video). Video never batches, so no broadcast over ne[2] is needed here.
+    if (e.n_registers > 0) {
+        if (!m->reg_tokens || m->reg_tokens->ne[1] != e.n_registers) {
+            jepa_log("jepa: jepa.enc.n_registers is %d but enc.reg_tokens is missing or mis-shaped\n", e.n_registers);
+            return nullptr;
+        }
+        x = ggml_concat(g, m->reg_tokens, x, 1);
+    }
+    if (e.cls_token) {
+        if (!m->cls_token) {
+            jepa_log("jepa: jepa.enc.cls_token is set but enc.cls_token is missing\n");
+            return nullptr;
+        }
+        x = ggml_concat(g, ggml_reshape_2d(g, m->cls_token, D, 1), x, 1);
+    }
     jepa_block_opts opts = encoder_block_opts(ctx);
+    opts.attn.mask = mask;
     opts.qk_hook = [cos_t, sin_t](ggml_context * c, ggml_tensor * t, bool /*is_k*/) {
         return jepa_rope3d_apply(c, t, cos_t, sin_t);   // q and k (not v), before the 1/sqrt(d) scale
     };
@@ -778,27 +826,42 @@ static int jepa_encode_video(jepa_context * ctx, const jepa_input * in, jepa_out
     jepa_video_shape vs;
     if (!jepa_video_shape_for(m, in->n_frames, in->height, in->width, vs, true)) return -1;
     if (ctx->params.verbose) {
-        jepa_log("jepa: %s path: %d frames %dx%d -> grid %dx%dx%d = %lld tokens (tubelet %d, patch %d)\n",
+        jepa_log("jepa: %s path: %d frames %dx%d -> grid %dx%dx%d = %lld tokens%s (tubelet %d, patch %d)%s\n",
                  vs.image_path ? "image" : "video", in->n_frames, in->height, in->width, vs.gt, vs.gh, vs.gw,
-                 (long long) vs.n_tokens, vs.tubelet, e.patch_size);
+                 (long long) vs.n_tokens, vs.n_prefix ? " + 1 CLS" : "", vs.tubelet, e.patch_size,
+                 e.block_causal() ? ", block-causal attention" : "");
     }
 
     const int64_t D = e.embed_dim;
-    const int64_t N = vs.n_tokens;
+    const int64_t N = vs.n_tokens;          // patch tokens: the RoPE grid and the patchify output
+    const int64_t R = vs.n_rows();          // rows that actually go through the blocks (N + CLS)
     // --no-flash is the only honest F32 attention path on a GPU (gpu-notes §1.5) but its score
     // matrix is 4*N^2*H bytes — 0.30 GiB at 2048 tokens and 15 GiB at 18432. Say so before trying.
     if (!ctx->params.use_flash_attn &&
-        !jepa_gpu_naive_attn_fits(ctx, N, e.n_head, "the video encoder with --no-flash")) return -1;
+        !jepa_gpu_naive_attn_fits(ctx, R, e.n_head, "the video encoder with --no-flash")) return -1;
     const int64_t n_clips = in->n_batch;
-    out->n_tokens = n_clips * N;
+    out->n_tokens = n_clips * R;
     out->dim = D;
     out->data = (float *) malloc((size_t) out->n_tokens * D * sizeof(float));
     if (!out->data) return -1;
 
     // RoPE tables: identical for every clip of this shape, so build them once and upload per graph.
+    // A prefix token is not on the grid and the reference never rotates it, so it gets an identity
+    // row (cos 1, sin 0) rather than being fed a position — jepa_rope3d_apply stays untouched.
     std::vector<float> rope_cos, rope_sin;
     jepa_rope3d_tables(jepa_encoder_rope_params(m, vs.gt, vs.gh, vs.gw), rope_cos, rope_sin);
     const int hd = e.head_dim();
+    if (vs.n_prefix > 0) {
+        rope_cos.insert(rope_cos.begin(), (size_t) vs.n_prefix * hd, 1.0f);
+        rope_sin.insert(rope_sin.begin(), (size_t) vs.n_prefix * hd, 0.0f);
+    }
+
+    // Block-causal attention (jepa.enc.attn_mode): one [R, R] F16 buffer for every layer and every
+    // clip of this shape.
+    std::vector<ggml_fp16_t> mask_data;
+    if (e.block_causal()) {
+        jepa_block_causal_mask_f16(vs.gt, vs.gh, vs.gw, (int) vs.n_prefix, mask_data);
+    }
 
     const size_t clip_floats = (size_t) in->n_chans * in->n_frames * in->height * in->width;
     std::vector<float> rows;
@@ -811,20 +874,27 @@ static int jepa_encode_video(jepa_context * ctx, const jepa_input * in, jepa_out
         ggml_tensor * inp = ggml_new_tensor_2d(ctx->ctx_g, GGML_TYPE_F32, vs.patch_dim, N);
         ggml_set_name(inp, "patches");
         ggml_set_input(inp);
-        ggml_tensor * cos_t = ggml_new_tensor_3d(ctx->ctx_g, GGML_TYPE_F32, hd, 1, N);
-        ggml_tensor * sin_t = ggml_new_tensor_3d(ctx->ctx_g, GGML_TYPE_F32, hd, 1, N);
+        ggml_tensor * cos_t = ggml_new_tensor_3d(ctx->ctx_g, GGML_TYPE_F32, hd, 1, R);
+        ggml_tensor * sin_t = ggml_new_tensor_3d(ctx->ctx_g, GGML_TYPE_F32, hd, 1, R);
         ggml_set_name(cos_t, "rope_cos"); ggml_set_input(cos_t);
         ggml_set_name(sin_t, "rope_sin"); ggml_set_input(sin_t);
-        ggml_tensor * y = jepa_build_encoder_video(ctx, inp, cos_t, sin_t, vs.image_path);
+        ggml_tensor * mask = nullptr;
+        if (!mask_data.empty()) {
+            mask = ggml_new_tensor_2d(ctx->ctx_g, GGML_TYPE_F16, R, R);
+            ggml_set_name(mask, "attn_mask");
+            ggml_set_input(mask);
+        }
+        ggml_tensor * y = jepa_build_encoder_video(ctx, inp, cos_t, sin_t, vs.image_path, mask);
         if (!y) { free(out->data); out->data = nullptr; return -1; }
         ggml_build_forward_expand(ctx->gf, y);
         if (!jepa_graph_alloc(ctx)) { free(out->data); out->data = nullptr; return -1; }
         ggml_backend_tensor_set(inp, rows.data(), 0, rows.size() * sizeof(float));
         ggml_backend_tensor_set(cos_t, rope_cos.data(), 0, rope_cos.size() * sizeof(float));
         ggml_backend_tensor_set(sin_t, rope_sin.data(), 0, rope_sin.size() * sizeof(float));
+        if (mask) ggml_backend_tensor_set(mask, mask_data.data(), 0, mask_data.size() * sizeof(ggml_fp16_t));
         if (jepa_graph_compute(ctx) != 0) { free(out->data); out->data = nullptr; return -1; }
         total_ms += ctx->last_compute_ms;
-        ggml_backend_tensor_get(y, out->data + (size_t) b * N * D, 0, (size_t) N * D * sizeof(float));
+        ggml_backend_tensor_get(y, out->data + (size_t) b * R * D, 0, (size_t) R * D * sizeof(float));
     }
     ctx->last_batch = 1;      // still one clip per graph, see the note in jepa_encode()
     ctx->last_compute_ms = total_ms;
@@ -958,13 +1028,14 @@ int64_t jepa_token_grid(const jepa_model * model, int n_frames, int height, int 
             jepa_log("jepa: jepa_token_grid: family 'vjepa' (V-JEPA 1) is not implemented\n");
             return 0;
         case JEPA_FAMILY_VJEPA2:
-        case JEPA_FAMILY_VJEPA2_1: {
+        case JEPA_FAMILY_VJEPA2_1:
+        case JEPA_FAMILY_LEVJEPA: {
             jepa_video_shape vs;
             if (!jepa_video_shape_for(model, n_frames, height, width, vs, false)) return 0;
             if (gt) *gt = vs.gt;
             if (gh) *gh = vs.gh;
             if (gw) *gw = vs.gw;
-            return vs.n_tokens;
+            return vs.n_rows();   // levjepa: the CLS row is part of the output
         }
         default: {
             const jepa_enc_hparams & e = model->hp.enc;
@@ -1002,6 +1073,7 @@ int jepa_encode(jepa_context * ctx, const jepa_input * in, jepa_output * out) {
             return jepa_encode_image(ctx, in, out);
         case JEPA_FAMILY_VJEPA2:
         case JEPA_FAMILY_VJEPA2_1:
+        case JEPA_FAMILY_LEVJEPA:
             // One graph per clip: tubelet patchify + 3-D RoPE over the whole T x H x W token grid.
             // n_batch > 1 loops here rather than sharing a graph, on purpose: batching buys the
             // fixed per-call cost, ~5 ms on the image models, which is under 1 % of a clip's

@@ -142,7 +142,7 @@ if(JEPA_BUILD_TESTS)
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-ops.cpp)
     add_executable(test-ops tests/test-ops.cpp)
     target_link_libraries(test-ops PRIVATE jepa)
-    target_include_directories(test-ops PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_include_directories(test-ops PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
     add_test(NAME ops COMMAND test-ops ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/rope3d)
   endif()
   # GPU backend checks: the supports_op graph walk (which must REFUSE a strided ggml_roll) and a
