@@ -134,6 +134,11 @@ None of the seven is gated and none carries an acceptable-use policy. The `jepac
 these terms one for one; the fixtures dataset is CC BY-NC 4.0, because it stores outputs of the two
 non-commercial models.
 
+`scripts/hf_publish.py` is what maintains those repositories: `cards` regenerates every model card from
+the GGUF metadata and the artifacts behind this site, `upload` pushes a set one repository at a time, and
+`check` compares the hub's sha256 and size for every published file — and every card — against the local
+ones, exiting non-zero on any drift.
+
 ### Converting instead of downloading
 
 `scripts/download_models.sh --convert` fetches the *source* checkpoints into `models/` (git-ignored)
