@@ -27,6 +27,15 @@
 #include <string>
 #include <vector>
 
+// setenv/unsetenv are POSIX; MSVC ships _putenv_s, where an empty value removes the variable.
+#ifdef _WIN32
+static int  errs_setenv(const char * k, const char * v) { return _putenv_s(k, v); }
+static void errs_unsetenv(const char * k)               { _putenv_s(k, ""); }
+#else
+static int  errs_setenv(const char * k, const char * v) { return setenv(k, v, 1); }
+static void errs_unsetenv(const char * k)               { unsetenv(k); }
+#endif
+
 #ifdef _WIN32
 #  include <direct.h>
 #  include <process.h>
@@ -406,11 +415,11 @@ static void test_api_guards(jepa_model * m, jepa_context * ctx) {
 // --------------------------------------------------------------------------------------------
 // The budget is read when the context is created, so each case gets its own context.
 static void test_budget(jepa_model * m) {
-    if (setenv("JEPA_MAX_GRAPH_MIB", "1", 1) != 0) return;
+    if (errs_setenv("JEPA_MAX_GRAPH_MIB", "1") != 0) return;
     jepa_context_params cp = jepa_context_default_params();
     cp.n_threads = 2;
     jepa_context * tight = jepa_context_new(m, cp);
-    if (!tight) { printf("FAIL budget: no context\n"); g_fail++; unsetenv("JEPA_MAX_GRAPH_MIB"); return; }
+    if (!tight) { printf("FAIL budget: no context\n"); g_fail++; errs_unsetenv("JEPA_MAX_GRAPH_MIB"); return; }
 
     // The encoder at the model's own crop. A learned-position model accepts exactly one input size,
     // so the way to make the budget bite is a small budget, not a big image; whether 1 MiB is small
@@ -468,7 +477,7 @@ static void test_budget(jepa_model * m) {
                   "JEPA_MAX_GRAPH_MIB");
     }
     jepa_context_free(tight);
-    unsetenv("JEPA_MAX_GRAPH_MIB");
+    errs_unsetenv("JEPA_MAX_GRAPH_MIB");
 }
 
 // --------------------------------------------------------------------------------------------
