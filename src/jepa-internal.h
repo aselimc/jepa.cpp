@@ -26,7 +26,11 @@
 #include <string>
 #include <vector>
 
+// The build defines this from the CMake project version (CMakeLists.txt); the fallback is for
+// a build that does not come through CMake.
+#ifndef JEPA_VERSION
 #define JEPA_VERSION "0.1.0-dev"
+#endif
 
 // Log helper (stderr).
 void jepa_log(const char * fmt, ...);
