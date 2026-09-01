@@ -166,7 +166,10 @@ void jepa_resize_antialias_u8(const uint8_t * src, int h, int w, int c, uint8_t 
 // ---------------------------------------------------------------------------------------------
 jepa_preprocess_params jepa_preprocess_default_params(const jepa_model * model) {
     jepa_preprocess_params p;
-    const jepa_pre_hparams & h = model->hp.pre;
+    // A null model would otherwise be a null dereference; the library's own defaults are a
+    // well-defined answer and the preprocessing entry points check the struct they are given anyway.
+    static const jepa_pre_hparams fallback;
+    const jepa_pre_hparams & h = model ? model->hp.pre : fallback;
     for (int i = 0; i < 3; i++) { p.mean[i] = h.mean[i]; p.std[i] = h.std[i]; }
     p.resize_short = h.resize_short;
     p.crop = h.crop;

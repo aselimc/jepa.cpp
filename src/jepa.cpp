@@ -1106,7 +1106,8 @@ int jepa_top_k(const float * logits, int n, int k, int32_t * idx) {
 }
 
 int64_t jepa_token_grid(const jepa_model * model, int n_frames, int height, int width, int * gt, int * gh, int * gw) {
-    if (!model) return 0;
+    // 0 is this function's "not encodable", and a non-positive extent is exactly that
+    if (!model || n_frames < 1 || height < 1 || width < 1) return 0;
     switch (model->hp.family) {
         case JEPA_FAMILY_VJEPA:
             // V-JEPA v1 (sincos3d tables) has no encoder path yet — jepa_encode would refuse the
