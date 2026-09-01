@@ -323,6 +323,13 @@ protocol, and the decoder and the probe of the published run are not held fixed 
 Machine-readable twin: `tests/results/accuracy-ssv2.json`, which carries the clip order, the true
 labels and every run's per-clip top-1 prediction.*
 
+![One row per model and dtype: a dot at the jepa.cpp top-1 minus PyTorch's, in percentage points,
+against a vertical line at the PyTorch baseline, for Imagenette images, UCF-101 clips and the SSv2
+validation split](assets/results-accuracy.svg)
+
+*All three benchmarks on one scale: the line is PyTorch's own top-1 and each dot is a jepa.cpp file
+against it, labelled with its absolute top-1. `scripts/gen_results_figure.py --split` redraws it.*
+
 ## SSv2 head agreement on out-of-distribution clips
 
 The 105 UCF-101 query clips through encoder + attentive pooler + 174-way classifier, scored as

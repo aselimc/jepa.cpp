@@ -18,11 +18,15 @@ Every value on the figure is read from a committed artifact; nothing is typed in
                                        of a row benchmarks.json already holds.
 
 The three panels are latency per item across the four backends, k-NN top-1 against PyTorch, and the
-weights/latency trade-off per dtype on both backends.
+weights/latency trade-off per dtype on both backends.  Each is also written on its own — the
+documentation puts a panel beside the tables it draws, while README.md leads with the four headline
+numbers instead (docs/assets/hero.svg, scripts/gen_hero_figure.py).
 
     python scripts/gen_results_figure.py                  # writes docs/assets/results.svg
+    python scripts/gen_results_figure.py --split          # and results-{latency,accuracy,
+                                                          #             quantization}.svg
     python scripts/gen_results_figure.py --png tmp/x.png  # also write a PNG to look at
-    python scripts/gen_results_figure.py --check          # exit 1 if the committed SVG is stale
+    python scripts/gen_results_figure.py --check          # exit 1 if any of the four is stale
 
 matplotlib is the only dependency, and the figure is the only thing in the repository that needs it,
 so it is deliberately absent from docs/requirements.txt and from CI:
@@ -588,11 +592,9 @@ def environment(bench, perf: str) -> str:
     return "  ·  ".join(bits)
 
 
-def build_figure():
+def load_artifacts() -> dict:
+    """Everything both the combined figure and the single-panel ones read, loaded once."""
     bench = load_json(BENCH_JSON)
-    acc_img = load_json(ACC_IMAGE_JSON)
-    acc_vid = load_json(ACC_VIDEO_JSON)
-    acc_ssv2 = load_json(ACC_SSV2_JSON) if ACC_SSV2_JSON.exists() else None
     perf = PERF_MD.read_text() if PERF_MD.exists() else ""
     if not perf:
         warn(f"cannot read {PERF_MD.relative_to(ROOT)}: every GPU series is dropped")
@@ -600,7 +602,44 @@ def build_figure():
     groups = encoder_groups(bench) if bench else {}
     cpu_f16 = {(g["model"], g["tokens"]): g["cpu"]["f16"][32]
                for g in groups.values() if 32 in g["cpu"].get("f16", {})}
-    gpu = parse_gpu_tables(PERF_MD, cpu_f16) if perf else {}
+    return {
+        "bench": bench,
+        "acc_img": load_json(ACC_IMAGE_JSON),
+        "acc_vid": load_json(ACC_VIDEO_JSON),
+        "acc_ssv2": load_json(ACC_SSV2_JSON) if ACC_SSV2_JSON.exists() else None,
+        "perf": perf,
+        "groups": groups,
+        "gpu": parse_gpu_tables(PERF_MD, cpu_f16) if perf else {},
+    }
+
+
+def speed_legend(fig, bbox, ncol: int):
+    """The key panel 1 needs: who each bar is, and what the two marks on it mean."""
+    handles = [
+        Patch(facecolor=C_TORCH_CPU),
+        Patch(facecolor=C_CPP_CPU),
+        (Patch(facecolor=C_CPP_CPU),
+         Line2D([], [], color="white", marker="|", ms=7, mew=1.4, ls="none")),
+        Patch(facecolor=C_TORCH_GPU),
+        Patch(facecolor=C_CPP_GPU),
+        Patch(facecolor=C_TORCH_CPU, hatch="///", edgecolor="white"),
+    ]
+    labels = ["PyTorch CPU, f32, 32 threads", "jepa.cpp CPU, f16, 32 threads",
+              "the same run at 96 threads", "PyTorch CUDA, fp16", "jepa.cpp CUDA, f16",
+              "the PyTorch forward is not the same work — an upper bound"]
+    leg = fig.legend(handles, labels, loc="upper left", bbox_to_anchor=bbox, ncol=ncol,
+                     frameon=False, fontsize=8.2, handlelength=1.7, handleheight=0.95,
+                     columnspacing=1.6, handletextpad=0.6,
+                     handler_map={tuple: HandlerTuple(ndivide=None)})
+    for text in leg.get_texts():
+        text.set_color(INK)
+    return leg
+
+
+def build_figure(data: dict | None = None):
+    data = data if data is not None else load_artifacts()
+    bench, perf, groups, gpu = data["bench"], data["perf"], data["groups"], data["gpu"]
+    acc_img, acc_vid, acc_ssv2 = data["acc_img"], data["acc_vid"], data["acc_ssv2"]
 
     fig = plt.figure(figsize=(16, 9.6), dpi=100)
     fig.patch.set_facecolor(PAGE)
@@ -619,27 +658,47 @@ def build_figure():
                            "faster on CUDA", fontsize=14.5, color=INK, va="top", ha="left")
     fig.text(0.008, 0.943, environment(bench, perf), fontsize=8.5, color=MUTED, va="top", ha="left")
 
-    handles = [
-        Patch(facecolor=C_TORCH_CPU),
-        Patch(facecolor=C_CPP_CPU),
-        (Patch(facecolor=C_CPP_CPU),
-         Line2D([], [], color="white", marker="|", ms=7, mew=1.4, ls="none")),
-        Patch(facecolor=C_TORCH_GPU),
-        Patch(facecolor=C_CPP_GPU),
-        Patch(facecolor=C_TORCH_CPU, hatch="///", edgecolor="white"),
-    ]
-    labels = ["PyTorch CPU, f32, 32 threads", "jepa.cpp CPU, f16, 32 threads",
-              "the same run at 96 threads", "PyTorch CUDA, fp16", "jepa.cpp CUDA, f16",
-              "the PyTorch forward is not the same work — an upper bound"]
-    leg = fig.legend(handles, labels, loc="upper left", bbox_to_anchor=(0.006, 0.922), ncol=6,
-                     frameon=False, fontsize=8.2, handlelength=1.7, handleheight=0.95,
-                     columnspacing=1.6, handletextpad=0.6,
-                     handler_map={tuple: HandlerTuple(ndivide=None)})
-    for text in leg.get_texts():
-        text.set_color(INK)
+    speed_legend(fig, (0.006, 0.922), 6)
 
     fig.text(0.008, 0.012, "generated by scripts/gen_results_figure.py from tests/results/*.json "
                            "and docs/performance.md", fontsize=7.2, color=MUTED, va="bottom")
+    return fig
+
+
+# ---- one panel per file ---------------------------------------------------------------------------
+
+# docs/performance.md and docs/accuracy.md carry a panel each beside the tables it draws, so each one
+# is also written on its own.  Same data, same panel code, same look; only the frame around it —
+# figure size, legend, provenance line — is per file.
+PANELS = ("latency", "accuracy", "quantization")
+
+
+def panel_paths(out: pathlib.Path) -> dict:
+    return {name: out.with_name(f"{out.stem}-{name}{out.suffix}") for name in PANELS}
+
+
+def build_panel_figure(name: str, data: dict):
+    """One panel of the combined figure as a figure of its own."""
+    bench, perf, groups, gpu = data["bench"], data["perf"], data["groups"], data["gpu"]
+    if name == "latency":
+        fig = plt.figure(figsize=(12.0, 6.0), dpi=100)
+        gs = fig.add_gridspec(1, 1, left=0.148, right=0.985, top=0.815, bottom=0.105)
+        panel_speed(fig.add_subplot(gs[0]), groups, gpu)
+        speed_legend(fig, (0.008, 0.995), 3)
+    elif name == "accuracy":
+        fig = plt.figure(figsize=(8.6, 5.4), dpi=100)
+        gs = fig.add_gridspec(1, 1, left=0.295, right=0.985, top=0.905, bottom=0.115)
+        panel_accuracy(fig.add_subplot(gs[0]), data["acc_img"], data["acc_vid"],
+                       data["acc_ssv2"])
+    elif name == "quantization":
+        fig = plt.figure(figsize=(8.6, 6.2), dpi=100)
+        gs = fig.add_gridspec(2, 1, left=0.125, right=0.985, top=0.885, bottom=0.15, hspace=0.62)
+        panel_quant([fig.add_subplot(gs[0]), fig.add_subplot(gs[1])], groups, gpu)
+    else:
+        raise ValueError(f"unknown panel {name!r}")
+    fig.patch.set_facecolor(PAGE)
+    fig.text(0.008, 0.012, f"{environment(bench, perf)}  ·  generated by "
+             "scripts/gen_results_figure.py", fontsize=7.2, color=MUTED, va="bottom")
     return fig
 
 
@@ -654,9 +713,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("-o", "--out", default=str(OUT_SVG),
                     help="SVG to write (default docs/assets/results.svg)")
-    ap.add_argument("--png", help="also write a PNG here, to look at; never committed")
+    ap.add_argument("--png", help="also write a PNG of the combined figure here, to look at")
+    ap.add_argument("--split", action="store_true",
+                    help="also write each panel on its own, as results-latency.svg, "
+                         "results-accuracy.svg and results-quantization.svg next to --out")
     ap.add_argument("--check", action="store_true",
-                    help="regenerate into a temporary file and exit 1 if --out differs")
+                    help="regenerate all four files into a temporary directory and exit 1 if any "
+                         "of them differs from what is committed")
     a = ap.parse_args()
 
     # Deterministic output: no timestamp, a fixed salt for the generated element ids, and glyphs as
@@ -671,28 +734,38 @@ def main() -> int:
         "path.simplify": True,
     })
 
-    fig = build_figure()
+    # All four are built on every run, in this order, whatever is then written: --check and a plain
+    # run must hand savefig the same figures in the same sequence for the bytes to compare equal.
+    data = load_artifacts()
     out = pathlib.Path(a.out)
+    paths = panel_paths(out)
+    figures = [(out, build_figure(data))] + \
+              [(paths[name], build_panel_figure(name, data)) for name in PANELS]
     if a.png:
         png = pathlib.Path(a.png)
-        save(fig, png, "png")
+        save(figures[0][1], png, "png")
         print(f"wrote {png}")
 
     if a.check:
+        stale = []
         with tempfile.TemporaryDirectory() as td:
-            tmp = pathlib.Path(td) / "results.svg"
-            save(fig, tmp, "svg")
-            new = tmp.read_bytes()
-        old = out.read_bytes() if out.exists() else b""
-        if new != old:
-            print(f"{out} is stale ({len(old)} bytes on disk, {len(new)} regenerated) — "
-                  "run scripts/gen_results_figure.py", file=sys.stderr)
+            for path, fig in figures:
+                tmp = pathlib.Path(td) / path.name
+                save(fig, tmp, "svg")
+                new, old = tmp.read_bytes(), (path.read_bytes() if path.exists() else b"")
+                if new != old:
+                    stale.append(f"{path} ({len(old)} bytes on disk, {len(new)} regenerated)")
+                else:
+                    print(f"{path} is up to date ({len(new)} bytes)")
+        if stale:
+            print("stale: " + ", ".join(stale) + " — run scripts/gen_results_figure.py --split",
+                  file=sys.stderr)
             return 1
-        print(f"{out} is up to date ({len(new)} bytes)")
         return 0
 
-    save(fig, out, "svg")
-    print(f"wrote {out} ({out.stat().st_size} bytes)")
+    for path, fig in figures if a.split else figures[:1]:
+        save(fig, path, "svg")
+        print(f"wrote {path} ({path.stat().st_size} bytes)")
     return 0
 
 
