@@ -153,8 +153,10 @@ def runs_from_results_json(path: Path) -> tuple[list[dict], dict]:
         # inverse is exact to that rounding. Both are only ever used for a printed MiB figure or a
         # percentage, where 0.1 MiB is far below the displayed precision.
         # Rows written by a generator that stored the raw fields rebuild exactly; older rows carry
-        # only the rounded ones, and rebuilding those can move a derived column (tokens/s, a MiB
-        # figure) by one in its last printed digit. That is the rounding, not a re-measurement.
+        # only the rounded ones, and rebuilding those moves derived columns slightly: measured over
+        # the 80 rows of the 2026-08-31 sweep, 26 cells of the rendered document by at most one unit
+        # in the last printed digit, and `tokens_per_s` in the JSON by up to 1.5 at its 0.1
+        # resolution. That is the rounding, not a re-measurement.
         if "ms_mean_raw" in r:
             r["ms_mean"] = r.pop("ms_mean_raw")
         if "load_ms_raw" in r:
@@ -1138,12 +1140,23 @@ def build_gpu_results(runs, meta, torch_gpu, cpu_runs, skipped, doc, sweep_dir) 
     out of the CPU sweep — because that ratio is the only reason most of these numbers are quoted,
     and a reader should not have to join two artifacts by hand to get it.
     """
-    cpu32 = {(r["model"], r["mode"], r["shape"]): r["ms_mean"]
+    # Both sides are keyed on shape_label(), not on the raw jepa-bench `shape` string. A CPU run read
+    # back from the committed artifact already carries the RENDERED label ("384x384"), while one
+    # straight from the sweep carries the tool's own ("1f 384x384"); keying on the raw string made
+    # the join miss for every video model at one frame and silently blanked its cpu_f16_t32_ms and
+    # speedup_vs_cpu_f16_t32 cells.
+    try:
+        sweep_dir = str(Path(sweep_dir).resolve().relative_to(Path.cwd().resolve()))
+    except (ValueError, OSError):
+        pass
+    cpu32 = {(r["model"], r["mode"], shape_label(r)): r["ms_mean"]
              for r in cpu_runs if r["ftype"] == "f16" and r["threads"] == 32}
     blob = {
         "task": "jepa.cpp inference timing and memory on one CUDA device, tools/jepa-bench --gpu "
                 "on synthetic deterministic input",
         "generated_from": doc,
+        # Relative to the repo root when it is inside it: an absolute path is this machine's, and the
+        # artifact is committed.
         "generated_from_dir": sweep_dir,
         "protocol": {
             "ms": "wall time of ggml_backend_graph_compute for the named graph "
@@ -1167,9 +1180,11 @@ def build_gpu_results(runs, meta, torch_gpu, cpu_runs, skipped, doc, sweep_dir) 
                               "tests/results/benchmarks.json",
             "grid": "the configurations docs/performance.md tabulates (scripts/bench_gpu.grid); a "
                     "cell printed as a dash there is one nobody has asked for, not one that failed",
+            "device": "per row, and authoritative: this artifact spans more than one card, so there "
+                      "is deliberately no top-level device index",
         },
         "box": {k: meta.get(k) for k in
-                ("device", "device_index", "device_memory", "compute_cap", "power_limit", "driver",
+                ("device", "device_memory", "compute_cap", "power_limit", "driver",
                  "cuda_driver_api", "nvcc", "kernel", "compiler", "ggml_commit", "git_commit",
                  "ggml_llamafile")},
         "sessions": meta.get("sessions", []),
@@ -1196,7 +1211,7 @@ def build_gpu_results(runs, meta, torch_gpu, cpu_runs, skipped, doc, sweep_dir) 
         }
         if r["mode"] in ("head", "predictor"):
             row["encoder_ms"] = round(r.get("encoder_ms", 0.0), 3)
-        cpu = cpu32.get((r["model"], r["mode"], r["shape"]))
+        cpu = cpu32.get((r["model"], r["mode"], shape_label(r)))
         if cpu:
             row["cpu_f16_t32_ms"] = round(cpu, 3)
             if r["ms_mean"]:
@@ -1269,7 +1284,9 @@ def render_gpu(A, blob: dict) -> None:
     cardrows = [
         ["GPU", f"{box.get('device', '?')}, {box.get('device_memory', '?')}, compute "
                 f"{box.get('compute_cap', '?')}, {box.get('power_limit', '?')} board limit"],
-        ["Device", f"index {box.get('device_index', '?')} — every run below has the card to itself"],
+        ["Device", f"{box.get('device', '?')} — every run below has the card to itself; the device "
+                   "index is per row (`device` in the artifact), because the sweeps that built this "
+                   "table did not all use the same card"],
         ["Driver", f"{box.get('driver', '?')} (CUDA {box.get('cuda_driver_api', '?')} driver API)"],
         ["Toolkit", f"`nvcc` {box.get('nvcc', '?')}"],
         ["Kernel", box.get("kernel", "?")],

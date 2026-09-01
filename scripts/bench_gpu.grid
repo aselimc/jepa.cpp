@@ -5,7 +5,8 @@
 #
 # <arg> is the frame count for encoder/head/predictor, the rollout step count for lewm-rollout, the
 # predictor window for lewm-step (a label only — the graph is always jepa.pred.n_frames wide) and the
-# candidate count K for ac / ac-rollout (the horizon of ac-rollout is fixed at the planner's 2).
+# candidate count K for ac. The two rollout modes take K or K:H, H being the horizon (default 2, the
+# reference planner's); their tag is K<k>H<h>.
 # <gpu-prec> is f32 (the default: GGML_PREC_F32 on every mul_mat) or f16, the bench-only opt-out.
 #
 # The grid is the grid docs/performance.md publishes, so tests/results/benchmarks-gpu.json is a
@@ -37,13 +38,17 @@ vjepa2-vitg-fpc64-256       | predictor    | 16 | f16
 vjepa2-ac-vitg              | ac           | 1  | f16
 vjepa2-ac-vitg              | ac           | 16 | f16
 vjepa2-ac-vitg              | ac           | 64 | f16
-vjepa2-ac-vitg              | ac-rollout   | 1  | f16
-vjepa2-ac-vitg              | ac-rollout   | 16 | f16,q8_0
-vjepa2-ac-vitg              | ac-rollout   | 64 | f16,q8_0
-vjepa2-ac-vitg              | ac-rollout   | 256 | f16
-vjepa2-ac-vitg              | ac-plan      | 16 | f16,q8_0
-vjepa2-ac-vitg              | ac-plan      | 64 | f16,q8_0
-vjepa2-ac-vitg              | ac-plan      | 256 | f16
+vjepa2-ac-vitg              | ac-rollout   | 1     | f16
+vjepa2-ac-vitg              | ac-rollout   | 16    | f16,q8_0
+vjepa2-ac-vitg              | ac-rollout   | 64    | f16,q8_0
+vjepa2-ac-vitg              | ac-rollout   | 256   | f16
+vjepa2-ac-vitg              | ac-rollout   | 16:4  | f16,q8_0
+vjepa2-ac-vitg              | ac-rollout   | 64:4  | f16,q8_0
+vjepa2-ac-vitg              | ac-plan      | 16    | f16,q8_0
+vjepa2-ac-vitg              | ac-plan      | 64    | f16,q8_0
+vjepa2-ac-vitg              | ac-plan      | 256   | f16
+vjepa2-ac-vitg              | ac-plan      | 16:4  | f16
+vjepa2-ac-vitg              | ac-plan      | 64:4  | f16
 
 # ---- the --gpu-prec f16 opt-out (bench-only, not parity-gated) -----------------------------------
 ijepa_vith14_1k             | encoder | 1  | f16 | f16

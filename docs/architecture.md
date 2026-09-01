@@ -333,22 +333,24 @@ per step, and `pred.embed` runs on them once per graph instead of K times. `jepa
 appends a newly observed frame (the receding-horizon step) and `jepa_ac_context_trim` slides the
 window; capacity is `jepa.pred.n_frames`, allocated once.
 
-**What that is worth, measured: almost nothing in time, and that is the honest answer.** Cached
-against explicit context on CUDA1 at f16 is 786.11 vs 787.32 ms (K = 64, H = 2) and 318.02 vs 317.79
-ms (K = 16, H = 4) — inside run-to-run noise. The shared-prefix broadcast against a fully replicated
-context is 527.95 vs 529.43 ms on the GPU and 2181 vs 2200 ms on the CPU at 16 threads, 0.3–0.9 %.
-The reason is arithmetic: `pred.embed` is one [1408 → 1024] matmul over 256 rows, against 24 blocks
-of 1024-d attention and FFN over K × 258 rows, and the upload is 1.44 MB against a half-second graph.
-The handle earns its place as an **API**, not as a speed-up — one object held across CEM iterations
-and receding-horizon steps, one device allocation for the observed frames — and the parity suite
-gates it as bit-identical to the explicit path.
+**What that is worth, measured: nothing in time, and that is the honest answer.** Back-to-back in one
+session on CUDA1 at f16, cached against explicit context is +0.11 % at K = 16 / H = 2, +0.07 % at
+K = 64, +0.14 % at K = 256, −0.18 % at K = 16 / H = 4 and −0.20 % at K = 64 / H = 4: **±0.2 %,
+straddling zero**. The shared-prefix broadcast against a fully replicated context is the same story
+(527.95 vs 529.43 ms on the GPU, 2181 vs 2200 ms on the CPU at 16 threads). The reason is arithmetic:
+`pred.embed` is one [1408 → 1024] matmul over 256 rows, against 24 blocks of 1024-d attention and FFN
+over K × 258 rows, and the upload is 1.44 MB against a half-second graph. The handle earns its place
+as an **API**, not as a speed-up — one object held across CEM iterations and receding-horizon steps,
+one device allocation for the observed frames — and the parity suite gates it as bit-identical to the
+explicit path, including a six-update receding-horizon loop
+([performance](performance.md#planning-what-a-cem-decision-costs) has the table).
 
 The planner on top of it, `jepa_ac_plan`, is a port of Meta's `mpc_utils.py::cem`. Two details of
 that loop decide whether an implementation is right: only four of the seven action dimensions are
 sampled (translation and the gripper; rotation is hard zeros), and `selected.std(0)` is torch's
 **unbiased** estimator, a factor 1.155 at topk = 4 applied every iteration. Replaying the random
 draws their loop made, jepa.cpp returns the same plan to max |Δ| 2.98e-08
-([parity](parity.md#v-jepa-2-ac-jepapredkind--ac--the-action-conditioned-world-model)).
+([parity](parity.md#v-jepa-2-ac-jepapredkind-ac-the-action-conditioned-world-model)).
 
 ## Robustness
 

@@ -332,7 +332,11 @@ typedef struct {
     uint32_t seed;                 // RNG seed, used only when `noise` is NULL
 } jepa_ac_cem_params;
 
-// Every field at the reference's default (mpc_utils.py's own signature defaults).
+// Every field this struct HAS, at the reference's default (mpc_utils.py's own signature defaults).
+// Two of cem()'s parameters have no field here because the released planner never varies them:
+// `axis={}` (pin a sampled dimension to a constant) and `close_gripper=None` (force the gripper shut
+// from step h onwards). Both are reference defaults, not omissions from the algorithm; a caller that
+// needs them can pin the corresponding lanes in `noise` or post-process the plan.
 jepa_ac_cem_params jepa_ac_cem_default_params(void);
 
 // Plan against `goal` ([tokens_per_frame, enc_dim], normalised like the handle's latents).

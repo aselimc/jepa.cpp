@@ -23,6 +23,7 @@ from ctypes import (
     c_int32,
     c_int64,
     c_size_t,
+    c_uint32,
     c_uint8,
     c_void_p,
 )
@@ -132,6 +133,25 @@ class jepa_model_params(ctypes.Structure):  # noqa: N801 - the C name
     ]
 
 
+class jepa_ac_cem_params(ctypes.Structure):  # noqa: N801 - the C name
+    """The V-JEPA 2-AC planner's knobs; field order must match include/jepa.h exactly."""
+
+    _fields_ = [
+        ("samples", c_int),
+        ("topk", c_int),
+        ("cem_steps", c_int),
+        ("horizon", c_int),
+        ("maxnorm", c_float),
+        ("gripper_clamp", c_float),
+        ("momentum_mean", c_float),
+        ("momentum_std", c_float),
+        ("momentum_mean_gripper", c_float),
+        ("momentum_std_gripper", c_float),
+        ("round_gripper", c_float),
+        ("seed", c_uint32),
+    ]
+
+
 u8_p = POINTER(c_uint8)
 f32_p = POINTER(c_float)
 i32_p = POINTER(c_int32)
@@ -140,7 +160,6 @@ size_p = POINTER(c_size_t)
 
 # (name, restype, argtypes) for every function in include/jepa.h, in header order.
 FUNCTIONS: list[tuple[str, object, list]] = [
-    # --- lifecycle
     ("jepa_context_default_params", jepa_context_params, []),
     ("jepa_model_load", jepa_model_p, [c_char_p, c_bool]),
     ("jepa_model_free", None, [jepa_model_p]),
@@ -262,8 +281,6 @@ FUNCTIONS: list[tuple[str, object, list]] = [
      [jepa_context_p, f32_p, c_int, c_int, f32_p, f32_p, POINTER(jepa_output)]),
     ("jepa_ac_rollout", c_int,
      [jepa_context_p, f32_p, c_int, f32_p, f32_p, f32_p, c_int, c_int, f32_p]),
-    ("jepa_ac_next_state", None, [jepa_model_p, f32_p, f32_p, f32_p]),
-    ("jepa_ac_energy", None, [f32_p, f32_p, c_int, c_int64, c_int64, f32_p]),
     ("jepa_ac_rollout_ex", c_int,
      [jepa_context_p, f32_p, c_int, f32_p, f32_p, f32_p, f32_p, c_int, c_int, f32_p]),
     # --- cached planning context
@@ -275,7 +292,12 @@ FUNCTIONS: list[tuple[str, object, list]] = [
     ("jepa_ac_context_trim", c_int, [jepa_ac_context_p, c_int]),
     ("jepa_ac_rollout_cached", c_int,
      [jepa_context_p, jepa_ac_context_p, f32_p, f32_p, c_int, c_int, f32_p]),
+    ("jepa_ac_cem_default_params", jepa_ac_cem_params, []),
+    ("jepa_ac_plan", c_int,
+     [jepa_context_p, jepa_ac_context_p, f32_p, POINTER(jepa_ac_cem_params), f32_p, f32_p, f32_p]),
     # --- encoder batching
+    ("jepa_ac_next_state", None, [jepa_model_p, f32_p, f32_p, f32_p]),
+    ("jepa_ac_energy", None, [f32_p, f32_p, c_int, c_int64, c_int64, f32_p]),
     ("jepa_context_set_max_batch", None, [jepa_context_p, c_int]),
     ("jepa_context_max_batch", c_int, [jepa_context_p]),
     ("jepa_context_last_batch", c_int, [jepa_context_p]),

@@ -30,7 +30,7 @@ struct forge_opts {
     // the 5 GB released file. Each knob below breaks exactly one of those invariants.
     bool ac_pred = false;
     int  ac_pred_dim = 8, ac_pred_heads = 2, ac_pred_layers = 1, ac_pred_ffn = 16;
-    int  ac_action_dim = 4, ac_state_dim = 4, ac_cond_tokens = 2, ac_grid = 2, ac_frames = 3;
+    int  ac_action_dim = 4, ac_state_dim = 4, ac_cond_tokens = 2, ac_grid = 2, ac_frames = 5;
     bool ac_drop_tensors = false;      // metadata promises a predictor the file does not carry
     bool ac_bad_action_shape = false;  // pred.action_embed.weight with the wrong input width
     int  n_registers = 0;

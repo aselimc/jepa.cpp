@@ -297,13 +297,21 @@ worst token; at the **low-bit tier (q4_*, q5_*, q6_k) the token map is not gated
 printed, and the pass/fail comes from the derived tensors (`pooled_mean` ≥ 0.99) and the top-1
 (`tests/test-parity.cpp`, `POLICY`, "advisory"). A q4_k row above is a measurement, not a guarantee.
 
-**A labelling quirk worth knowing.** `vjepa2-vitg-fpc64-256-q4_k.gguf` self-reports
-`general.file_type = q4_0`, and so does the AC bundle's. K-quants need `ne[0] % 256 == 0`, and this
-family's width is 1408 = 5.5 × 256, so every `[*, 1408]`-row matrix — `attn_qkv`, `attn_out`,
-`ffn_up`, `pred.embed` — falls back to q4_0 and only the `ffn_down` matrices (`ne[0]` 6144 or 4096)
-stay q4_K. The file ends up 158 q4_0 against 52 q4_K, and `general.file_type` is the *most common*
-stored type, so the honest majority answer is q4_0. The label is left as the file computes it; the
-filename says what was asked for, and `jepa-info` lists the real mix.
+**A labelling quirk worth knowing, and it differs between the two ViT-g bundles.** K-quants need
+`ne[0] % 256 == 0`, and the encoder's width is 1408 = 5.5 × 256, so every `[*, 1408]`-row matrix —
+`attn_qkv`, `attn_out`, `ffn_up`, `pred.embed` — falls back to q4_0; only matrices whose `ne[0]` is a
+multiple of 256 (the `ffn_down` weights at 6144 / 4096, and anything at the AC predictor's 1024)
+stay q4_K. `general.file_type` is the *most common* stored type, so which side wins depends on how
+much of the file is predictor:
+
+| file | tensor mix | `general.file_type` |
+|---|---|---|
+| `vjepa2-vitg-fpc64-256-q4_k.gguf` | 158 q4_0 / 52 q4_K | **2 (q4_0)** |
+| `vjepa2-ac-vitg-q4_k.gguf` | 121 q4_0 / **137 q4_K** | **12 (q4_k)** |
+
+The AC bundle's 24 predictor blocks are 1024-wide, so all of their attention and FFN matrices keep
+the K-quant and tip the majority the other way. Both labels are what the files honestly compute; the
+filename says what was asked for, and `jepa-info` lists the real mix either way.
 
 ### V-JEPA 2-AC ViT-g (`vjepa2-ac`, source f32, encoder + action-conditioned predictor)
 

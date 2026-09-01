@@ -35,9 +35,9 @@ across releases.
   `jepa_ac_context` holds the observed frames' latents on the compute device and the AC graph takes
   its context as a shared prefix plus a per-candidate tail, so the observed frames are neither
   replicated across the K candidates nor re-uploaded per step (`jepa_ac_context_new` / `_update` /
-  `_trim` / `_free`, `jepa_ac_rollout_cached`). Measured, it is worth almost nothing in time —
-  786.11 vs 787.32 ms cached against explicit at K = 64 — and everything in shape: one object across
-  CEM iterations and receding-horizon steps. `jepa_ac_plan` is Meta's own `mpc_utils.py::cem` over
+  `_trim` / `_free`, `jepa_ac_rollout_cached`). Measured back-to-back in one session, it is worth
+  **nothing** in time — cached against explicit is ±0.2 % and straddles zero across K = 16…256 and
+  H = 2…4 — and everything in shape: one object across CEM iterations and receding-horizon steps. `jepa_ac_plan` is Meta's own `mpc_utils.py::cem` over
   it, and replaying the random draws their loop made it returns the same plan to **2.98e-08**.
   `jepa-worldmodel --plan` and `jepa-bench --mode ac-plan` expose both.
 - `jepa_ac_rollout_ex`, which takes the actions between the observed frames — the thing
@@ -53,9 +53,15 @@ across releases.
   Nothing changes for the existing single-sequence callers.
 - `scripts/gen_benchmarks_md.py --merge-json` seeds the CPU rows from the committed artifact and
   overlays a sweep on top, so re-measuring part of the grid adds rows instead of dropping every other
-  model's — the CPU half now has the artifact fallback the GPU half always had.
+  model's — the CPU half now has the artifact fallback the GPU half always had. Session provenance is
+  concatenated, not replaced. The artifact also stores raw `weight_bytes` / `peak_rss_bytes` /
+  `ms_mean_raw` / `load_ms_raw` so a future rebuild is exact; rows written before this change carry
+  only the rounded fields, and rebuilding those moved **26 numeric cells of `docs/benchmarks.md`, each
+  by at most one unit in its last printed digit**, and `tokens_per_s` in
+  `tests/results/benchmarks.json` **by up to 1.5** at its 0.1 resolution — the "one unit in the last
+  printed digit" bound describes the rendered document, not the JSON. Nothing was re-measured.
 - Eight new loader checks for the AC keys and nine new `jepa_ac_*` argument guards in `test-errors`
-  (118 cases, up from 101), forged from a complete tiny AC model.
+  (126 cases, up from 101), forged from a complete tiny AC model.
 
 ## [0.1.1] — 2026-09-01
 

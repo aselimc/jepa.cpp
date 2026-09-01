@@ -815,13 +815,122 @@ static void run_ac_cem(jepa_context * ctx, jepa_model * model, const std::string
     printf("  %-44s %s\n", "  rotation dimensions are hard zeros", zeros ? "OK" : "FAIL");
     // the energy has to improve, or the loop is not optimising anything
     if (q.cem_steps > 1) {
+        // Only the endpoints are compared: CEM is stochastic and a real run wanders (this fixture's
+        // best energy rises again after iteration 3), so "non-increasing" would be a false claim.
         const bool better = best[(size_t) q.cem_steps - 1] <= best[0];
         if (!better) g_fail++;
-        printf("  %-44s %.6f -> %.6f  %s\n", "  best energy over the iterations", best[0],
-               best[(size_t) q.cem_steps - 1], better ? "OK (non-increasing)" : "FAIL");
+        printf("  %-44s %.6f -> %.6f  %s\n", "  best energy, first vs last iteration", best[0],
+               best[(size_t) q.cem_steps - 1], better ? "OK (final <= initial)" : "FAIL");
     }
     jepa_ac_context_free(h);
     (void) HW; (void) S; (void) D;
+}
+
+// The receding-horizon loop: one jepa_ac_context_update per observation, for as long as a planner
+// would run. This exists because the handle used to allocate a fresh ggml_view_3d on every _update
+// into a fixed-size ggml_context pool, so the third update aborted the process inside
+// ggml_new_object() -- in Release, with no error path. The old parity test did exactly one _update
+// and one _trim and sat one object under the limit, which is why it passed. Every step is checked
+// against the explicit-context entry point over the same frames, so a handle that silently pointed
+// at the wrong rows would fail here too.
+static void run_ac_context_loop(jepa_context * ctx, jepa_model * model, const std::string & ref,
+                                const thresholds & thr, bool gpu) {
+    const std::string ro = ref + "/rollout";
+    if (!exists(ro + ".context.npy")) return;
+    (void) thr;
+    const int64_t D = jepa_model_embed_dim(model);
+    const int64_t HW = jepa_ac_tokens_per_frame(model);
+    const int A = jepa_ac_action_dim(model), S = jepa_ac_state_dim(model);
+    int64_t r = 0, d = 0;
+    std::vector<float> seed = load_f32(ro + ".context.npy", &r, &d);
+    std::vector<float> st0  = load_f32(ro + ".state0.npy", &r, &d);
+    std::vector<float> acts = npy::load(ro + ".actions.npy").to_f32();     // [K, H, A]
+    const int K = 2, H = 1, N_UPDATES = 6;
+    const int64_t per_frame = HW * D;
+    const int n_ref_h = (int) (acts.size() / (size_t) A) / 4;              // horizon of the fixture
+
+    jepa_ac_context * h = jepa_ac_context_new(ctx, seed.data(), 1, nullptr, st0.data());
+    if (!h) { printf("  context loop: jepa_ac_context_new failed\n"); g_fail++; return; }
+    printf("  %-44s capacity %d frames, %d updates\n", "receding-horizon loop",
+           jepa_ac_context_capacity(h), N_UPDATES);
+
+    // host mirror of what the handle holds, for the explicit-context comparison
+    std::vector<float> mirror(seed.begin(), seed.begin() + per_frame);
+    std::vector<float> m_act, m_st(st0.begin(), st0.begin() + S);
+    std::vector<float> cand((size_t) K * H * A);
+    for (int c = 0; c < K; c++) {
+        memcpy(cand.data() + (size_t) c * H * A, acts.data() + (size_t) c * n_ref_h * A,
+               (size_t) A * sizeof(float));
+    }
+
+    bool ok_all = true;
+    for (int step = 0; step < N_UPDATES && ok_all; step++) {
+        std::vector<float> out_c((size_t) K * H * per_frame), out_e((size_t) K * H * per_frame);
+        if (jepa_ac_rollout_cached(ctx, h, cand.data(), nullptr, K, H, out_c.data()) != 0) {
+            printf("  context loop: rollout_cached failed at step %d\n", step);
+            g_fail++;
+            ok_all = false;
+            break;
+        }
+        const int nf = jepa_ac_context_n_frames(h);
+        if (jepa_ac_rollout_ex(ctx, mirror.data(), nf, nf > 1 ? m_act.data() : nullptr, m_st.data(),
+                               cand.data(), nullptr, K, H, out_e.data()) != 0) {
+            printf("  context loop: rollout_ex failed at step %d\n", step);
+            g_fail++;
+            ok_all = false;
+            break;
+        }
+        double worst = 0;
+        for (size_t i = 0; i < out_c.size(); i++) worst = std::fmax(worst, std::fabs(out_c[i] - out_e[i]));
+        const bool ok = gpu ? worst <= 1e-2 : worst == 0.0;
+        if (!ok) { g_fail++; ok_all = false; }
+        char nm[96];
+        snprintf(nm, sizeof(nm), "  update %d (%d frames): cached == explicit", step, nf);
+        printf("  %-44s max|d| = %.3e  %s\n", nm, worst,
+               ok ? (gpu ? "OK" : "OK (bit-identical)") : "FAIL");
+
+        // append candidate 0's prediction as the next observed frame
+        std::vector<float> next(out_c.begin(), out_c.begin() + per_frame);
+        std::vector<float> nstate((size_t) S);
+        jepa_ac_next_state(model, m_st.data() + (size_t) (nf - 1) * S, cand.data(), nstate.data());
+        if (jepa_ac_context_update(h, next.data(), cand.data(), nstate.data()) != 0) {
+            printf("  context loop: jepa_ac_context_update failed at step %d\n", step);
+            g_fail++;
+            ok_all = false;
+            break;
+        }
+        mirror.insert(mirror.end(), next.begin(), next.end());
+        m_act.insert(m_act.end(), cand.begin(), cand.begin() + A);
+        m_st.insert(m_st.end(), nstate.begin(), nstate.end());
+    }
+
+    // a trim after the loop, then one more rollout, so the two paths interleave
+    if (ok_all) {
+        const int keep = 2;
+        if (jepa_ac_context_trim(h, keep) != 0 || jepa_ac_context_n_frames(h) != keep) {
+            printf("  context loop: trim failed\n");
+            g_fail++;
+        } else {
+            const int64_t drop = (int64_t) (mirror.size() / per_frame) - keep;
+            mirror.erase(mirror.begin(), mirror.begin() + drop * per_frame);
+            m_act.erase(m_act.begin(), m_act.begin() + drop * A);
+            m_st.erase(m_st.begin(), m_st.begin() + drop * S);
+            std::vector<float> out_c((size_t) K * H * per_frame), out_e((size_t) K * H * per_frame);
+            const int r1 = jepa_ac_rollout_cached(ctx, h, cand.data(), nullptr, K, H, out_c.data());
+            const int r2 = jepa_ac_rollout_ex(ctx, mirror.data(), keep, m_act.data(), m_st.data(),
+                                              cand.data(), nullptr, K, H, out_e.data());
+            if (r1 != 0 || r2 != 0) { printf("  context loop: post-trim rollout failed\n"); g_fail++; }
+            else {
+                double worst = 0;
+                for (size_t i = 0; i < out_c.size(); i++) worst = std::fmax(worst, std::fabs(out_c[i] - out_e[i]));
+                const bool ok = gpu ? worst <= 1e-2 : worst == 0.0;
+                if (!ok) g_fail++;
+                printf("  %-44s max|d| = %.3e  %s\n", "  trim to 2, then cached == explicit", worst,
+                       ok ? (gpu ? "OK" : "OK (bit-identical)") : "FAIL");
+            }
+        }
+    }
+    jepa_ac_context_free(h);
 }
 
 int main(int argc, char ** argv) {
@@ -883,6 +992,7 @@ int main(int argc, char ** argv) {
         run_ac(c, model, ref, thr, jepa_model_is_gpu(model));
         run_ac_seed2(c, model, ref, thr, jepa_model_is_gpu(model));
         run_ac_cem(c, model, ref, thr);
+        run_ac_context_loop(c, model, ref, thr, jepa_model_is_gpu(model));
     }
     if (!vjepa2_path.empty()) {
         if (!case_dir.empty()) run_case(c, case_dir, thr, modality);

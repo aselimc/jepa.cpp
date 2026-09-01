@@ -159,9 +159,9 @@ PyTorch column is the float32 forward the reference dump recorded at 32 threads
 **Which statistic:** every `jepa-bench` figure on this page is the **mean** of the measured runs (its
 headline column; the minimum is printed beside it in parentheses), while
 `scripts/torch_ac_baseline.py` and `scripts/torch_gpu_baseline.py` report the **minimum**. On an idle
-card the two differ by less than 0.1 % — the K = 64 rollout row below reads 786.11 ms mean against
-785.71 min — so the comparison stands, but the columns are not the same estimator and a loaded box
-would separate them.
+card the two differ by about 0.1 % — the K = 64, H = 2 rollout row of
+`tests/results/benchmarks-gpu.json` reads 787.574 ms mean against 786.914 min — so the comparison
+stands, but the columns are not the same estimator and a loaded box would separate them.
 
 | model | mode | shape | GPU f32 | GPU f16 | GPU q8_0 | GPU q4_k | CPU f16 t=32 | PyTorch f32 t=32 | **GPU f16 speed-up** |
 |---|---|---|---:|---:|---:|---:|---:|---:|---|
@@ -240,26 +240,30 @@ The KPI for a world model is not a forward pass, it is a **decision**: one CEM i
 candidate action sequences over an H-step horizon, and a planner runs several iterations per
 observation. `jepa-bench --mode ac-plan` times exactly that (`jepa_ac_plan`, ms per iteration);
 `--mode ac-rollout` times the rollout underneath it (ms per horizon step). Device 1, `GGML_PREC_F32`,
-mean of 5 runs after 2 warmups.
+mean of 5 runs after 2 warmups. **Every cell here is a row of
+[`tests/results/benchmarks-gpu.json`](https://github.com/aselimc/jepa.cpp/blob/main/tests/results/benchmarks-gpu.json)**
+— `ms_mean` for the matching `model`/`mode`/`ftype`/`batch`/`shape`.
 
 | | K = 16 | K = 64 | K = 256 |
 |---|---:|---:|---:|
-| **rollout, ms per step** (f16, H = 2) | 175.9 | 787.2 | 3 172.8 |
-| **rollout, ms per step** (f16, H = 4) | 317.5 | 1 330.9 | 5 379.9 ᵃ |
-| — per candidate-step | 11.0 / 19.8 | 12.3 / 20.8 | 12.4 / 21.0 |
-| **rollout, ms per step** (q8_0, H = 2 / H = 4) | 145.4 / 283.9 | 751.9 / 1 331.4 | 3 156.1 / – |
-| **one CEM iteration, ms** (f16, H = 2) | **357.6** | **1 590.5** | **6 377.2** |
-| **one CEM iteration, ms** (f16, H = 4) | 1 286.4 | 5 366.5 | – ᵃ |
-| **one CEM iteration, ms** (q8_0, H = 2) | 290.8 | 1 503.9 | 6 312.2 |
+| **rollout, ms per step** (f16, H = 2) | 176.0 | 787.6 | 3 173.2 |
+| **rollout, ms per step** (f16, H = 4) | 321.0 | 1 341.1 | – ᵃ |
+| — per candidate-step, H = 2 / H = 4 | 11.0 / 20.1 | 12.3 / 21.0 | 12.4 / – |
+| **rollout, ms per step** (q8_0, H = 2 / H = 4) | 144.0 / 283.8 | 750.7 / 1 331.6 | – |
+| **one CEM iteration, ms** (f16, H = 2) | **358.0** | **1 590.4** | **6 371.0** |
+| **one CEM iteration, ms** (f16, H = 4) | 1 285.9 | 5 369.0 | – ᵃ |
+| **one CEM iteration, ms** (q8_0, H = 2) | 290.9 | 1 503.8 | – |
 | peak VRAM, whole process (f16, H = 2) | 3 131 MiB | 3 955 MiB | 7 315 MiB |
 
 ᵃ K = 256 with H = 4 is refused by the default `$JEPA_MAX_GRAPH_MIB` (8 GiB): the last step is 3
-frames × 256 candidates = 774 rows of graph, an estimated 11.6 GiB. It runs at
-`JEPA_MAX_GRAPH_MIB=16384` in **11 133 MiB** of VRAM, so it fits on a 24 GiB card but not inside the
-library's default ceiling — the guard is doing its job, and raising it is a deliberate act.
+frames × 256 candidates = 774 rows of graph, and the library reports **11 611.1 MiB** of estimated
+graph memory. It runs at `JEPA_MAX_GRAPH_MIB=16384` in **11 133 MiB** of VRAM, so it fits on a 24 GiB
+card but not inside the library's default ceiling — the guard is doing its job, and raising it is a
+deliberate act. The VRAM row is `nvidia-smi` sampled at 5 Hz for the whole process (weights included),
+not a `jepa-bench` column.
 
 **Throughput is flat in K, which is the whole point.** A "rollout" is one candidate carried through
-H steps: at H = 2 that is **40.7 rollouts/s at K = 64** and **40.3 at K = 256** — the candidates
+H steps: at H = 2 that is **40.6 rollouts/s at K = 64** and **40.3 at K = 256** — the candidates
 share one graph per step, so the card stays saturated and the per-candidate cost stops improving
 after about K = 16 (11.0 → 12.4 ms per candidate-step). Doubling K doubles the wall time and doubles
 the candidates scored; it does not get cheaper, and it does not get worse.
@@ -269,25 +273,36 @@ the candidates scored; it does not get cheaper, and it does not get worse.
 
 | one CEM iteration, H = 2 | jepa.cpp f16 | PyTorch f32 | **speed-up** |
 |---|---:|---:|---|
-| K = 16 | 357.6 | 599.7 | **1.68×** |
-| K = 64 | 1 590.5 | 2 619.3 | **1.65×** |
+| K = 16 | 358.0 | 599.7 | **1.68×** |
+| K = 64 | 1 590.4 | 2 619.3 | **1.65×** |
 
 **On the CPU** (32 threads, idle box) the same rollout at K = 64, H = 2 costs 8 243 ms per step at
 f16 — 129 ms per candidate-step against the card's 12.3, a factor 10.5. A planner is a GPU workload;
-the CPU path is for development and for the single-candidate case (K = 1, H = 2: 139 ms per step).
-The full CPU grid is in [benchmarks](benchmarks.md#v-jepa-2-ac-world-model-and-planner).
+the CPU path is for development and for the single-candidate case. The full CPU grid is in
+[benchmarks](benchmarks.md#v-jepa-2-ac-world-model-and-planner).
 
-**The cached context does not appear in these numbers, and that is the finding.** `--no-cached`
-measures the explicit-context entry point, which uploads the observed frames and replicates them
-across the candidates every step: 178.2 vs 175.9 ms (K = 16, H = 2), 793.7 vs 787.2 (K = 64), 3 183.9
-vs 3 172.8 (K = 256) — 0.3–1.3 %, at the edge of run-to-run noise. `pred.embed` is one
-[1408 → 1024] matmul over 256 rows against 24 blocks over K × 258 rows. The handle is an API for
-holding a context across iterations and observations, not a throughput optimisation;
+**The cached context does not appear in these numbers, and that is the finding.** Measured
+back-to-back in one session, same binary, `--no-cached` (the explicit-context entry point, which
+uploads the observed frames and replicates them across the candidates every step) against the default:
+
+| | K=16 H=2 | K=64 H=2 | K=256 H=2 | K=16 H=4 | K=64 H=4 |
+|---|---:|---:|---:|---:|---:|
+| cached, ms/step | 177.51 | 793.09 | 3 183.48 | 322.06 | 1 342.90 |
+| explicit, ms/step | 177.70 | 793.66 | 3 188.07 | 321.49 | 1 340.19 |
+| delta | +0.11 % | +0.07 % | +0.14 % | −0.18 % | −0.20 % |
+
+**±0.2 %, straddling zero** — the two code paths are indistinguishable. `pred.embed` is one
+[1408 → 1024] matmul over 256 rows against 24 blocks over K × 258 rows, and the upload is 1.44 MB
+against a half-second graph. The handle is an API for holding a context across iterations and
+observations, not a throughput optimisation;
 [architecture](architecture.md#the-cached-planning-context) says so with the rest of the numbers.
+(These five pairs are a controlled comparison, not grid rows: `bench_gpu.sh` only ever measures the
+default path, so the artifact carries the cached numbers alone.)
 
 ```bash
 build-cuda/jepa-bench -m models/gguf/vjepa2-ac-vitg-f16.gguf --mode ac-plan --batch 64 --steps 2 --gpu 1
 build-cuda/jepa-bench -m models/gguf/vjepa2-ac-vitg-f16.gguf --mode ac-rollout --batch 256 --steps 2 --gpu 1
+build-cuda/jepa-bench -m models/gguf/vjepa2-ac-vitg-f16.gguf --mode ac-rollout --batch 64 --steps 2 --no-cached --gpu 1
 JEPA_MAX_GRAPH_MIB=16384 build-cuda/jepa-bench -m models/gguf/vjepa2-ac-vitg-f16.gguf \
     --mode ac-rollout --batch 256 --steps 4 --gpu 1
 tmp/venv-cuda/bin/python scripts/torch_ac_baseline.py --device cuda:1 --candidates 16,64 --horizon 2 --cem

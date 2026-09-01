@@ -208,10 +208,11 @@ MODELS = [
             "0.999975 — accumulated float32 round-off over 40 blocks, measured and explained in\n"
             "[parity]({site}/parity/).\n\n"
             "**`-q4_k.gguf` self-reports `general.file_type = q4_0`, and that is correct.** K-quants need\n"
-            "`ne[0] % 256 == 0`, and this family's width is 1408 = 5.5 x 256, so every `[*, 1408]`-row matrix\n"
+            "`ne[0] % 256 == 0`, and this model's width is 1408 = 5.5 x 256, so every `[*, 1408]`-row matrix\n"
             "falls back to q4_0 and only the `ffn_down` matrices stay q4_K — 158 q4_0 against 52 q4_K. The\n"
             "file-type field is the *most common* stored type, so the honest majority answer is q4_0. The\n"
-            "filename says what was asked for; `jepa-info` lists the real mix."
+            "filename says what was asked for; `jepa-info` lists the real mix. (The V-JEPA 2-AC bundle, whose\n"
+            "predictor is 1024-wide, tips the other way and reports q4_k.)"
         ),
     ),
     dict(
@@ -263,9 +264,11 @@ MODELS = [
             "cosine 1.0000000 against Meta's own world-model dump, and K candidates batched on the graph's batch\n"
             "axis are bit-identical to K sequential rollouts, and `jepa_ac_plan` reproduces Meta's own CEM\n"
             "planner to 3e-08 on its own recorded random draws. Full tables in [parity]({site}/parity/).\n\n"
-            "**`-q4_k.gguf` self-reports `general.file_type = q4_0`, and that is correct.** K-quants need\n"
-            "`ne[0] % 256 == 0` and this family's width is 1408 = 5.5 x 256, so every `[*, 1408]`-row matrix\n"
-            "falls back to q4_0; the field is the most common stored type. `jepa-info` lists the real mix."
+            "**On `-q4_k.gguf`:** K-quants need `ne[0] % 256 == 0`, and the encoder's width is 1408 = 5.5 x 256,\n"
+            "so every `[*, 1408]`-row matrix falls back to q4_0. In THIS bundle the 24 predictor blocks are\n"
+            "1024-wide and keep the K-quant, so the mix is 121 q4_0 against 137 q4_K and the file reports\n"
+            "`general.file_type = 12 (q4_k)`. (The encoder-only `vjepa2-vitg-fpc64-256-q4_k.gguf` goes the other\n"
+            "way: 158 q4_0 / 52 q4_K, reported as q4_0.) `jepa-info` lists the real mix."
         ),
     ),
     dict(

@@ -437,13 +437,13 @@ The configurations live in `scripts/bench_gpu.grid`, one line per (model, mode, 
 | setting | value |
 |---|---|
 | GPU | NVIDIA RTX 4500 Ada Generation, 24570 MiB, compute 8.9, 210.00 W board limit |
-| Device | index 1 — every run below has the card to itself |
+| Device | NVIDIA RTX 4500 Ada Generation — every run below has the card to itself; the device index is per row (`device` in the artifact), because the sweeps that built this table did not all use the same card |
 | Driver | 580.173.02 (CUDA 13.0 driver API) |
 | Toolkit | `nvcc` 13.0.88 |
 | Kernel | 6.17.0-1032-oem |
 | Host compiler | c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 |
 | ggml | `36da5713`, **`GGML_LLAMAFILE=ON`** (a host-side path, unused here) |
-| jepa.cpp | `97327075` |
+| jepa.cpp | `d53ab486` |
 | Precision | `GGML_PREC_F32` on every `mul_mat` unless a row says `--gpu-prec f16`; K/V F16 in flash attention for every file but f32 |
 
 Measurement sessions (one `bench_gpu.sh` invocation each):
@@ -454,6 +454,7 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 | CUDA1 | 2 + 5 | 2026-09-01 17:06 UTC | 2026-09-01 17:07 UTC | 0.18 → 0.72 | 0.22 | V-JEPA 2-AC + ViT-g rows, plan item 7.1 |
 | CUDA1 | 2 + 5 | 2026-09-01 17:10 UTC | 2026-09-01 17:10 UTC | 0.45 → 0.67 | 0.23 | — |
 | CUDA1 | 2 + 5 | 2026-09-01 19:38 UTC | 2026-09-01 19:41 UTC | 0.75 → 1.00 | 0.22 | V-JEPA 2-AC planning KPIs (7.2) |
+| CUDA1 | 2 + 5 | 2026-09-01 20:56 UTC | 2026-09-01 21:02 UTC | 0.47 → 1.00 | 0.19 | AC planning grid incl. H=4 (7.2 rework) |
 
 `foreign cores` is the CPU time the whole machine spent out of idle over the session minus the CPU time this sweep's own processes spent, divided by the wall clock: how much of the box belonged to somebody else while the card was timed. The highest here is **0.24** of one core out of 192, i.e. an idle box. A GPU row is host-idle by construction, so the load average alone would not have caught a second tenant.
 
@@ -490,8 +491,8 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 | vjepa2-vitl-fpc64-256 | f16 | 64f 256x256 | 8 192 | CUDA0 | 305.43 | 305.22 | 0.223 | 26821 | 468 | 6388.1 | 20.9x |
 | vjepa2-vitl-fpc64-256 | q8_0 | 64f 256x256 | 8 192 | CUDA0 | 280.42 | 280.35 | 0.071 | 29214 | 473 | 6388.1 | 22.8x |
 | vjepa2-vitl-fpc64-256 | q4_k | 64f 256x256 | 8 192 | CUDA0 | 281.38 | 281.28 | 0.090 | 29113 | 476 | 6388.1 | 22.7x |
-| vjepa2_1-vitb-384 | f16 | 384x384 | 576 | CUDA0 | 4.38 | 4.38 | 0.004 | 131411 | 346 | – | – |
-| vjepa2_1-vitb-384 | q4_k | 384x384 | 576 | CUDA0 | 3.44 | 3.44 | 0.002 | 167252 | 352 | – | – |
+| vjepa2_1-vitb-384 | f16 | 384x384 | 576 | CUDA0 | 4.38 | 4.38 | 0.004 | 131411 | 346 | 60.3 | 13.8x |
+| vjepa2_1-vitb-384 | q4_k | 384x384 | 576 | CUDA0 | 3.44 | 3.44 | 0.002 | 167252 | 352 | 60.3 | 17.5x |
 | vjepa2_1-vitb-384 | f16 | 16f 384x384 | 4 608 | CUDA0 | 42.46 | 42.09 | 0.467 | 108535 | 410 | 853.5 | 20.1x |
 | vjepa2_1-vitb-384 | q4_k | 16f 384x384 | 4 608 | CUDA0 | 37.35 | 37.13 | 0.146 | 123366 | 416 | 853.5 | 22.9x |
 | vjepa2_1-vitb-384 | f16 | 64f 384x384 | 18 432 | CUDA0 | 424.21 | 420.98 | 1.70 | 43450 | 618 | 9036.1 | 21.3x |
@@ -538,17 +539,23 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 | vjepa2-ac-vitg | f16 | ac | 1f x 256tok, K=16 | 4 096 | 113.118 | 112.886 | 0.191 | – | 1337.13 | 11.82x |
 | vjepa2-ac-vitg | f16 | ac | 1f x 256tok, K=1 | 256 | 8.984 | 8.896 | 0.072 | – | 94.87 | 10.56x |
 | vjepa2-ac-vitg | f16 | ac | 1f x 256tok, K=64 | 16 384 | 533.225 | 533.008 | 0.138 | – | 5411.15 | 10.15x |
-| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=16 | 256 | 178.038 | 177.567 | 0.248 | – | 2049.10 | 11.51x |
-| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=1 | 256 | 11.871 | 11.820 | 0.037 | – | 138.88 | 11.70x |
-| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=256 | 256 | 3189.827 | 3187.509 | 1.41 | – | – | – |
-| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=64 | 256 | 794.088 | 793.855 | 0.155 | – | 8242.94 | 10.38x |
-| vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=2, K=16 | 256 | 145.151 | 145.046 | 0.078 | – | 2049.10 | 14.12x |
-| vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=2, K=64 | 256 | 751.703 | 751.673 | 0.031 | – | 8242.94 | 10.97x |
-| vjepa2-ac-vitg | f16 | ac-plan | plan K=16, H=2, it=1 | 512 | 357.210 | 356.779 | 0.435 | – | – | – |
-| vjepa2-ac-vitg | f16 | ac-plan | plan K=256, H=2, it=1 | 512 | 6376.896 | 6372.586 | 3.14 | – | – | – |
-| vjepa2-ac-vitg | f16 | ac-plan | plan K=64, H=2, it=1 | 512 | 1591.153 | 1590.828 | 0.326 | – | – | – |
-| vjepa2-ac-vitg | q8_0 | ac-plan | plan K=16, H=2, it=1 | 512 | 291.080 | 290.930 | 0.167 | – | – | – |
-| vjepa2-ac-vitg | q8_0 | ac-plan | plan K=64, H=2, it=1 | 512 | 1503.817 | 1503.687 | 0.145 | – | – | – |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=16 | 256 | 175.968 | 175.884 | 0.066 | – | 2049.10 | 11.64x |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=4, K=16 | 256 | 321.001 | 320.864 | 0.100 | – | – | – |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=1 | 256 | 11.867 | 11.857 | 0.007 | – | 138.88 | 11.70x |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=256 | 256 | 3173.207 | 3167.872 | 3.27 | – | – | – |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=64 | 256 | 787.574 | 786.909 | 0.390 | – | 8242.94 | 10.47x |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=4, K=64 | 256 | 1341.136 | 1340.755 | 0.290 | – | – | – |
+| vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=2, K=16 | 256 | 143.976 | 143.940 | 0.055 | – | 2049.10 | 14.23x |
+| vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=4, K=16 | 256 | 283.755 | 283.715 | 0.038 | – | – | – |
+| vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=2, K=64 | 256 | 750.660 | 750.453 | 0.114 | – | 8242.94 | 10.98x |
+| vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=4, K=64 | 256 | 1331.563 | 1331.518 | 0.028 | – | – | – |
+| vjepa2-ac-vitg | f16 | ac-plan | plan K=16, H=2, it=1 | 512 | 357.957 | 357.811 | 0.128 | – | – | – |
+| vjepa2-ac-vitg | f16 | ac-plan | plan K=16, H=4, it=1 | 1 024 | 1285.918 | 1285.186 | 0.417 | – | – | – |
+| vjepa2-ac-vitg | f16 | ac-plan | plan K=256, H=2, it=1 | 512 | 6371.005 | 6366.964 | 3.54 | – | – | – |
+| vjepa2-ac-vitg | f16 | ac-plan | plan K=64, H=2, it=1 | 512 | 1590.445 | 1589.309 | 0.592 | – | – | – |
+| vjepa2-ac-vitg | f16 | ac-plan | plan K=64, H=4, it=1 | 1 024 | 5368.995 | 5367.895 | 0.959 | – | – | – |
+| vjepa2-ac-vitg | q8_0 | ac-plan | plan K=16, H=2, it=1 | 512 | 290.904 | 290.706 | 0.133 | – | – | – |
+| vjepa2-ac-vitg | q8_0 | ac-plan | plan K=64, H=2, it=1 | 512 | 1503.825 | 1503.678 | 0.083 | – | – | – |
 
 These are the synthetic-input graphs of the *Masked predictor*, *Attentive-pool head* and *LeWM world model* tables above, run on the card. The masked predictor is the one encoder-sized graph that does **not** gain twentyfold: at `head_dim` 32 no CUDA flash-attention kernel exists, so it takes the naive `mul_mat + soft_max_ext` path — genuinely F32, and about 3 TFLOP/s against flash's 50–70 (`docs/architecture.md` "GPU backend"). The LeWM graphs are the opposite end: three rows of 192 dimensions is far below the size at which a kernel launch pays for itself, and `docs/parity.md` *Results — predictors on CUDA0* times the same two graphs on the real fixture state.
 
@@ -573,4 +580,4 @@ These are the synthetic-input graphs of the *Masked predictor*, *Attentive-pool 
 
 ---
 
-Generated by `scripts/gen_benchmarks_md.py` from 113 runs in `tmp/bench` and 58 GPU runs in `/home/overseer2/workdir/jepa.cpp/tmp/bench-gpu`. Cross-check against `docs/parity.md` (same graphs, real fixture inputs) and `docs/quantization.md` (accuracy per dtype).
+Generated by `scripts/gen_benchmarks_md.py` from 113 runs in `tmp/bench` and 64 GPU runs in `tmp/bench-gpu`. Cross-check against `docs/parity.md` (same graphs, real fixture inputs) and `docs/quantization.md` (accuracy per dtype).

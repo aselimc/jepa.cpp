@@ -227,8 +227,11 @@ while IFS='|' read -r label mode arg dtypes prec; do
         lewm-step)              tag="F$arg"; extra=() ;;
         lewm-rollout)           tag="K$arg"; extra=(--steps "$arg") ;;
         ac)                     tag="K$arg"; extra=(--batch "$arg") ;;
-        ac-rollout)             tag="K$arg"; extra=(--batch "$arg" --steps 2) ;;
-        ac-plan)                tag="K$arg"; extra=(--batch "$arg" --steps 2 --cem-steps 1) ;;
+        # For the two rollout modes <arg> is K or K:H (the horizon; default 2, the planner's).
+        ac-rollout)             _k="${arg%%:*}"; _h="${arg#*:}"; [ "$_h" = "$arg" ] && _h=2
+                                tag="K${_k}H${_h}"; extra=(--batch "$_k" --steps "$_h") ;;
+        ac-plan)                _k="${arg%%:*}"; _h="${arg#*:}"; [ "$_h" = "$arg" ] && _h=2
+                                tag="K${_k}H${_h}"; extra=(--batch "$_k" --steps "$_h" --cem-steps 1) ;;
         *) echo "grid: unknown mode '$mode'" >&2; exit 1 ;;
     esac
     for ftype in ${dtypes//,/ }; do

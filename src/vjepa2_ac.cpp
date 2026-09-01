@@ -455,21 +455,21 @@ extern "C" int jepa_ac_predict_all(jepa_context * ctx, const float * context, in
 static int ac_rollout(jepa_context * ctx, ggml_tensor * seed_dev, const float * seed_rows, int n_seed,
                       const float * seed_actions, const float * seed_states,
                       const float * actions, const float * states,
-                      int n_cand, int horizon, float * out) {
+                      int n_cand, int horizon, float * out, const char * fn) {
     const jepa_model * m = ctx->model;
     const jepa_pred_hparams & p = m->hp.pred;
     const int64_t enc_dim = m->hp.enc.embed_dim;
     const int64_t HW = (int64_t) p.grid_size * p.grid_size;
     const int64_t A = p.action_dim, S = p.state_dim;
     if (n_seed <= 0 || n_cand <= 0 || horizon <= 0) {
-        jepa_log("jepa: jepa_ac_rollout: need n_seed > 0, n_cand > 0 and horizon > 0 (got %d / %d / %d)\n",
-                 n_seed, n_cand, horizon);
+        jepa_log("jepa: %s: need n_seed > 0, n_cand > 0 and horizon > 0 (got %d / %d / %d)\n",
+                 fn, n_seed, n_cand, horizon);
         return -1;
     }
     const int64_t n_seq = (int64_t) n_seed + horizon - 1;   // frames the last step conditions on
     if (p.n_frames > 0 && n_seq > p.n_frames) {
-        jepa_log("jepa: jepa_ac_rollout: %d seed frames + %d steps reaches a %lld-frame context, over the "
-                 "predictor's %d frame slots (jepa.pred.n_frames)\n", n_seed, horizon,
+        jepa_log("jepa: %s: %d seed frames + %d steps reaches a %lld-frame context, over the "
+                 "predictor's %d frame slots (jepa.pred.n_frames)\n", fn, n_seed, horizon,
                  (long long) n_seq, p.n_frames);
         return -1;
     }
@@ -477,9 +477,9 @@ static int ac_rollout(jepa_context * ctx, ggml_tensor * seed_dev, const float * 
     const size_t budget = ctx->max_graph_bytes ? ctx->max_graph_bytes : JEPA_DEFAULT_MAX_GRAPH_BYTES;
     const double tail_bytes = (double) n_cand * (horizon - 1) * HW * enc_dim * sizeof(float);
     if (tail_bytes >= (double) budget) {
-        jepa_log("jepa: jepa_ac_rollout: %d candidates x %d predicted frames x %lld tokens need %.1f MiB "
+        jepa_log("jepa: %s: %d candidates x %d predicted frames x %lld tokens need %.1f MiB "
                  "for the rollout buffer alone, over the %.1f MiB limit ($JEPA_MAX_GRAPH_MIB)\n",
-                 n_cand, horizon - 1, (long long) HW, tail_bytes / (1024.0 * 1024.0),
+                 fn, n_cand, horizon - 1, (long long) HW, tail_bytes / (1024.0 * 1024.0),
                  (double) budget / (1024.0 * 1024.0));
         return -1;
     }
@@ -487,7 +487,10 @@ static int ac_rollout(jepa_context * ctx, ggml_tensor * seed_dev, const float * 
     const int64_t per_frame = HW * enc_dim;
     const int64_t n_tail_max = horizon - 1;          // predicted frames the last step conditions on
     // Per-candidate tail (the predicted frames only); the observed prefix is shared and never copied.
-    std::vector<float> tail((size_t) n_cand * std::max<int64_t>(n_tail_max, 1) * per_frame);
+    // At horizon 1 there is no tail at all -- nothing is ever fed back -- and allocating one anyway
+    // costs n_cand * tokens_per_frame * enc_dim floats for nothing (144 MiB at the CEM defaults).
+    std::vector<float> tail;
+    if (n_tail_max > 0) tail.resize((size_t) n_cand * n_tail_max * per_frame);
     std::vector<float> st((size_t) n_cand * n_seq * S);
     std::vector<float> act((size_t) n_cand * n_seq * A);
     for (int c = 0; c < n_cand; c++) {
@@ -578,9 +581,9 @@ extern "C" int jepa_ac_rollout_ex(jepa_context * ctx, const float * context, int
                                   const float * actions, const float * states,
                                   int n_cand, int horizon, float * out) {
     if (!ctx || !context || !seed_states || !actions || !out) return -1;
-    if (!ac_check(ctx, "jepa_ac_rollout")) return -1;
+    if (!ac_check(ctx, "jepa_ac_rollout_ex")) return -1;
     return ac_rollout(ctx, nullptr, context, n_seed, seed_actions, seed_states, actions, states,
-                      n_cand, horizon, out);
+                      n_cand, horizon, out, "jepa_ac_rollout_ex");
 }
 
 extern "C" int jepa_ac_rollout(jepa_context * ctx, const float * context, int n_seed,
@@ -610,13 +613,27 @@ struct jepa_ac_context {
     std::vector<float>    states;              // [cap, state_dim]  pose at each frame
 };
 
-// Rebuild `view` after n_frames changes: a [enc_dim, n*HW, 1] view of the slab's first n frames.
+// Point `view` at the slab's first n_frames frames: [enc_dim, n*HW, 1].
+//
+// This is called once per _new / _update / _trim, and it must NOT allocate: a ggml_context is a bump
+// allocator that never frees, so creating a fresh ggml_view_3d each time would walk off the end of
+// the pool and abort inside ggml_new_object() — which is exactly what a receding-horizon planner
+// does, one _update per observation. The view object is therefore created once, immediately after
+// the backend buffer exists (so its data pointer is valid), and afterwards only its extents move.
+// ne[0] and the data pointer never change; ne[1] is the row count and nb[2]/nb[3] follow from it.
 static void ac_ctx_review(jepa_ac_context * h) {
     const jepa_pred_hparams & p = h->owner->model->hp.pred;
     const int64_t HW = (int64_t) p.grid_size * p.grid_size;
     const int64_t D = h->owner->model->hp.enc.embed_dim;
-    h->view = ggml_view_3d(h->ctx, h->slab, D, (int64_t) h->n_frames * HW, 1,
-                           h->slab->nb[1], h->slab->nb[1] * (int64_t) h->n_frames * HW, 0);
+    const int64_t rows = (int64_t) h->n_frames * HW;
+    if (!h->view) {
+        h->view = ggml_view_3d(h->ctx, h->slab, D, rows, 1,
+                               h->slab->nb[1], h->slab->nb[1] * rows, 0);
+        return;
+    }
+    h->view->ne[1] = rows;
+    h->view->nb[2] = h->slab->nb[1] * rows;
+    h->view->nb[3] = h->view->nb[2];
 }
 
 extern "C" jepa_ac_context * jepa_ac_context_new(jepa_context * ctx, const float * latents, int n_frames,
@@ -646,7 +663,10 @@ extern "C" jepa_ac_context * jepa_ac_context_new(jepa_context * ctx, const float
     h->owner = ctx;
     h->cap = cap;
     h->n_frames = n_frames;
-    ggml_init_params ip = { ggml_tensor_overhead() * 4, nullptr, true };
+    // Two tensors ever live here: the slab and the one view ac_ctx_review keeps re-pointing. The
+    // headroom is for the ggml_context's own bookkeeping, not for growth — nothing below allocates
+    // per frame, which is the point (see ac_ctx_review).
+    ggml_init_params ip = { ggml_tensor_overhead() * 8, nullptr, true };
     h->ctx = ggml_init(ip);
     if (!h->ctx) { delete h; return nullptr; }
     h->slab = ggml_new_tensor_2d(h->ctx, GGML_TYPE_F32, D, (int64_t) cap * HW);
@@ -739,7 +759,7 @@ extern "C" int jepa_ac_rollout_cached(jepa_context * ctx, jepa_ac_context * h,
     const jepa_pred_hparams & p = ctx->model->hp.pred;
     return ac_rollout(ctx, h->view, nullptr, h->n_frames,
                       h->n_frames > 1 ? h->actions.data() : nullptr, h->states.data(),
-                      actions, states, n_cand, horizon, out);
+                      actions, states, n_cand, horizon, out, "jepa_ac_rollout_cached");
     (void) p;
 }
 
@@ -866,6 +886,9 @@ extern "C" int jepa_ac_plan(jepa_context * ctx, jepa_ac_context * handle, const 
         }
         // -- roll every candidate out through the cached context, then score the FINAL frame
         if (jepa_ac_rollout_cached(ctx, handle, acts.data(), nullptr, K, H, roll.data()) != 0) return -1;
+        // TODO: this gather exists only because jepa_ac_energy wants contiguous rows; at K = 256 it
+        // copies 369 MiB per iteration. A strided variant taking (stride, offset) would let it read
+        // `roll` in place and delete the copy.
         std::vector<float> last((size_t) K * HW * enc_dim);
         for (int c = 0; c < K; c++) {
             memcpy(last.data() + (size_t) c * HW * enc_dim,
