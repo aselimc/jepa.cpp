@@ -103,7 +103,7 @@ struct jepa_enc_hparams {
     std::vector<int> hier_layers;
     bool  layer_scale = false;
     // jepa.enc.attn_mode: "" / "full" = every token sees every token (all families but levjepa),
-    // "block_causal" = the additive mask of jepa_build_block_causal_mask (levjepa).
+    // "block_causal" = the additive mask of jepa_block_causal_mask_f16 (levjepa).
     std::string attn_mode;
     bool block_causal() const { return attn_mode == "block_causal"; }
     // lewm projector
