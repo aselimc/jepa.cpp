@@ -105,6 +105,11 @@ void    jepa_free(void * p);
 // --- inference -------------------------------------------------------------------
 // Encoder: returns [n_tokens, embed_dim] (final-norm applied). Caller frees out->data with jepa_free.
 // Image families encode every (batch, frame) slice independently; rows are concatenated in that order.
+// Video families encode in->n_frames frames as ONE clip, exactly as given: a shorter clip is a
+// shorter clip, not an error, so in->n_frames = 1 through a video model is a one-frame clip and not
+// the still-image path its model card may describe. LeVJEPA's card, for instance, feeds a still
+// image as the frame repeated to jepa.enc.n_frames; jepa-embed does that repeat for the caller,
+// this entry point does not.
 int jepa_encode(jepa_context * ctx, const jepa_input * in, jepa_output * out);
 // Mean over patch tokens (excluding CLS/registers) → [embed_dim]. (enc must hold exactly one item.)
 int jepa_pool_mean(const jepa_model * model, const jepa_output * enc, jepa_output * out);

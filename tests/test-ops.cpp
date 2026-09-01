@@ -2,7 +2,7 @@
 // checked against golden vectors produced by scripts/gen_rope_ref.py (tests/vectors/rope3d/),
 // and for the LeVJEPA block-causal attention mask (jepa_block_causal_mask_f16).
 //
-//   test-ops [vectors_dir]      exit 0 iff every case has max|err| < 1e-5
+//   test-ops [vectors_dir] [--budget-model MODEL.gguf]     exit 0 iff every case has max|err| < 1e-5
 //
 // Per case it checks
 //   1. jepa_rope3d_tables (full grid) and jepa_rope3d_tables_ids (subsampled) against the reference
@@ -17,6 +17,10 @@
 // double-precision masked softmax on the host. That is what pins the ORIENTATION: the mask is
 // [n_kv, n_q] with the query on the row, so a transposed buffer would pass the entry check of a
 // symmetric rule and fail here.
+//
+// --budget-model additionally checks the graph-memory guard of the video path on a real file: the
+// mask is the one R^2 term in that graph, so a clip long enough to be a mistake has to be refused
+// rather than allocated ($JEPA_MAX_GRAPH_MIB, docs/architecture.md "Block-causal attention").
 #include "jepa-internal.h"
 #include "rope3d.h"
 
@@ -31,6 +35,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 static const double TOL = 1e-5;
@@ -380,6 +385,47 @@ static bool run_mask_case(ggml_backend_t backend) {
 }
 
 
+// --- the video graph-memory budget ($JEPA_MAX_GRAPH_MIB) ---------------------------------------
+// A 16-frame clip of a block-causal model is ~221 MiB of graph memory, most of it the 3137 x 3137
+// mask; a 1 MiB budget must refuse it, with no allocation and no crash. The positive control is the
+// same file at one frame (197 rows, a 76 KiB mask), which has to encode normally.
+static bool run_budget_case(const char * gguf) {
+    jepa_model_params mp = jepa_model_default_params();
+    mp.verbose = false;
+    jepa_model * model = jepa_model_load_ex(gguf, &mp);
+    if (!model) { printf("budget FAIL (cannot load %s)\n", gguf); return false; }
+    const int S = jepa_model_img_size(model);
+    std::vector<float> px((size_t) 3 * 16 * S * S, 0.0f);
+
+    auto encode = [&](int frames, int mib) {
+        setenv("JEPA_MAX_GRAPH_MIB", std::to_string(mib).c_str(), 1);
+        jepa_context_params cp = jepa_context_default_params();
+        cp.n_threads = 4;
+        jepa_context * ctx = jepa_context_new(model, cp);
+        jepa_input in;
+        in.data = px.data(); in.n_batch = 1; in.n_chans = 3; in.n_frames = frames; in.height = S; in.width = S;
+        jepa_output o = {nullptr, 0, 0};
+        const int rc = ctx ? jepa_encode(ctx, &in, &o) : -1;
+        const int64_t rows = o.n_tokens;
+        free(o.data);
+        if (ctx) jepa_context_free(ctx);
+        unsetenv("JEPA_MAX_GRAPH_MIB");
+        return std::pair<int, int64_t>(rc, rows);
+    };
+
+    printf("budget: the next line is the expected refusal, not a failure:\n");
+    const auto refused = encode(16, 1);
+    const auto allowed = encode(1, 0);          // 0 -> the default budget
+    const int64_t want = jepa_token_grid(model, 1, S, S, nullptr, nullptr, nullptr);
+    const bool pass = refused.first != 0 && allowed.first == 0 && allowed.second == want && want > 0;
+    printf("budget %s: 16 frames at 1 MiB refused (rc %d), 1 frame at the default budget encoded "
+           "%lld/%lld rows  %s\n", jepa_model_name(model), refused.first,
+           (long long) allowed.second, (long long) want, pass ? "OK" : "FAIL");
+    jepa_model_free(model);
+    return pass;
+}
+
+
 static bool parse_manifest(const std::string & path, std::vector<test_case> & cases) {
     FILE * f = fopen(path.c_str(), "r");
     if (!f) { fprintf(stderr, "cannot open %s\n", path.c_str()); return false; }
@@ -407,9 +453,15 @@ static bool parse_manifest(const std::string & path, std::vector<test_case> & ca
 }
 
 int main(int argc, char ** argv) {
-    std::string dir;
-    if (argc > 1) {
-        dir = argv[1];
+    std::string dir, budget_model;
+    std::vector<std::string> pos;
+    for (int i = 1; i < argc; i++) {
+        const std::string a = argv[i];
+        if (a == "--budget-model" && i + 1 < argc) budget_model = argv[++i];
+        else pos.push_back(a);
+    }
+    if (!pos.empty()) {
+        dir = pos[0];
     } else {
         for (const char * c : { "tests/vectors/rope3d", "../tests/vectors/rope3d", "../../tests/vectors/rope3d" }) {
             FILE * f = fopen((std::string(c) + "/manifest.txt").c_str(), "r");
@@ -430,6 +482,7 @@ int main(int argc, char ** argv) {
     }
     printf("%d/%d cases passed (tolerance %.0e)\n", (int) cases.size() - n_fail, (int) cases.size(), TOL);
     if (!run_mask_case(backend)) ++n_fail;
+    if (!budget_model.empty() && !run_budget_case(budget_model.c_str())) ++n_fail;
 
     if (n_fail == 0) {
         bench(backend, 32, 16, 16, 64, 16, JEPA_ROPE3D_VJEPA2);   // V-JEPA 2 ViT-L, 64 frames @ 256

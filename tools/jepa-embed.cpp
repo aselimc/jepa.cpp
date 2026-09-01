@@ -136,13 +136,24 @@ static float * preprocess_item(const jepa_model * model, const item & it, int tu
     if (!item_frames(it, hold, fp, fh, fw)) return nullptr;
     int T = (int) fp.size();
     const int want = jepa_model_n_frames(model);
-    if (video_model && T == 1 && want > 1 && repeats_still_image(jepa_model_family(model))) {
-        for (int i = 1; i < want; i++) { fp.push_back(fp[0]); fh.push_back(fh[0]); fw.push_back(fw[0]); }
+    const bool fixed_len = video_model && want > 1 && repeats_still_image(jepa_model_family(model));
+    // A still image on a fixed-clip-length family becomes `want` copies of one frame. The copies are
+    // identical, so only the first is preprocessed and the result is memcpy'd into the other slots
+    // (`repeat_from_first` below); resizing the same JPEG 16 times cost 41.8 ms against 15.0.
+    int repeat_from_first = 0;
+    if (fixed_len && T == 1) {
+        repeat_from_first = want;
         T = want;
         if (warn_pad) {
             fprintf(stderr, "note: %s: still image repeated %d times along T, which is how '%s' takes "
                             "an image\n", it.name.c_str(), want, jepa_model_family(model));
         }
+    } else if (fixed_len && T != want && warn_pad) {
+        // Not an error: the graph takes any length. But this family's mask and its training both
+        // assume `want` slots, so a different count is a different model, quietly.
+        fprintf(stderr, "note: %s: %d frames through '%s', which was trained on %d — the clip is "
+                        "encoded as given, but its block-causal mask then spans %d temporal slots "
+                        "instead of %d\n", it.name.c_str(), T, jepa_model_family(model), want, T, want);
     }
     if (video_model && tubelet > 1 && T % tubelet != 0 &&
         jepa_token_grid(model, T, jepa_model_img_size(model), jepa_model_img_size(model), nullptr, nullptr, nullptr) == 0) {
@@ -155,7 +166,8 @@ static float * preprocess_item(const jepa_model * model, const item & it, int tu
 
     float * out = nullptr;
     int crop_h = 0, crop_w = 0;
-    for (int t = 0; t < T; t++) {
+    const int n_pre = repeat_from_first ? 1 : T;    // distinct frames that actually need preprocessing
+    for (int t = 0; t < n_pre; t++) {
         int oh = 0, ow = 0;
         float * f = jepa_preprocess_image_rgb(model, fp[t], fh[t], fw[t], &oh, &ow);
         if (!f) { jepa_free(out); return nullptr; }
@@ -173,6 +185,13 @@ static float * preprocess_item(const jepa_model * model, const item & it, int tu
             memcpy(out + ((size_t) c * T + t) * plane, f + (size_t) c * plane, plane * sizeof(float));
         }
         jepa_free(f);
+    }
+    if (repeat_from_first && out) {
+        const size_t plane = (size_t) crop_h * crop_w;
+        for (int c = 0; c < 3; c++) {
+            const float * src = out + (size_t) c * T * plane;
+            for (int t = 1; t < T; t++) memcpy(out + ((size_t) c * T + t) * plane, src, plane * sizeof(float));
+        }
     }
     if (out_T) *out_T = T;
     if (out_h) *out_h = crop_h;

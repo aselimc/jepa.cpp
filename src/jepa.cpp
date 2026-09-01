@@ -750,7 +750,12 @@ jepa_rope3d_params jepa_encoder_rope_params(const jepa_model * m, int gt, int gh
 // Host side of the block-causal mask. F16 serves both consumers: ggml_flash_attn_ext requires it,
 // ggml_soft_max_ext accepts it (docs/ggml-notes.md S2), so one buffer covers the flash and the
 // naive path and both backends. The table is [n_kv, n_q] with the query on the row -- ne[0] is the
-// key axis -- and is built once per (context, shape), not per layer.
+// key axis. It is built once per jepa_encode() call, shared by every layer and every clip of that
+// call, and uploaded into the graph once per clip; it is not cached across calls.
+//
+// It is also the only R^2 term in this graph, which is what video_graph_bytes() budgets: R*R F16
+// on the host plus the same again in the graph arena. 39 MiB at the released 16-frame shape
+// (R = 3137), 600 MiB at 64 frames (R = 12545).
 void jepa_block_causal_mask_f16(int gt, int gh, int gw, int n_prefix, std::vector<ggml_fp16_t> & out) {
     const int64_t tpf = (int64_t) gh * gw;                 // patch tokens per temporal slot
     const int64_t np  = n_prefix;
@@ -827,15 +832,31 @@ static size_t video_graph_nodes(const jepa_model * m) {
     return (size_t) m->hp.enc.n_layer * 96 + 256;
 }
 
+// Rough peak of one video encoder graph: the per-token activations of encoder_graph_bytes (video
+// never batches, so always one item) plus, for a block-causal file, the R x R F16 attention mask
+// counted twice -- the host buffer and the graph input it is uploaded to are alive at the same
+// time. Everything else here is linear in R; the mask is not, and at 64 frames it is the larger
+// half of the total.
+static size_t video_graph_bytes(const jepa_model * m, int64_t n_rows, bool block_causal) {
+    const size_t act = encoder_graph_bytes(m, 1, n_rows);
+    if (!block_causal) return act;
+    const double mask = 2.0 * 2.0 * (double) n_rows * (double) n_rows;   // host + device, 2 B/entry
+    return mask >= (double) (SIZE_MAX - act) ? SIZE_MAX : act + (size_t) mask;
+}
+
 static int jepa_encode_video(jepa_context * ctx, const jepa_input * in, jepa_output * out) {
     const jepa_model * m = ctx->model;
     const jepa_enc_hparams & e = m->hp.enc;
     jepa_video_shape vs;
     if (!jepa_video_shape_for(m, in->n_frames, in->height, in->width, vs, true)) return -1;
     if (ctx->params.verbose) {
+        char prefix_note[48] = "";
+        if (vs.n_prefix > 0) {
+            snprintf(prefix_note, sizeof(prefix_note), " + %d prefix (CLS/registers)", vs.n_prefix);
+        }
         jepa_log("jepa: %s path: %d frames %dx%d -> grid %dx%dx%d = %lld tokens%s (tubelet %d, patch %d)%s\n",
                  vs.image_path ? "image" : "video", in->n_frames, in->height, in->width, vs.gt, vs.gh, vs.gw,
-                 (long long) vs.n_tokens, vs.n_prefix ? " + 1 CLS" : "", vs.tubelet, e.patch_size,
+                 (long long) vs.n_tokens, prefix_note, vs.tubelet, e.patch_size,
                  e.block_causal() ? ", block-causal attention" : "");
     }
 
@@ -847,6 +868,31 @@ static int jepa_encode_video(jepa_context * ctx, const jepa_input * in, jepa_out
     // matrix is 4*N^2*H bytes — 0.30 GiB at 2048 tokens and 15 GiB at 18432. Say so before trying.
     if (!ctx->params.use_flash_attn &&
         !jepa_gpu_naive_attn_fits(ctx, R, e.n_head, "the video encoder with --no-flash")) return -1;
+
+    // Same $JEPA_MAX_GRAPH_MIB budget jepa_encode_image applies, and for the same reason: a clip
+    // long enough to be a mistake should say so rather than allocate. There is no batch to shrink
+    // here, so an over-budget clip is a refusal.
+    const double mib = 1024.0 * 1024.0;
+    const size_t budget = ctx->max_graph_bytes ? ctx->max_graph_bytes : JEPA_DEFAULT_MAX_GRAPH_BYTES;
+    const size_t need = video_graph_bytes(m, R, e.block_causal());
+    if (need > budget) {
+        jepa_log("jepa: one %lld-row clip of '%s' needs about %.1f MiB of graph memory%s, over the "
+                 "%.1f MiB limit — raise $JEPA_MAX_GRAPH_MIB or feed a shorter or smaller clip\n",
+                 (long long) R, m->hp.name.c_str(), (double) need / mib,
+                 e.block_causal() ? " (most of it the R x R attention mask, held on the host and on the device)" : "",
+                 (double) budget / mib);
+        return -1;
+    }
+    if (e.block_causal()) {
+        const double mask_mib = 2.0 * (double) R * (double) R / mib;   // one copy
+        static bool warned_mask = false;
+        if (mask_mib > 64.0 && !warned_mask) {
+            warned_mask = true;
+            jepa_log("jepa: %lld rows put the block-causal attention mask at %.0f MiB (R x R F16), held "
+                     "once on the host and once in the graph — it is the one part of this graph that "
+                     "grows with the square of the clip length\n", (long long) R, mask_mib);
+        }
+    }
     const int64_t n_clips = in->n_batch;
     out->n_tokens = n_clips * R;
     out->dim = D;
@@ -864,8 +910,8 @@ static int jepa_encode_video(jepa_context * ctx, const jepa_input * in, jepa_out
         rope_sin.insert(rope_sin.begin(), (size_t) vs.n_prefix * hd, 0.0f);
     }
 
-    // Block-causal attention (jepa.enc.attn_mode): one [R, R] F16 buffer for every layer and every
-    // clip of this shape.
+    // Block-causal attention (jepa.enc.attn_mode): one [R, R] F16 buffer shared by every layer and
+    // every clip of this call, re-uploaded into each clip's graph.
     std::vector<ggml_fp16_t> mask_data;
     if (e.block_causal()) {
         jepa_block_causal_mask_f16(vs.gt, vs.gh, vs.gw, (int) vs.n_prefix, mask_data);

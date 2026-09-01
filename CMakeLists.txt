@@ -154,7 +154,13 @@ if(JEPA_BUILD_TESTS)
     add_executable(test-ops tests/test-ops.cpp)
     target_link_libraries(test-ops PRIVATE jepa)
     target_include_directories(test-ops PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
-    add_test(NAME ops COMMAND test-ops ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/rope3d)
+    # --budget-model needs a block-causal video file to check the video path's $JEPA_MAX_GRAPH_MIB
+    # guard on; without one the rope3d and mask cases still run.
+    set(_ops_args "")
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/levjepa-vitl16-f16.gguf)
+      set(_ops_args --budget-model ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/levjepa-vitl16-f16.gguf)
+    endif()
+    add_test(NAME ops COMMAND test-ops ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/rope3d ${_ops_args})
   endif()
   # GPU backend checks: the supports_op graph walk (which must REFUSE a strided ggml_roll) and a
   # GPU-vs-CPU encoder comparison. The binary always builds; the test registers like the other

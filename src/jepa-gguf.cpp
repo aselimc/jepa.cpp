@@ -291,6 +291,16 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
         jepa_log("jepa: unknown jepa.enc.attn_mode '%s' (expected full | block_causal)\n", e.attn_mode.c_str());
         return false;
     }
+    // Only the video encoder builds the mask, so the key is refused on a family whose graph would
+    // ignore it. Loading such a file would run unmasked attention without saying so, which is the
+    // one failure mode this key exists to prevent.
+    if (e.block_causal() && hp.family != JEPA_FAMILY_VJEPA && hp.family != JEPA_FAMILY_VJEPA2 &&
+        hp.family != JEPA_FAMILY_VJEPA2_1 && hp.family != JEPA_FAMILY_LEVJEPA) {
+        jepa_log("jepa: jepa.enc.attn_mode = block_causal on family '%s', whose encoder graph has no "
+                 "attention mask — it would run unmasked. Only the video families implement it.\n",
+                 hp.family_str.c_str());
+        return false;
+    }
     e.has_proj     = r.has("jepa.enc.proj_act");
     e.proj_act     = jepa_act_from_string(r.gets("jepa.enc.proj_act", "gelu_erf"));
     if (e.embed_dim % e.n_head != 0) {

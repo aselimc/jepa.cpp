@@ -92,9 +92,10 @@ static metrics compare(const float * a, const float * b, int64_t rows, int64_t d
 // tail at f16/q8_0 while everything downstream stays exact, so their token map is gated on the
 // median instead.  LeVJEPA is judged with the same video rows and clears them with room to spare
 // (CPU f16 worst token 0.99982, q8_0 0.9914; docs/parity.md) -- its 3137-token clips are the
-// shortest of the video families and its f16 tail never opens.  Relaxing the video bars globally (as an earlier revision did) would have let a
-// real image-side regression through: I-JEPA f16 would pass at a token map mean of 0.99 when the
-// measured value is 0.999984, and LeJEPA q8_0 at 0.95 when it measures 0.999263.
+// shortest of the video families and its f16 tail never opens.  Relaxing the video bars globally
+// (as an earlier revision did) would have let a real image-side regression through: I-JEPA f16
+// would pass at a token map mean of 0.99 when the measured value is 0.999984, and LeJEPA q8_0 at
+// 0.95 when it measures 0.999263.
 //
 // Two tensor classes per cell:
 //   * token maps (`last_hidden_state`, policy.lhs) — for the video families judged on the MEDIAN
