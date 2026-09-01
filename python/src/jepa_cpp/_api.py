@@ -74,8 +74,13 @@ class jepa_context(ctypes.Structure):  # noqa: N801 - the C name
     """Opaque ``jepa_context``; only ever held as a pointer."""
 
 
+class jepa_ac_context(ctypes.Structure):  # noqa: N801 - the C name
+    """Opaque ``jepa_ac_context`` (the cached planning context); only ever held as a pointer."""
+
+
 jepa_model_p = POINTER(jepa_model)
 jepa_context_p = POINTER(jepa_context)
+jepa_ac_context_p = POINTER(jepa_ac_context)
 
 
 # --- plain structs -----------------------------------------------------------------------------
@@ -259,6 +264,17 @@ FUNCTIONS: list[tuple[str, object, list]] = [
      [jepa_context_p, f32_p, c_int, f32_p, f32_p, f32_p, c_int, c_int, f32_p]),
     ("jepa_ac_next_state", None, [jepa_model_p, f32_p, f32_p, f32_p]),
     ("jepa_ac_energy", None, [f32_p, f32_p, c_int, c_int64, c_int64, f32_p]),
+    ("jepa_ac_rollout_ex", c_int,
+     [jepa_context_p, f32_p, c_int, f32_p, f32_p, f32_p, f32_p, c_int, c_int, f32_p]),
+    # --- cached planning context
+    ("jepa_ac_context_new", jepa_ac_context_p, [jepa_context_p, f32_p, c_int, f32_p, f32_p]),
+    ("jepa_ac_context_free", None, [jepa_ac_context_p]),
+    ("jepa_ac_context_n_frames", c_int, [jepa_ac_context_p]),
+    ("jepa_ac_context_capacity", c_int, [jepa_ac_context_p]),
+    ("jepa_ac_context_update", c_int, [jepa_ac_context_p, f32_p, f32_p, f32_p]),
+    ("jepa_ac_context_trim", c_int, [jepa_ac_context_p, c_int]),
+    ("jepa_ac_rollout_cached", c_int,
+     [jepa_context_p, jepa_ac_context_p, f32_p, f32_p, c_int, c_int, f32_p]),
     # --- encoder batching
     ("jepa_context_set_max_batch", None, [jepa_context_p, c_int]),
     ("jepa_context_max_batch", c_int, [jepa_context_p]),

@@ -903,11 +903,26 @@ def dump_levjepa(a) -> None:
 #                        LayerNorm before and after the predictor.
 AC_CANDIDATES = 4      # action sequences scored per planning step (the batch axis of jepa_ac_rollout)
 AC_HORIZON = 2         # rollout steps (the notebook's mpc_args["rollout"])
+# CEM fixture (notebooks/utils/mpc_utils.py::cem). Small on purpose: the point is the ALGORITHM --
+# sampling order, elite selection, the momentum update and the clamps -- not a converged plan.
+AC_CEM = dict(samples=8, topk=4, cem_steps=3, rollout=2, maxnorm=0.05,
+              momentum_mean=0.15, momentum_std=0.75,
+              momentum_mean_gripper=0.15, momentum_std_gripper=0.15)
 
 
 def _ac_normalize(t):
     import torch.nn.functional as F
     return F.layer_norm(t, (t.size(-1),))
+
+
+def _ac_step(world, reps, actions, poses, tpf):
+    """WorldModel.infer_next_action's `step_predictor`, lifted out so cem() can be called directly."""
+    import torch.nn.functional as F
+    from utils.mpc_utils import compute_new_pose
+    B, T, N_T, D = reps.size()
+    nxt = world.predictor(reps.flatten(1, 2), actions, poses)[:, -tpf:]
+    nxt = F.layer_norm(nxt, (nxt.size(-1),))
+    return nxt.view(B, 1, N_T, D), compute_new_pose(poses[:, -1:], actions[:, -1:])
 
 
 def dump_vjepa2_ac(a) -> None:
@@ -974,7 +989,9 @@ def dump_vjepa2_ac(a) -> None:
         x = c.unsqueeze(0).permute(0, 2, 1, 3, 4).flatten(0, 1).unsqueeze(2).repeat(1, 1, 2, 1, 1)
         return x, encoder(x)[0]                                   # [1,3,2,H,W], [tpf, D]
 
+    from utils import mpc_utils
     from utils.mpc_utils import compute_new_pose, poses_to_diff
+    from utils.world_model_wrapper import WorldModel
 
     # The ground-truth first action of the trajectory (energy_landscape_example.ipynb cell 3), plus
     # three fixed perturbations along x / y / z: a deterministic stand-in for a CEM candidate batch.
@@ -1062,7 +1079,7 @@ def dump_vjepa2_ac(a) -> None:
     with torch.inference_mode():
         # ---- 1. encoder samples (also the encoder-parity fixture for the AC bundle)
         enc_rows = {}
-        for idx, tag in ((0, "frame0"), (n_traj - 1, "goalframe")):
+        for idx, tag in ((0, "frame0"), (1, "frame1"), (n_traj - 1, "goalframe")):
             t = time.time()
             x, h = encode(idx)
             fwd = time.time() - t
@@ -1133,6 +1150,82 @@ def dump_vjepa2_ac(a) -> None:
                "next_state_ref": (next_state_ref, f"[{AC_CANDIDATES}, 7]")},
               {"preprocess_s": 0.0, "forward_s": round(fwd, 4)},
               candidates=AC_CANDIDATES, horizon=AC_HORIZON)
+
+        # ---- 5. the same rollout from TWO observed context frames.
+        # Meta's own loop never has more than one, so nothing upstream pins the conditioning of the
+        # earlier frames; this sample fixes it and runs THEIR predictor on it, which is what makes
+        # jepa_ac_rollout_ex(n_seed = 2) checkable. Frame 0 carries `seed_actions[0]` (the action that
+        # actually took the arm from frame 0 to frame 1) and its own pose; frame 1 carries the
+        # candidate's first planned action and the observed pose at frame 1.
+        t = time.time()
+        z1_obs = enc_rows["frame1"]
+        seed_action = poses_to_diff(st_np[0, 0], st_np[0, 1]).float()          # frame 0 -> frame 1
+        state1 = torch.tensor(st_np[0, 1], dtype=torch.float32)
+        z_hat = torch.cat([z0, z1_obs], 0)[None].repeat(AC_CANDIDATES, 1, 1)   # [K, 2*tpf, D]
+        s_hat = torch.stack([state0, state1])[None].repeat(AC_CANDIDATES, 1, 1)  # [K, 2, 7]
+        a_hat = torch.cat([seed_action[None, None].repeat(AC_CANDIDATES, 1, 1),
+                           actions[:, :1]], 1)                                 # [K, 2, 7]
+        roll2, states2 = [], []
+        for h_step in range(AC_HORIZON):
+            nxt = _ac_normalize(predictor(z_hat, a_hat, s_hat)[:, -tpf:])
+            s_next = compute_new_pose(s_hat[:, -1:], a_hat[:, -1:]).float()
+            roll2.append(nxt)
+            states2.append(s_next[:, 0])
+            z_hat = torch.cat([z_hat, nxt], 1)
+            s_hat = torch.cat([s_hat, s_next], 1)
+            if h_step + 1 < AC_HORIZON:
+                a_hat = torch.cat([a_hat, actions[:, h_step + 1: h_step + 2]], 1)
+        fwd = time.time() - t
+        roll2 = torch.stack(roll2, 1)
+        w.add("rollout_seed2", "franka_example_traj.npz",
+              {"context": (torch.cat([z0, z1_obs], 0), f"[2*{tpf}, D] two OBSERVED frames"),
+               "goal": (goal, f"[{tpf}, D]"),
+               "seed_actions": (seed_action[None], "[n_seed-1, 7] the action between the observed frames"),
+               "seed_states": (torch.stack([state0, state1]), "[2, 7]"),
+               "actions": (actions, f"[{AC_CANDIDATES}, {AC_HORIZON}, 7]"),
+               "states_seq": (torch.stack(states2, 1), f"[{AC_CANDIDATES}, {AC_HORIZON}, 7]"),
+               "rollout": (roll2, f"[{AC_CANDIDATES}, {AC_HORIZON}, {tpf}, D]"),
+               "rollout_energy": ((roll2[:, -1] - goal[None]).abs().mean(dim=(1, 2)), f"[{AC_CANDIDATES}]")},
+              {"preprocess_s": 0.0, "forward_s": round(fwd, 4)},
+              candidates=AC_CANDIDATES, horizon=AC_HORIZON, n_seed=2)
+
+        # ---- 6. Meta's CEM planner, with every random draw recorded.
+        # torch's RNG cannot be replayed from C++, so the fixture stores the draws themselves:
+        # `cem_noise` is exactly what `torch.randn` returned inside their loop, in their order
+        # (iteration, then horizon step), and a planner that consumes those draws has to reproduce
+        # `cem_action` at the end.
+        t = time.time()
+        draws = []
+        real_randn = torch.randn
+
+        def recording_randn(*a, **kw):
+            v = real_randn(*a, **kw)
+            draws.append(v.clone())
+            return v
+
+        world = WorldModel(encoder=encoder, predictor=predictor, tokens_per_frame=tpf,
+                           transform=None, mpc_args={}, normalize_reps=True, device="cpu")
+        real_logger_info = mpc_utils.logger.info
+        mpc_utils.logger.info = lambda *a, **kw: None
+        mpc_utils.torch.randn = recording_randn
+        torch.manual_seed(1234)
+        try:
+            cem_action = mpc_utils.cem(context_frame=z0[None], context_pose=state0[None, None],
+                                       goal_frame=goal[None],
+                                       world_model=lambda r, a_, p_: _ac_step(world, r, a_, p_, tpf),
+                                       verbose=False, **AC_CEM)[0]
+        finally:
+            mpc_utils.torch.randn = real_randn
+            mpc_utils.logger.info = real_logger_info
+        fwd = time.time() - t
+        noise = torch.stack(draws, 0)   # [cem_steps * rollout, samples, 4]
+        noise = noise.view(AC_CEM["cem_steps"], AC_CEM["rollout"], AC_CEM["samples"], -1)
+        w.add("cem", "franka_example_traj.npz",
+              {"context": (z0, f"[{tpf}, D]"), "goal": (goal, f"[{tpf}, D]"), "state0": (state0, "[7]"),
+               "cem_noise": (noise, f"[{AC_CEM['cem_steps']}, {AC_CEM['rollout']}, {AC_CEM['samples']}, 4] "
+                                    "every torch.randn draw, in Meta's order"),
+               "cem_action": (cem_action, f"[{AC_CEM['rollout']}, 7] the plan cem() returned")},
+              {"preprocess_s": 0.0, "forward_s": round(fwd, 4)}, cem=AC_CEM)
     w.finish(load_s)
 
 

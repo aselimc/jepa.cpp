@@ -354,6 +354,27 @@ static void test_loader() {
     o = forge_opts{}; o.ac_pred = true; o.ac_bad_action_shape = true;
     forge(tmp("a8.gguf"), o); load_case("load/ac-predictor-action-embed-shape", tmp("a8.gguf"));
 
+    // A file whose metadata declares three conditioning rows per frame (Meta's use_extrinsics
+    // variant) loads — the count is in range — and is refused by the graph, which builds exactly
+    // two. Without this the sequence would be one row per frame shorter than its own mask.
+    o = forge_opts{}; o.ac_pred = true; o.ac_cond_tokens = 3;
+    forge(tmp("a10.gguf"), o);
+    if (jepa_model * em = jepa_model_load(tmp("a10.gguf").c_str(), false)) {
+        jepa_context * ec = jepa_context_new(em, jepa_context_default_params());
+        const int hw = jepa_ac_tokens_per_frame(em), ad = jepa_ac_action_dim(em);
+        const int sd = jepa_ac_state_dim(em), ed = jepa_model_embed_dim(em);
+        std::vector<float> cv((size_t) hw * ed, 0.1f), avv((size_t) ad, 0.0f), svv((size_t) sd, 0.0f);
+        jepa_output eo = {};
+        jepa_error_reset();
+        check("ac/three-cond-tokens-refused",
+              jepa_ac_predict(ec, cv.data(), 1, 1, avv.data(), svv.data(), &eo) != 0);
+        jepa_context_free(ec);
+        jepa_model_free(em);
+    } else {
+        printf("FAIL %-34s a 3-cond-token file should still LOAD\n", "ac/three-cond-tokens-loads");
+        g_fail++;
+    }
+
     // ... and the argument guards of the entry points themselves, on a forged AC model that DOES load.
     o = forge_opts{}; o.ac_pred = true;
     forge(tmp("a9.gguf"), o);
@@ -382,6 +403,36 @@ static void test_loader() {
         jepa_error_reset();
         check("ac/rollout-past-frame-slots",
               jepa_ac_rollout(ac, c.data(), 1, sv.data(), av.data(), nullptr, 1, F + 1, ro.data()) != 0);
+        // the cached planning context (7.2): null arguments, a handle from another context, and the
+        // frame-slot capacity, which is what a receding-horizon planner runs into.
+        std::vector<float> lat((size_t) HW * D, 0.1f), st1((size_t) S, 0.0f), a1((size_t) A, 0.0f);
+        jepa_error_reset();
+        check("ac/context-new-null-ctx", jepa_ac_context_new(nullptr, lat.data(), 1, nullptr, st1.data()) == nullptr, false);
+        jepa_error_reset();
+        check("ac/context-new-zero-frames", jepa_ac_context_new(ac, lat.data(), 0, nullptr, st1.data()) == nullptr, false);
+        jepa_error_reset();
+        check("ac/context-new-past-slots",
+              jepa_ac_context_new(ac, lat.data(), F + 1, nullptr, st1.data()) == nullptr);
+        jepa_ac_context * hh = jepa_ac_context_new(ac, lat.data(), 1, nullptr, st1.data());
+        if (!hh) { printf("FAIL %-34s the cached context did not build\n", "ac/context-new"); g_fail++; }
+        else {
+            jepa_error_reset();
+            check("ac/rollout-cached-null-handle",
+                  jepa_ac_rollout_cached(ac, nullptr, av.data(), nullptr, 1, 1, ro.data()) != 0, false);
+            jepa_error_reset();
+            check("ac/context-update-null", jepa_ac_context_update(hh, nullptr, a1.data(), st1.data()) != 0, false);
+            // fill it to capacity, then one more
+            int rc = 0;
+            for (int i = 1; i < F && rc == 0; i++) rc = jepa_ac_context_update(hh, lat.data(), a1.data(), st1.data());
+            jepa_error_reset();
+            check("ac/context-update-past-capacity",
+                  rc != 0 || jepa_ac_context_update(hh, lat.data(), a1.data(), st1.data()) != 0);
+            jepa_error_reset();
+            check("ac/context-trim-zero", jepa_ac_context_trim(hh, 0) != 0, false);
+            jepa_ac_context_free(hh);
+        }
+        jepa_ac_context_free(nullptr);   // defined, a no-op
+
         // and the masked / lewm entry points must refuse an AC file by name
         jepa_output menc = {};
         std::vector<float> rows((size_t) HW * D, 0.1f);

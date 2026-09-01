@@ -4,7 +4,7 @@
 
 The whole public surface is this one header: C linkage, opaque handles (`jepa_model`, `jepa_context`), plain structs, `malloc`-returned buffers freed with `jepa_free`. Typical flow: `jepa_model_load` → `jepa_context_new` → `jepa_preprocess_*` → `jepa_encode` → `jepa_pool_*` / `jepa_head` / `jepa_predict*` / `jepa_lewm_*`.
 
-**Functions (82):** `jepa_ac_action_dim` · `jepa_ac_energy` · `jepa_ac_max_frames` · `jepa_ac_next_state` · `jepa_ac_normalize` · `jepa_ac_normalize_reps` · `jepa_ac_predict` · `jepa_ac_predict_all` · `jepa_ac_rollout` · `jepa_ac_state_dim` · `jepa_ac_tokens_per_frame` · `jepa_context_default_params` · `jepa_context_free` · `jepa_context_last_batch` · `jepa_context_last_compute_ms` · `jepa_context_max_batch` · `jepa_context_mul_mat_prec_f32` · `jepa_context_n_threads` · `jepa_context_new` · `jepa_context_set_max_batch` · `jepa_context_set_mul_mat_prec_f32` · `jepa_device_count` · `jepa_device_description` · `jepa_device_memory` · `jepa_device_name` · `jepa_encode` · `jepa_error_reset` · `jepa_error_text` · `jepa_free` · `jepa_head` · `jepa_head_ex` · `jepa_lewm_action_dim` · `jepa_lewm_n_frames` · `jepa_lewm_predict` · `jepa_lewm_project` · `jepa_lewm_project_rows` · `jepa_lewm_rollout` · `jepa_load_image_rgb` · `jepa_model_default_params` · `jepa_model_device` · `jepa_model_device_name` · `jepa_model_embed_dim` · `jepa_model_family` · `jepa_model_file_type` · `jepa_model_file_type_name` · `jepa_model_free` · `jepa_model_has_cls` · `jepa_model_has_head` · `jepa_model_has_predictor` · `jepa_model_has_projector` · `jepa_model_img_size` · `jepa_model_is_gpu` · `jepa_model_label` · `jepa_model_load` · `jepa_model_load_ex` · `jepa_model_n_bytes` · `jepa_model_n_classes` · `jepa_model_n_frames` · `jepa_model_n_head` · `jepa_model_n_layer` · `jepa_model_n_prefix_tokens` · `jepa_model_n_registers` · `jepa_model_name` · `jepa_model_patch_size` · `jepa_model_tubelet_size` · `jepa_pool_cls` · `jepa_pool_mean` · `jepa_predict` · `jepa_predict_ex` · `jepa_predict_mod` · `jepa_preprocess_default_params` · `jepa_preprocess_frames_rgb` · `jepa_preprocess_frames_rgb_ex` · `jepa_preprocess_image_file` · `jepa_preprocess_image_rgb` · `jepa_preprocess_image_rgb_ex` · `jepa_print_system_info` · `jepa_resize_antialias_u8` · `jepa_softmax` · `jepa_token_grid` · `jepa_top_k` · `jepa_version`
+**Functions (90):** `jepa_ac_action_dim` · `jepa_ac_context_capacity` · `jepa_ac_context_free` · `jepa_ac_context_n_frames` · `jepa_ac_context_new` · `jepa_ac_context_trim` · `jepa_ac_context_update` · `jepa_ac_energy` · `jepa_ac_max_frames` · `jepa_ac_next_state` · `jepa_ac_normalize` · `jepa_ac_normalize_reps` · `jepa_ac_predict` · `jepa_ac_predict_all` · `jepa_ac_rollout` · `jepa_ac_rollout_cached` · `jepa_ac_rollout_ex` · `jepa_ac_state_dim` · `jepa_ac_tokens_per_frame` · `jepa_context_default_params` · `jepa_context_free` · `jepa_context_last_batch` · `jepa_context_last_compute_ms` · `jepa_context_max_batch` · `jepa_context_mul_mat_prec_f32` · `jepa_context_n_threads` · `jepa_context_new` · `jepa_context_set_max_batch` · `jepa_context_set_mul_mat_prec_f32` · `jepa_device_count` · `jepa_device_description` · `jepa_device_memory` · `jepa_device_name` · `jepa_encode` · `jepa_error_reset` · `jepa_error_text` · `jepa_free` · `jepa_head` · `jepa_head_ex` · `jepa_lewm_action_dim` · `jepa_lewm_n_frames` · `jepa_lewm_predict` · `jepa_lewm_project` · `jepa_lewm_project_rows` · `jepa_lewm_rollout` · `jepa_load_image_rgb` · `jepa_model_default_params` · `jepa_model_device` · `jepa_model_device_name` · `jepa_model_embed_dim` · `jepa_model_family` · `jepa_model_file_type` · `jepa_model_file_type_name` · `jepa_model_free` · `jepa_model_has_cls` · `jepa_model_has_head` · `jepa_model_has_predictor` · `jepa_model_has_projector` · `jepa_model_img_size` · `jepa_model_is_gpu` · `jepa_model_label` · `jepa_model_load` · `jepa_model_load_ex` · `jepa_model_n_bytes` · `jepa_model_n_classes` · `jepa_model_n_frames` · `jepa_model_n_head` · `jepa_model_n_layer` · `jepa_model_n_prefix_tokens` · `jepa_model_n_registers` · `jepa_model_name` · `jepa_model_patch_size` · `jepa_model_tubelet_size` · `jepa_pool_cls` · `jepa_pool_mean` · `jepa_predict` · `jepa_predict_ex` · `jepa_predict_mod` · `jepa_preprocess_default_params` · `jepa_preprocess_frames_rgb` · `jepa_preprocess_frames_rgb_ex` · `jepa_preprocess_image_file` · `jepa_preprocess_image_rgb` · `jepa_preprocess_image_rgb_ex` · `jepa_print_system_info` · `jepa_resize_antialias_u8` · `jepa_softmax` · `jepa_token_grid` · `jepa_top_k` · `jepa_version`
 
 ## Types and handles
 
@@ -291,6 +291,51 @@ int jepa_ac_predict_all(jepa_context * ctx, const float * context, int n_frames,
 //                 step h at row (c*horizon + h) * tokens_per_frame
 int jepa_ac_rollout(jepa_context * ctx, const float * context, int n_seed, const float * seed_states,
                     const float * actions, const float * states, int n_cand, int horizon, float * out);
+
+// The same rollout with the observed frames' own history. With n_seed > 1 the frames before the last
+// are past observations, and the actions BETWEEN them are known — `seed_actions` is [n_seed-1,
+// action_dim], the action that took the arm from observed frame j to frame j+1. The LAST observed
+// frame is where planning starts, so it always carries the candidate's actions[c][0].
+// jepa_ac_rollout() is this with seed_actions = NULL, which makes every earlier observed frame reuse
+// actions[c][0] — a placeholder that is only right for n_seed == 1, where there are no earlier
+// frames. Prefer this entry point whenever n_seed > 1 (tests/test-predictor.cpp gates it against a
+// two-observed-frame reference produced by Meta's own predictor).
+int jepa_ac_rollout_ex(jepa_context * ctx, const float * context, int n_seed,
+                       const float * seed_actions, const float * seed_states,
+                       const float * actions, const float * states,
+                       int n_cand, int horizon, float * out);
+```
+
+## cached planning context (plan item 7.2)
+
+```c
+// A planner encodes once and scores thousands of candidates against that encode, over many CEM
+// iterations and many receding-horizon steps. This handle keeps the observed frames' latents ON THE
+// DEVICE: the graph references them directly, so they are neither replicated across the K candidates
+// on the host nor re-uploaded per step, and `pred.embed` runs on them once per graph instead of K
+// times. Results are identical to the explicit-context path (tests/test-predictor.cpp gates
+// bit-exactness on the CPU); the difference is only where the bytes come from.
+typedef struct jepa_ac_context jepa_ac_context;
+
+// latents : [n_frames * tokens_per_frame, enc_dim], already normalised if jepa_ac_normalize_reps()
+// actions : [n_frames - 1, action_dim] history between the frames (NULL = zeros)
+// states  : [n_frames, state_dim] the pose AT each frame
+// Capacity is jepa.pred.n_frames (the predictor's frame slots); the device allocation is made once.
+jepa_ac_context * jepa_ac_context_new(jepa_context * ctx, const float * latents, int n_frames,
+                                      const float * actions, const float * states);
+void jepa_ac_context_free(jepa_ac_context * handle);
+int  jepa_ac_context_n_frames(const jepa_ac_context * handle);
+int  jepa_ac_context_capacity(const jepa_ac_context * handle);
+// Append one newly observed frame — the receding-horizon step. `action` is the action that took the
+// arm from the current last frame to this one; `state` is the pose at the new frame.
+int  jepa_ac_context_update(jepa_ac_context * handle, const float * latents, const float * action,
+                            const float * state);
+// Keep only the last `n_keep` frames (a planner's sliding window).
+int  jepa_ac_context_trim(jepa_ac_context * handle, int n_keep);
+// jepa_ac_rollout_ex over the handle's frames; `actions` / `states` / `out` as above.
+int  jepa_ac_rollout_cached(jepa_context * ctx, jepa_ac_context * handle,
+                            const float * actions, const float * states,
+                            int n_cand, int horizon, float * out);
 
 // Meta's pose update (notebooks/utils/mpc_utils.py::compute_new_pose): translation added, rotation
 // composed as extrinsic-xyz Euler angles, gripper added and clipped to [0, 1]. `state`, `action`

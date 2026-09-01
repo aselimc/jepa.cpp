@@ -69,14 +69,21 @@ jepa_rope3d_params jepa_ac_rope_params(const jepa_model & m, int n_frames) {
 // ---------------------------------------------------------------------------------------------
 // graph
 // ---------------------------------------------------------------------------------------------
-// ctx_in  : [enc_dim, T*HW, B] F32 — the encoder latents of the T context frames, per batch item
-// act_in  : [action_dim, T, B] F32
-// st_in   : [state_dim,  T, B] F32
+// shared  : [enc_dim, n_shared*HW, 1] F32 — context frames every batch item has in common (the
+//           OBSERVED frames of a rollout, whose latents no candidate can change), or nullptr.
+//           Projected once and broadcast over the batch instead of being replicated B times by the
+//           caller: `pred.embed` is a [1408 -> 1024] matmul over 256 rows per frame, and for a
+//           64-candidate planning step that is 64x the host copy, the upload and that matmul saved.
+// tail    : [enc_dim, n_tail*HW, B] F32 — the per-candidate frames (what the rollout predicted),
+//           or nullptr. At least one of `shared` / `tail` must be given; T = n_shared + n_tail.
+// act_in  : [action_dim, T, B] F32   (always per-candidate: the last observed frame already carries
+// st_in   : [state_dim,  T, B] F32    the candidate's first planned action, and both are 2 rows)
 // mask    : [N, N] F16 additive block-causal mask (nullptr for T == 1) with N = T*(n_cond+HW)
 // cos/sin : [head_dim, 1, N] F32
 // n_out   : how many trailing frames to project (T for every prefix, 1 for the next frame only)
 // returns [out_dim, n_out*HW, B] F32
-ggml_tensor * jepa_build_ac(jepa_context * ctx, ggml_tensor * ctx_in, ggml_tensor * act_in, ggml_tensor * st_in,
+ggml_tensor * jepa_build_ac(jepa_context * ctx, ggml_tensor * shared, ggml_tensor * tail,
+                            ggml_tensor * act_in, ggml_tensor * st_in,
                             ggml_tensor * mask, ggml_tensor * cos_t, ggml_tensor * sin_t, int n_out) {
     const jepa_model * m = ctx->model;
     const jepa_pred_hparams & p = m->hp.pred;
@@ -85,10 +92,21 @@ ggml_tensor * jepa_build_ac(jepa_context * ctx, ggml_tensor * ctx_in, ggml_tenso
     const int64_t HW = (int64_t) p.grid_size * p.grid_size;
     const int64_t K = p.n_cond_tokens;
     const int64_t T = act_in->ne[1];
-    const int64_t B = ctx_in->ne[2];
+    const int64_t B = act_in->ne[2];
+    GGML_ASSERT(shared || tail);
 
     // 1. context projection and the two conditioning streams
-    ggml_tensor * x = jepa_build_linear(g, ctx_in, m->require("pred.embed.weight"), m->get("pred.embed.bias"));
+    ggml_tensor * ew = m->require("pred.embed.weight");
+    ggml_tensor * eb = m->get("pred.embed.bias");
+    ggml_tensor * x = nullptr;
+    if (shared) {
+        x = jepa_build_linear(g, shared, ew, eb);                  // [Dp, n_shared*HW, 1]
+        if (B > 1) x = ggml_repeat_4d(g, x, Dp, x->ne[1], B, 1);   // broadcast over the candidates
+    }
+    if (tail) {
+        ggml_tensor * xt = jepa_build_linear(g, tail, ew, eb);     // [Dp, n_tail*HW, B]
+        x = x ? ggml_concat(g, x, xt, 1) : xt;
+    }
     ggml_tensor * a = jepa_build_linear(g, act_in, m->require("pred.action_embed.weight"), m->get("pred.action_embed.bias"));
     ggml_tensor * s = jepa_build_linear(g, st_in,  m->require("pred.state_embed.weight"),  m->get("pred.state_embed.bias"));
 
@@ -246,8 +264,13 @@ extern "C" void jepa_ac_energy(const float * pred, const float * goal, int n_bat
 // ---------------------------------------------------------------------------------------------
 // one predictor call
 // ---------------------------------------------------------------------------------------------
-static int ac_predict(jepa_context * ctx, const float * context, int n_frames, int n_batch,
-                      const float * actions, const float * states, int n_out, jepa_output * out) {
+// One predictor call.
+//   shared_rows / n_shared : context frames common to every batch item (device-resident when
+//                            `shared_dev` is given, otherwise uploaded from `shared_rows`)
+//   tail_rows / n_tail     : per-candidate frames, [n_batch, n_tail*HW, enc_dim]
+static int ac_predict_split(jepa_context * ctx, ggml_tensor * shared_dev, const float * shared_rows,
+                            int n_shared, const float * tail_rows, int n_tail, int n_batch,
+                            const float * actions, const float * states, int n_out, jepa_output * out) {
     const jepa_model * m = ctx->model;
     const jepa_pred_hparams & p = m->hp.pred;
     const int64_t enc_dim = m->hp.enc.embed_dim;
@@ -255,7 +278,8 @@ static int ac_predict(jepa_context * ctx, const float * context, int n_frames, i
     const int64_t HW = (int64_t) p.grid_size * p.grid_size;
     const int64_t K = p.n_cond_tokens;
     const int64_t A = p.action_dim, S = p.state_dim;
-    const int64_t T = n_frames, B = n_batch;
+    const int64_t T = (int64_t) n_shared + n_tail, B = n_batch;
+    const int n_frames = (int) T;
 
     if (T <= 0 || B <= 0) {
         jepa_log("jepa: jepa_ac_predict: need n_frames > 0 and n_batch > 0 (got %d / %d)\n", n_frames, n_batch);
@@ -333,13 +357,24 @@ static int ac_predict(jepa_context * ctx, const float * context, int n_frames, i
     const size_t nodes = (size_t) p.n_layer * 128 + 512;
     jepa_graph_begin(ctx, nodes);
     ggml_context * g = ctx->ctx_g;
-    ggml_tensor * ctx_in = ggml_new_tensor_3d(g, GGML_TYPE_F32, enc_dim, T * HW, B);
+    // The shared prefix is either a tensor the caller already owns on the device (a cached context
+    // handle) or a graph input filled from `shared_rows`.
+    ggml_tensor * shared = shared_dev;
+    if (!shared && n_shared > 0) {
+        shared = ggml_new_tensor_3d(g, GGML_TYPE_F32, enc_dim, (int64_t) n_shared * HW, 1);
+        ggml_set_name(shared, "ac_context_shared");
+        ggml_set_input(shared);
+    }
+    ggml_tensor * tail = nullptr;
+    if (n_tail > 0) {
+        tail = ggml_new_tensor_3d(g, GGML_TYPE_F32, enc_dim, (int64_t) n_tail * HW, B);
+        ggml_set_name(tail, "ac_context_tail");
+        ggml_set_input(tail);
+    }
     ggml_tensor * act_in = ggml_new_tensor_3d(g, GGML_TYPE_F32, A, T, B);
     ggml_tensor * st_in  = ggml_new_tensor_3d(g, GGML_TYPE_F32, S, T, B);
-    ggml_set_name(ctx_in, "ac_context");
     ggml_set_name(act_in, "ac_action");
     ggml_set_name(st_in,  "ac_state");
-    ggml_set_input(ctx_in);
     ggml_set_input(act_in);
     ggml_set_input(st_in);
     ggml_tensor * mask = nullptr;
@@ -352,11 +387,16 @@ static int ac_predict(jepa_context * ctx, const float * context, int n_frames, i
     ggml_set_input(cos_t);
     ggml_set_input(sin_t);
 
-    ggml_tensor * y = jepa_build_ac(ctx, ctx_in, act_in, st_in, mask, cos_t, sin_t, n_out);
+    ggml_tensor * y = jepa_build_ac(ctx, shared, tail, act_in, st_in, mask, cos_t, sin_t, n_out);
     if (!y) return -1;
     ggml_build_forward_expand(ctx->gf, y);
     if (!jepa_graph_alloc(ctx)) return -1;
-    ggml_backend_tensor_set(ctx_in, context, 0, (size_t) enc_dim * T * HW * B * sizeof(float));
+    if (shared && !shared_dev) {
+        ggml_backend_tensor_set(shared, shared_rows, 0, (size_t) enc_dim * n_shared * HW * sizeof(float));
+    }
+    if (tail) {
+        ggml_backend_tensor_set(tail, tail_rows, 0, (size_t) enc_dim * n_tail * HW * B * sizeof(float));
+    }
     ggml_backend_tensor_set(act_in, actions, 0, (size_t) A * T * B * sizeof(float));
     ggml_backend_tensor_set(st_in,  states,  0, (size_t) S * T * B * sizeof(float));
     if (mask) ggml_backend_tensor_set(mask, mdata.data(), 0, mdata.size() * sizeof(ggml_fp16_t));
@@ -370,6 +410,14 @@ static int ac_predict(jepa_context * ctx, const float * context, int n_frames, i
     if (!out->data) return -1;
     ggml_backend_tensor_get(y, out->data, 0, ggml_nbytes(y));
     return 0;
+}
+
+// jepa_ac_predict / _predict_all: the whole context is the caller's and differs per item, so it all
+// goes down the per-candidate path.
+static int ac_predict(jepa_context * ctx, const float * context, int n_frames, int n_batch,
+                      const float * actions, const float * states, int n_out, jepa_output * out) {
+    return ac_predict_split(ctx, nullptr, nullptr, 0, context, n_frames, n_batch,
+                            actions, states, n_out, out);
 }
 
 static int ac_entry(jepa_context * ctx, const float * context, int n_frames, int n_batch,
@@ -394,11 +442,19 @@ extern "C" int jepa_ac_predict_all(jepa_context * ctx, const float * context, in
 // ---------------------------------------------------------------------------------------------
 // rollout
 // ---------------------------------------------------------------------------------------------
-extern "C" int jepa_ac_rollout(jepa_context * ctx, const float * context, int n_seed,
-                               const float * seed_states, const float * actions, const float * states,
-                               int n_cand, int horizon, float * out) {
-    if (!ctx || !context || !seed_states || !actions || !out) return -1;
-    if (!ac_check(ctx, "jepa_ac_rollout")) return -1;
+// The engine behind every rollout entry point.
+//   seed_dev    : device-resident [enc_dim, n_seed*HW] latents of the observed frames (a cached
+//                 context handle), or nullptr to upload `seed_rows` once per step instead
+//   seed_rows   : [n_seed*HW, enc_dim] host copy, used when seed_dev is null
+//   seed_actions: [n_seed-1, action_dim] the actions BETWEEN the observed frames, or nullptr to
+//                 reuse each candidate's first planned action for them
+//   seed_states : [n_seed, state_dim] the poses AT the observed frames
+//   actions     : [n_cand * horizon, action_dim];  states: [n_cand * horizon, state_dim] or nullptr
+//   out         : [n_cand * horizon * HW, enc_dim]
+static int ac_rollout(jepa_context * ctx, ggml_tensor * seed_dev, const float * seed_rows, int n_seed,
+                      const float * seed_actions, const float * seed_states,
+                      const float * actions, const float * states,
+                      int n_cand, int horizon, float * out) {
     const jepa_model * m = ctx->model;
     const jepa_pred_hparams & p = m->hp.pred;
     const int64_t enc_dim = m->hp.enc.embed_dim;
@@ -416,40 +472,45 @@ extern "C" int jepa_ac_rollout(jepa_context * ctx, const float * context, int n_
                  (long long) n_seq, p.n_frames);
         return -1;
     }
-    // The growing context is [n_cand, n_seq*HW, enc_dim]; refuse it up front rather than in malloc.
+    // Only the per-candidate tail is replicated, so this is the buffer that scales with n_cand.
     const size_t budget = ctx->max_graph_bytes ? ctx->max_graph_bytes : JEPA_DEFAULT_MAX_GRAPH_BYTES;
-    const double seq_bytes = (double) n_cand * n_seq * HW * enc_dim * sizeof(float);
-    if (seq_bytes >= (double) budget) {
-        jepa_log("jepa: jepa_ac_rollout: %d candidates x %lld frames x %lld tokens need %.1f MiB for the "
-                 "context buffer alone, over the %.1f MiB limit ($JEPA_MAX_GRAPH_MIB)\n",
-                 n_cand, (long long) n_seq, (long long) HW, seq_bytes / (1024.0 * 1024.0),
+    const double tail_bytes = (double) n_cand * (horizon - 1) * HW * enc_dim * sizeof(float);
+    if (tail_bytes >= (double) budget) {
+        jepa_log("jepa: jepa_ac_rollout: %d candidates x %d predicted frames x %lld tokens need %.1f MiB "
+                 "for the rollout buffer alone, over the %.1f MiB limit ($JEPA_MAX_GRAPH_MIB)\n",
+                 n_cand, horizon - 1, (long long) HW, tail_bytes / (1024.0 * 1024.0),
                  (double) budget / (1024.0 * 1024.0));
         return -1;
     }
 
-    // Per-candidate context, seeded with the shared encoder latents; grows by one frame per step.
     const int64_t per_frame = HW * enc_dim;
-    std::vector<float> seq((size_t) n_cand * n_seq * per_frame);
+    const int64_t n_tail_max = horizon - 1;          // predicted frames the last step conditions on
+    // Per-candidate tail (the predicted frames only); the observed prefix is shared and never copied.
+    std::vector<float> tail((size_t) n_cand * std::max<int64_t>(n_tail_max, 1) * per_frame);
     std::vector<float> st((size_t) n_cand * n_seq * S);
     std::vector<float> act((size_t) n_cand * n_seq * A);
     for (int c = 0; c < n_cand; c++) {
-        memcpy(seq.data() + (size_t) c * n_seq * per_frame, context, (size_t) n_seed * per_frame * sizeof(float));
         memcpy(st.data() + (size_t) c * n_seq * S, seed_states, (size_t) n_seed * S * sizeof(float));
     }
 
     double total_ms = 0;
-    std::vector<float> ctx_buf, act_buf, st_buf;
+    std::vector<float> act_buf, st_buf;
     for (int step = 0; step < horizon; step++) {
-        const int64_t T = (int64_t) n_seed + step;   // context frames for this step
-        // Frame j of a candidate's context carries the action/state that drives the step it starts:
-        // the seed frames before the last reuse row 0, exactly as the reference repeats the context
-        // pose (notebooks/utils/world_model_wrapper.py::step_predictor passes the whole history).
+        const int64_t T = (int64_t) n_seed + step;       // context frames for this step
+        const int64_t n_tail = T - n_seed;               // of which predicted
+        // Frame j carries the action that drives the step it starts and the pose AT frame j.
+        // Observed frames before the last take `seed_actions` (real history) when the caller has it;
+        // the last observed frame is where planning starts, so it takes the candidate's action 0.
         for (int c = 0; c < n_cand; c++) {
             float * ac = act.data() + (size_t) c * n_seq * A;
             float * sc = st.data() + (size_t) c * n_seq * S;
             for (int64_t j = 0; j < T; j++) {
+                if (j < (int64_t) n_seed - 1) {
+                    if (seed_actions) memcpy(ac + j * A, seed_actions + j * A, (size_t) A * sizeof(float));
+                    else              memcpy(ac + j * A, actions + (size_t) c * horizon * A, (size_t) A * sizeof(float));
+                    continue;
+                }
                 int64_t k = j - ((int64_t) n_seed - 1);
-                if (k < 0) k = 0;
                 if (k > (int64_t) step) k = step;
                 memcpy(ac + j * A, actions + ((size_t) c * horizon + k) * A, (size_t) A * sizeof(float));
                 if (j >= n_seed) {
@@ -464,20 +525,34 @@ extern "C" int jepa_ac_rollout(jepa_context * ctx, const float * context, int n_
                 }
             }
         }
-        // Pack the [n_cand, T*HW, enc_dim] context / [n_cand, T, A|S] conditioning for this step.
-        ctx_buf.resize((size_t) n_cand * T * per_frame);
         act_buf.resize((size_t) n_cand * T * A);
         st_buf.resize((size_t) n_cand * T * S);
         for (int c = 0; c < n_cand; c++) {
-            memcpy(ctx_buf.data() + (size_t) c * T * per_frame,
-                   seq.data() + (size_t) c * n_seq * per_frame, (size_t) T * per_frame * sizeof(float));
             memcpy(act_buf.data() + (size_t) c * T * A, act.data() + (size_t) c * n_seq * A,
                    (size_t) T * A * sizeof(float));
             memcpy(st_buf.data() + (size_t) c * T * S, st.data() + (size_t) c * n_seq * S,
                    (size_t) T * S * sizeof(float));
         }
+        // The tail rows have to be contiguous per candidate for this step's length, which they are:
+        // candidate c owns slots [c*n_tail_max, c*n_tail_max + n_tail).
+        std::vector<float> tail_buf;
+        const float * tail_ptr = nullptr;
+        if (n_tail > 0) {
+            if (n_tail == n_tail_max) {
+                tail_ptr = tail.data();
+            } else {
+                tail_buf.resize((size_t) n_cand * n_tail * per_frame);
+                for (int c = 0; c < n_cand; c++) {
+                    memcpy(tail_buf.data() + (size_t) c * n_tail * per_frame,
+                           tail.data() + (size_t) c * n_tail_max * per_frame,
+                           (size_t) n_tail * per_frame * sizeof(float));
+                }
+                tail_ptr = tail_buf.data();
+            }
+        }
         jepa_output step_out = {};
-        if (ac_predict(ctx, ctx_buf.data(), (int) T, n_cand, act_buf.data(), st_buf.data(), 1, &step_out) != 0) {
+        if (ac_predict_split(ctx, seed_dev, seed_rows, n_seed, tail_ptr, (int) n_tail, n_cand,
+                             act_buf.data(), st_buf.data(), 1, &step_out) != 0) {
             return -1;
         }
         total_ms += ctx->last_compute_ms;
@@ -486,13 +561,183 @@ extern "C" int jepa_ac_rollout(jepa_context * ctx, const float * context, int n_
         for (int c = 0; c < n_cand; c++) {
             const float * pred = step_out.data + (size_t) c * per_frame;
             memcpy(out + ((size_t) c * horizon + step) * per_frame, pred, (size_t) per_frame * sizeof(float));
-            if (T < n_seq) {
-                memcpy(seq.data() + (size_t) c * n_seq * per_frame + (size_t) T * per_frame,
-                       pred, (size_t) per_frame * sizeof(float));
+            if (n_tail < n_tail_max) {
+                memcpy(tail.data() + ((size_t) c * n_tail_max + n_tail) * per_frame, pred,
+                       (size_t) per_frame * sizeof(float));
             }
         }
         free(step_out.data);
     }
     ctx->last_compute_ms = total_ms;
     return 0;
+}
+
+extern "C" int jepa_ac_rollout_ex(jepa_context * ctx, const float * context, int n_seed,
+                                  const float * seed_actions, const float * seed_states,
+                                  const float * actions, const float * states,
+                                  int n_cand, int horizon, float * out) {
+    if (!ctx || !context || !seed_states || !actions || !out) return -1;
+    if (!ac_check(ctx, "jepa_ac_rollout")) return -1;
+    return ac_rollout(ctx, nullptr, context, n_seed, seed_actions, seed_states, actions, states,
+                      n_cand, horizon, out);
+}
+
+extern "C" int jepa_ac_rollout(jepa_context * ctx, const float * context, int n_seed,
+                               const float * seed_states, const float * actions, const float * states,
+                               int n_cand, int horizon, float * out) {
+    return jepa_ac_rollout_ex(ctx, context, n_seed, nullptr, seed_states, actions, states,
+                              n_cand, horizon, out);
+}
+
+// ---------------------------------------------------------------------------------------------
+// cached context (plan item 7.2)
+// ---------------------------------------------------------------------------------------------
+// A planner encodes once and then scores thousands of candidate action sequences against that one
+// encode, over many CEM iterations and many receding-horizon steps. The observed frames are the same
+// bytes every time, so the handle keeps them ON THE DEVICE and the graph references that tensor
+// directly: no host replication across the K candidates, no re-upload per step, and `pred.embed` runs
+// on them once per graph instead of K times.
+struct jepa_ac_context {
+    jepa_context *        owner   = nullptr;
+    ggml_context *        ctx     = nullptr;   // tensor metadata (no_alloc)
+    ggml_backend_buffer_t buf     = nullptr;   // the latent bytes, on the compute device
+    ggml_tensor *         slab    = nullptr;   // [enc_dim, cap*HW] F32
+    ggml_tensor *         view    = nullptr;   // [enc_dim, n_frames*HW, 1] over the used part
+    int                   n_frames = 0;
+    int                   cap      = 0;
+    std::vector<float>    actions;             // [cap, action_dim] history between the frames
+    std::vector<float>    states;              // [cap, state_dim]  pose at each frame
+};
+
+// Rebuild `view` after n_frames changes: a [enc_dim, n*HW, 1] view of the slab's first n frames.
+static void ac_ctx_review(jepa_ac_context * h) {
+    const jepa_pred_hparams & p = h->owner->model->hp.pred;
+    const int64_t HW = (int64_t) p.grid_size * p.grid_size;
+    const int64_t D = h->owner->model->hp.enc.embed_dim;
+    h->view = ggml_view_3d(h->ctx, h->slab, D, (int64_t) h->n_frames * HW, 1,
+                           h->slab->nb[1], h->slab->nb[1] * (int64_t) h->n_frames * HW, 0);
+}
+
+extern "C" jepa_ac_context * jepa_ac_context_new(jepa_context * ctx, const float * latents, int n_frames,
+                                                 const float * actions, const float * states) {
+    if (!ctx || !latents || !states || n_frames <= 0) return nullptr;
+    if (!ac_check(ctx, "jepa_ac_context_new")) return nullptr;
+    const jepa_model * m = ctx->model;
+    const jepa_pred_hparams & p = m->hp.pred;
+    const int64_t HW = (int64_t) p.grid_size * p.grid_size;
+    const int64_t D = m->hp.enc.embed_dim;
+    const int cap = p.n_frames > 0 ? p.n_frames : n_frames;
+    if (n_frames > cap) {
+        jepa_log("jepa: jepa_ac_context_new: %d frames, but the predictor has %d frame slots "
+                 "(jepa.pred.n_frames)\n", n_frames, cap);
+        return nullptr;
+    }
+    const double bytes = (double) cap * HW * D * sizeof(float);
+    const size_t budget = ctx->max_graph_bytes ? ctx->max_graph_bytes : JEPA_DEFAULT_MAX_GRAPH_BYTES;
+    if (bytes >= (double) budget) {
+        jepa_log("jepa: jepa_ac_context_new: %d frame slots of %lld tokens need %.1f MiB on the device, "
+                 "over the %.1f MiB limit ($JEPA_MAX_GRAPH_MIB)\n", cap, (long long) HW,
+                 bytes / (1024.0 * 1024.0), (double) budget / (1024.0 * 1024.0));
+        return nullptr;
+    }
+
+    jepa_ac_context * h = new jepa_ac_context();
+    h->owner = ctx;
+    h->cap = cap;
+    h->n_frames = n_frames;
+    ggml_init_params ip = { ggml_tensor_overhead() * 4, nullptr, true };
+    h->ctx = ggml_init(ip);
+    if (!h->ctx) { delete h; return nullptr; }
+    h->slab = ggml_new_tensor_2d(h->ctx, GGML_TYPE_F32, D, (int64_t) cap * HW);
+    ggml_set_name(h->slab, "ac_cached_context");
+    h->buf = ggml_backend_alloc_ctx_tensors(h->ctx, ctx->backend);
+    if (!h->buf) {
+        jepa_log("jepa: jepa_ac_context_new: cannot allocate %.1f MiB on %s\n",
+                 bytes / (1024.0 * 1024.0), jepa_model_device_name(m));
+        ggml_free(h->ctx);
+        delete h;
+        return nullptr;
+    }
+    ggml_backend_tensor_set(h->slab, latents, 0, (size_t) n_frames * HW * D * sizeof(float));
+    ac_ctx_review(h);
+    h->actions.assign((size_t) cap * p.action_dim, 0.0f);
+    h->states.assign((size_t) cap * p.state_dim, 0.0f);
+    memcpy(h->states.data(), states, (size_t) n_frames * p.state_dim * sizeof(float));
+    if (actions && n_frames > 1) {
+        memcpy(h->actions.data(), actions, (size_t) (n_frames - 1) * p.action_dim * sizeof(float));
+    }
+    return h;
+}
+
+extern "C" void jepa_ac_context_free(jepa_ac_context * h) {
+    if (!h) return;
+    if (h->buf) ggml_backend_buffer_free(h->buf);
+    if (h->ctx) ggml_free(h->ctx);
+    delete h;
+}
+
+extern "C" int jepa_ac_context_n_frames(const jepa_ac_context * h) { return h ? h->n_frames : 0; }
+extern "C" int jepa_ac_context_capacity(const jepa_ac_context * h) { return h ? h->cap : 0; }
+
+extern "C" int jepa_ac_context_update(jepa_ac_context * h, const float * latents, const float * action,
+                                      const float * state) {
+    if (!h || !latents || !action || !state) return -1;
+    const jepa_model * m = h->owner->model;
+    const jepa_pred_hparams & p = m->hp.pred;
+    const int64_t HW = (int64_t) p.grid_size * p.grid_size;
+    const int64_t D = m->hp.enc.embed_dim;
+    if (h->n_frames >= h->cap) {
+        jepa_log("jepa: jepa_ac_context_update: the handle holds %d frames, its capacity (and the "
+                 "predictor's frame slots) is %d — call jepa_ac_context_trim first\n", h->n_frames, h->cap);
+        return -1;
+    }
+    ggml_backend_tensor_set(h->slab, latents, (size_t) h->n_frames * HW * D * sizeof(float),
+                            (size_t) HW * D * sizeof(float));
+    memcpy(h->actions.data() + (size_t) (h->n_frames - 1) * p.action_dim, action,
+           (size_t) p.action_dim * sizeof(float));
+    memcpy(h->states.data() + (size_t) h->n_frames * p.state_dim, state,
+           (size_t) p.state_dim * sizeof(float));
+    h->n_frames++;
+    ac_ctx_review(h);
+    return 0;
+}
+
+extern "C" int jepa_ac_context_trim(jepa_ac_context * h, int n_keep) {
+    if (!h || n_keep <= 0) return -1;
+    if (n_keep >= h->n_frames) return 0;
+    const jepa_model * m = h->owner->model;
+    const jepa_pred_hparams & p = m->hp.pred;
+    const int64_t HW = (int64_t) p.grid_size * p.grid_size;
+    const int64_t D = m->hp.enc.embed_dim;
+    const int drop = h->n_frames - n_keep;
+    // Shift the kept frames to the front. A device round-trip, but a planner does this once per
+    // observation, not once per candidate.
+    std::vector<float> keep((size_t) n_keep * HW * D);
+    ggml_backend_tensor_get(h->slab, keep.data(), (size_t) drop * HW * D * sizeof(float),
+                            keep.size() * sizeof(float));
+    ggml_backend_tensor_set(h->slab, keep.data(), 0, keep.size() * sizeof(float));
+    memmove(h->actions.data(), h->actions.data() + (size_t) drop * p.action_dim,
+            (size_t) (n_keep - 1) * p.action_dim * sizeof(float));
+    memmove(h->states.data(), h->states.data() + (size_t) drop * p.state_dim,
+            (size_t) n_keep * p.state_dim * sizeof(float));
+    h->n_frames = n_keep;
+    ac_ctx_review(h);
+    return 0;
+}
+
+extern "C" int jepa_ac_rollout_cached(jepa_context * ctx, jepa_ac_context * h,
+                                      const float * actions, const float * states,
+                                      int n_cand, int horizon, float * out) {
+    if (!ctx || !h || !actions || !out) return -1;
+    if (!ac_check(ctx, "jepa_ac_rollout_cached")) return -1;
+    if (h->owner != ctx) {
+        jepa_log("jepa: jepa_ac_rollout_cached: the handle was built for a different jepa_context; its "
+                 "latents live on that context's device\n");
+        return -1;
+    }
+    const jepa_pred_hparams & p = ctx->model->hp.pred;
+    return ac_rollout(ctx, h->view, nullptr, h->n_frames,
+                      h->n_frames > 1 ? h->actions.data() : nullptr, h->states.data(),
+                      actions, states, n_cand, horizon, out);
+    (void) p;
 }

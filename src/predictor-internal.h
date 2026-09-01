@@ -42,13 +42,16 @@ ggml_tensor * jepa_build_lewm(jepa_context * ctx, ggml_tensor * emb, ggml_tensor
 // token ids below are decoded on, head_dim = jepa.pred.embed_dim / n_head (64), tiled layout.
 jepa_rope3d_params jepa_ac_rope_params(const jepa_model & m, int n_frames);
 
-// Build the AC predictor graph on ctx->ctx_g.
-//   ctx_in  : [enc_dim, n_frames*tokens_per_frame, B] F32 (encoder latents), caller-created
-//   act_in  : [action_dim, n_frames, B] F32, st_in: [state_dim, n_frames, B] F32
+// Build the AC predictor graph on ctx->ctx_g. The context is split in two because a planning
+// rollout's observed frames are the same bytes for every candidate:
+//   shared  : [enc_dim, n_shared*tokens_per_frame, 1] F32, broadcast over the batch (may be a
+//             device-resident tensor a cached context handle owns), or nullptr
+//   tail    : [enc_dim, n_tail*tokens_per_frame, B] F32, the per-candidate frames, or nullptr
+//   act_in  : [action_dim, n_frames, B] F32, st_in: [state_dim, n_frames, B] F32 (always per-item)
 //   mask    : [N, N] F16 block-causal mask over frames (nullptr for one frame), N = n_frames*(K+HW)
 //   cos/sin : [head_dim, 1, N] F32 (jepa_rope3d_tables_ids on the interleaved id list)
 //   n_out   : trailing frames to project (n_frames for every prefix, 1 for the next frame only)
 //   returns : [jepa.pred.out_dim, n_out*tokens_per_frame, B] F32
-ggml_tensor * jepa_build_ac(jepa_context * ctx, ggml_tensor * ctx_in, ggml_tensor * act_in,
-                            ggml_tensor * st_in, ggml_tensor * mask, ggml_tensor * cos_t,
-                            ggml_tensor * sin_t, int n_out);
+ggml_tensor * jepa_build_ac(jepa_context * ctx, ggml_tensor * shared, ggml_tensor * tail,
+                            ggml_tensor * act_in, ggml_tensor * st_in, ggml_tensor * mask,
+                            ggml_tensor * cos_t, ggml_tensor * sin_t, int n_out);

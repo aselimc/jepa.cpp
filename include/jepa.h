@@ -268,6 +268,48 @@ int jepa_ac_predict_all(jepa_context * ctx, const float * context, int n_frames,
 int jepa_ac_rollout(jepa_context * ctx, const float * context, int n_seed, const float * seed_states,
                     const float * actions, const float * states, int n_cand, int horizon, float * out);
 
+// The same rollout with the observed frames' own history. With n_seed > 1 the frames before the last
+// are past observations, and the actions BETWEEN them are known — `seed_actions` is [n_seed-1,
+// action_dim], the action that took the arm from observed frame j to frame j+1. The LAST observed
+// frame is where planning starts, so it always carries the candidate's actions[c][0].
+// jepa_ac_rollout() is this with seed_actions = NULL, which makes every earlier observed frame reuse
+// actions[c][0] — a placeholder that is only right for n_seed == 1, where there are no earlier
+// frames. Prefer this entry point whenever n_seed > 1 (tests/test-predictor.cpp gates it against a
+// two-observed-frame reference produced by Meta's own predictor).
+int jepa_ac_rollout_ex(jepa_context * ctx, const float * context, int n_seed,
+                       const float * seed_actions, const float * seed_states,
+                       const float * actions, const float * states,
+                       int n_cand, int horizon, float * out);
+
+// --- cached planning context (plan item 7.2) ------------------------------------------------
+// A planner encodes once and scores thousands of candidates against that encode, over many CEM
+// iterations and many receding-horizon steps. This handle keeps the observed frames' latents ON THE
+// DEVICE: the graph references them directly, so they are neither replicated across the K candidates
+// on the host nor re-uploaded per step, and `pred.embed` runs on them once per graph instead of K
+// times. Results are identical to the explicit-context path (tests/test-predictor.cpp gates
+// bit-exactness on the CPU); the difference is only where the bytes come from.
+typedef struct jepa_ac_context jepa_ac_context;
+
+// latents : [n_frames * tokens_per_frame, enc_dim], already normalised if jepa_ac_normalize_reps()
+// actions : [n_frames - 1, action_dim] history between the frames (NULL = zeros)
+// states  : [n_frames, state_dim] the pose AT each frame
+// Capacity is jepa.pred.n_frames (the predictor's frame slots); the device allocation is made once.
+jepa_ac_context * jepa_ac_context_new(jepa_context * ctx, const float * latents, int n_frames,
+                                      const float * actions, const float * states);
+void jepa_ac_context_free(jepa_ac_context * handle);
+int  jepa_ac_context_n_frames(const jepa_ac_context * handle);
+int  jepa_ac_context_capacity(const jepa_ac_context * handle);
+// Append one newly observed frame — the receding-horizon step. `action` is the action that took the
+// arm from the current last frame to this one; `state` is the pose at the new frame.
+int  jepa_ac_context_update(jepa_ac_context * handle, const float * latents, const float * action,
+                            const float * state);
+// Keep only the last `n_keep` frames (a planner's sliding window).
+int  jepa_ac_context_trim(jepa_ac_context * handle, int n_keep);
+// jepa_ac_rollout_ex over the handle's frames; `actions` / `states` / `out` as above.
+int  jepa_ac_rollout_cached(jepa_context * ctx, jepa_ac_context * handle,
+                            const float * actions, const float * states,
+                            int n_cand, int horizon, float * out);
+
 // Meta's pose update (notebooks/utils/mpc_utils.py::compute_new_pose): translation added, rotation
 // composed as extrinsic-xyz Euler angles, gripper added and clipped to [0, 1]. `state`, `action`
 // and `out` are state_dim/action_dim long; `out` may not alias `state`.
