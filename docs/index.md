@@ -6,9 +6,10 @@ CUDA backend. Each checkpoint is converted once into a single [GGUF](gguf-schema
 the weights *and* everything needed to run them — dimensions, positional-encoding scheme,
 preprocessing recipe, class labels — so at run time the requirement is one binary and one file. There
 is no Python in the inference path and no per-model C++ code: a new checkpoint of a known family is a
-converter run, because the loader builds the graph from the file's metadata. Seven model bundles of
+converter run, because the loader builds the graph from the file's metadata. Nine model bundles of
 six families ship today — image and video embedding, video classification, latent-space prediction
-and action-conditioned world-model rollout — through four command-line tools, one C header, and a
+and action-conditioned world-model rollout, including Meta's V-JEPA 2-AC planner — through four
+command-line tools, one C header, and a
 Python package (`pip install jepa-cpp`) that wraps that header and returns numpy arrays. The
 converted files are published on Hugging Face under [**jepacpp**](https://huggingface.co/jepacpp), so
 converting anything yourself is optional: `scripts/download_models.sh` fetches them.

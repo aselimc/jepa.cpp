@@ -162,7 +162,7 @@ preprocessing, graph and arithmetic all still in C, and bit-identical to `jepa-e
 
 ## How it works, in one paragraph
 
-The seven models of six families run one shared ViT graph: patchify (a host-side rearrangement plus one matmul), add
+The nine models of six families run one shared ViT graph: patchify (a host-side rearrangement plus one matmul), add
 positions, pre-LayerNorm transformer blocks with flash attention, final norm. Families differ only in
 the tokenizer (2-D patches vs video tubelets), the positional scheme (sincos tables vs 3-D RoPE —
 including a faithful reproduction of V-JEPA 2's *tiled* RoPE, a quirk Meta keeps for checkpoint
