@@ -212,14 +212,15 @@ single `vjepa2-ac-vitg.pt`; `src/vjepa2_ac.cpp` builds the graph and
 
 **The encoder in that checkpoint is not the HF `facebook/vjepa2-vitg-fpc64-256` release.** Measured
 per tensor over all **484** encoder tensors, the cosine is **median 0.99995**, p05 0.99896, **min
-0.99647** (`blocks.0.norm1.weight`), with 38 of 484 below 0.999 — the low tail is the early blocks'
+0.99647** (`blocks.0.norm1.weight`), with 39 of 484 below 0.999 — the low tail is the early blocks'
 attention projections (`blocks.1.attn.proj.weight` 0.99767, `blocks.0.attn.proj.weight` 0.99827,
 where max |Δ| is 2.1e-2 on values up to 1.35). Across all 484 tensors the largest absolute difference
 is 4.18e-2, on `enc.blk.31.attn_qkv.bias`, whose values reach 8.2. Close, in other words, but not the
 same weights. (Method, so the count is reproducible: every tensor of the checkpoint's `encoder`
 against its HF counterpart, with Meta's fused `attn.qkv` compared against `concat(query, key, value)`
-in that order; cosine over the flattened tensor. Nothing sits within 4e-6 of the 0.999 boundary, so
-the count is not a rounding artefact.)
+in that order; cosine over the flattened tensor, accumulated in float64. The accumulation matters:
+`blocks.2.mlp.fc1.weight` sits 2.3e-7 below the boundary at 0.998999767, and a float32 dot product
+over its 8.65 M elements carries enough error to move it across, reading 38.)
 Meanwhile `encoder` and `target_encoder` inside the AC checkpoint are **bit-identical** — the encoder
 was frozen during AC training. `src/hub/backbones.py::_make_vjepa2_ac_model` loads `state_dict["encoder"]`, so that is
 what the bundle ships, and it gets its own parity fixtures.

@@ -160,7 +160,7 @@ PyTorch column is the float32 forward the reference dump recorded at 32 threads
 headline column; the minimum is printed beside it in parentheses), while
 `scripts/torch_ac_baseline.py` and `scripts/torch_gpu_baseline.py` report the **minimum**. On an idle
 card the two differ by about 0.1 % — the K = 64, H = 2 rollout row of
-`tests/results/benchmarks-gpu.json` reads 787.574 ms mean against 786.914 min — so the comparison
+`tests/results/benchmarks-gpu.json` reads 787.574 ms mean against 786.909 min — so the comparison
 stands, but the columns are not the same estimator and a loaded box would separate them.
 
 | model | mode | shape | GPU f32 | GPU f16 | GPU q8_0 | GPU q4_k | CPU f16 t=32 | PyTorch f32 t=32 | **GPU f16 speed-up** |

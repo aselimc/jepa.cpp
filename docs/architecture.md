@@ -336,8 +336,9 @@ window; capacity is `jepa.pred.n_frames`, allocated once.
 **What that is worth, measured: nothing in time, and that is the honest answer.** Back-to-back in one
 session on CUDA1 at f16, cached against explicit context is +0.11 % at K = 16 / H = 2, +0.07 % at
 K = 64, +0.14 % at K = 256, −0.18 % at K = 16 / H = 4 and −0.20 % at K = 64 / H = 4: **±0.2 %,
-straddling zero**. The shared-prefix broadcast against a fully replicated context is the same story
-(527.95 vs 529.43 ms on the GPU, 2181 vs 2200 ms on the CPU at 16 threads). The reason is arithmetic:
+straddling zero**. The shared-prefix broadcast against a fully replicated context is the same story — within 1 % in
+its own controlled session (527.95 vs 529.43 ms on the GPU, 2181 vs 2200 ms on the CPU at 16
+threads; not benchmark-artifact rows). The reason is arithmetic:
 `pred.embed` is one [1408 → 1024] matmul over 256 rows, against 24 blocks of 1024-d attention and FFN
 over K × 258 rows, and the upload is 1.44 MB against a half-second graph. The handle earns its place
 as an **API**, not as a speed-up — one object held across CEM iterations and receding-horizon steps,
