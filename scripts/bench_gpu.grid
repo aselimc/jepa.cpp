@@ -38,8 +38,12 @@ vjepa2-ac-vitg              | ac           | 1  | f16
 vjepa2-ac-vitg              | ac           | 16 | f16
 vjepa2-ac-vitg              | ac           | 64 | f16
 vjepa2-ac-vitg              | ac-rollout   | 1  | f16
-vjepa2-ac-vitg              | ac-rollout   | 16 | f16
-vjepa2-ac-vitg              | ac-rollout   | 64 | f16
+vjepa2-ac-vitg              | ac-rollout   | 16 | f16,q8_0
+vjepa2-ac-vitg              | ac-rollout   | 64 | f16,q8_0
+vjepa2-ac-vitg              | ac-rollout   | 256 | f16
+vjepa2-ac-vitg              | ac-plan      | 16 | f16,q8_0
+vjepa2-ac-vitg              | ac-plan      | 64 | f16,q8_0
+vjepa2-ac-vitg              | ac-plan      | 256 | f16
 
 # ---- the --gpu-prec f16 opt-out (bench-only, not parity-gated) -----------------------------------
 ijepa_vith14_1k             | encoder | 1  | f16 | f16

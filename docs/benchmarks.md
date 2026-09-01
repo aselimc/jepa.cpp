@@ -47,6 +47,7 @@ Measurement sessions (one `bench_all.sh` invocation each):
 | 32 | 1 + 3 | 2026-08-31 23:02 UTC | 2026-08-31 23:03 UTC | 1.41 → 10.16 | levjepa f32/f16/q8_0 encoder, idle box |
 | 96 | 1 + 3 | 2026-08-31 23:05 UTC | 2026-08-31 23:05 UTC | 1.81 → 9.35 | levjepa 96-thread row, idle box |
 | 32 | 1 + 3 | 2026-08-31 23:13 UTC | 2026-08-31 23:13 UTC | 0.82 → 7.80 | levjepa q4_0/q4_k encoder rows, idle box |
+| 32 | 1 + 3 | 2026-09-01 19:11 UTC | 2026-09-01 19:26 UTC | 0.23 → 31.45 | — |
 
 The 1-minute load average is recorded per session, before the first run and after the last (out of 192 hardware threads; a session's own run contributes its thread count, which is what the end-of-session figure mostly is). Every session here started on an **idle** box — the highest starting load average is 3.24 — so `ms mean` is a fair figure and `ms min` sits within a per cent or two of it.
 
@@ -63,8 +64,8 @@ The 1-minute load average is recorded per session, before the first run and afte
 | ijepa_vith14_1k | q4_k | 224x224 | 256 | 32 | 197.8 | 197.5 | 1295 | 263 | **250** | 1.26x |
 | ijepa_vith14_1k | q4_0 | 224x224 | 256 | 32 | 140.2 | 139.4 | 1826 | 263 | **250** | 1.78x |
 | lejepa-vits16-pretrain-in1k | f32 | 224x224 | 197 | 32 | 13.1 | 13.1 | 15019 | 22.6 | **15.4** | 1.17x |
-| lejepa-vits16-pretrain-in1k | f16 | 224x224 | 197 | 32 | 12.8 | 12.7 | 15383 | 22.6 | **15.4** | 1.20x |
-| lejepa-vits16-pretrain-in1k | q8_0 | 224x224 | 197 | 32 | 11.3 | 11.2 | 17379 | 22.6 | **15.4** | 1.36x |
+| lejepa-vits16-pretrain-in1k | f16 | 224x224 | 197 | 32 | 12.8 | 12.7 | 15382 | 22.6 | **15.4** | 1.20x |
+| lejepa-vits16-pretrain-in1k | q8_0 | 224x224 | 197 | 32 | 11.3 | 11.2 | 17380 | 22.6 | **15.4** | 1.36x |
 | lejepa-vits16-pretrain-in1k | q4_k | 224x224 | 197 | 32 | 12.9 | 12.8 | 15301 | 22.6 | **15.4** | 1.20x |
 | lejepa-vits16-pretrain-in1k | q4_0 | 224x224 | 197 | 32 | 12.0 | 11.9 | 16411 | 22.6 | **15.4** | 1.28x |
 | levjepa-vitl16 | f32 | 16f 224x224 | 3 137 | 32 | 1519.5 | 1512.0 | 2065 | **1752** | 1735 | 1.15x |
@@ -73,11 +74,23 @@ The 1-minute load average is recorded per session, before the first run and afte
 | levjepa-vitl16 | q8_0 | 16f 224x224 | 3 137 | 32 | 1547.3 | 1508.4 | 2027 | **1752** | 1735 | 1.13x |
 | levjepa-vitl16 | q4_k | 16f 224x224 | 3 137 | 32 | 1874.6 | 1851.4 | 1673 | **1752** | 1735 | 0.93x |
 | levjepa-vitl16 | q4_0 | 16f 224x224 | 3 137 | 32 | 1551.0 | 1536.7 | 2023 | **1752** | 1735 | 1.13x |
-| lewm-pusht | f32 | 224x224 | 257 | 32 | 9.2 | 9.2 | 28022 | **16.8**<sup>lewm</sup> | 16.0 | 1.83x |
+| lewm-pusht | f32 | 224x224 | 257 | 32 | 9.2 | 9.2 | 28023 | **16.8**<sup>lewm</sup> | 16.0 | 1.83x |
 | lewm-pusht | f16 | 224x224 | 257 | 32 | 9.8 | 9.7 | 26356 | **16.8**<sup>lewm</sup> | 16.0 | 1.72x |
-| lewm-pusht | q8_0 | 224x224 | 257 | 32 | 9.1 | 8.9 | 28212 | **16.8**<sup>lewm</sup> | 16.0 | 1.84x |
-| lewm-pusht | q4_k | 224x224 | 257 | 32 | 10.5 | 10.3 | 24561 | **16.8**<sup>lewm</sup> | 16.0 | 1.60x |
-| lewm-pusht | q4_0 | 224x224 | 257 | 32 | 9.1 | 9.0 | 28243 | **16.8**<sup>lewm</sup> | 16.0 | 1.84x |
+| lewm-pusht | q8_0 | 224x224 | 257 | 32 | 9.1 | 8.9 | 28211 | **16.8**<sup>lewm</sup> | 16.0 | 1.84x |
+| lewm-pusht | q4_k | 224x224 | 257 | 32 | 10.5 | 10.3 | 24560 | **16.8**<sup>lewm</sup> | 16.0 | 1.60x |
+| lewm-pusht | q4_0 | 224x224 | 257 | 32 | 9.1 | 9.0 | 28242 | **16.8**<sup>lewm</sup> | 16.0 | 1.84x |
+| vjepa2-ac-vitg | f32 | 16f 256x256 | 2 048 | 32 | 2683.3 | 2675.9 | 763 | – | – | – |
+| vjepa2-ac-vitg | f16 | 16f 256x256 | 2 048 | 32 | 2227.7 | 2219.0 | 919 | – | – | – |
+| vjepa2-ac-vitg | q8_0 | 16f 256x256 | 2 048 | 32 | 2320.7 | 2309.6 | 882 | – | – | – |
+| vjepa2-ac-vitg | f32 | 64f 256x256 | 8 192 | 32 | 15773.9 | 15619.6 | 519 | – | – | – |
+| vjepa2-ac-vitg | f16 | 64f 256x256 | 8 192 | 32 | 15747.2 | 15538.5 | 520 | – | – | – |
+| vjepa2-ac-vitg | q8_0 | 64f 256x256 | 8 192 | 32 | 16618.2 | 16577.4 | 493 | – | – | – |
+| vjepa2-vitg-fpc64-256 | f32 | 16f 256x256 | 2 048 | 32 | 2696.6 | 2685.1 | 759 | – | – | – |
+| vjepa2-vitg-fpc64-256 | f16 | 16f 256x256 | 2 048 | 32 | 2384.1 | 2379.3 | 859 | – | – | – |
+| vjepa2-vitg-fpc64-256 | q8_0 | 16f 256x256 | 2 048 | 32 | 2293.1 | 2287.2 | 893 | – | – | – |
+| vjepa2-vitg-fpc64-256 | f32 | 64f 256x256 | 8 192 | 32 | 15876.7 | 15730.8 | 516 | – | – | – |
+| vjepa2-vitg-fpc64-256 | f16 | 64f 256x256 | 8 192 | 32 | 16285.6 | 16236.7 | 503 | – | – | – |
+| vjepa2-vitg-fpc64-256 | q8_0 | 64f 256x256 | 8 192 | 32 | 16622.0 | 16557.8 | 493 | – | – | – |
 | vjepa2-vitl-fpc16-256-ssv2 | f32 | 16f 256x256 | 2 048 | 32 | 943.5 | 938.6 | 2171 | **1051**<sup>ssv2</sup> | 1046 | n/a<sup>ssv2</sup> |
 | vjepa2-vitl-fpc16-256-ssv2 | f16 | 16f 256x256 | 2 048 | 32 | 822.8 | 820.7 | 2489 | **1051**<sup>ssv2</sup> | 1046 | n/a<sup>ssv2</sup> |
 | vjepa2-vitl-fpc16-256-ssv2 | f16 | 16f 256x256 | 2 048 | 96 | 564.4 | 560.8 | 3629 | **1051**<sup>ssv2</sup> | 1046 | n/a<sup>ssv2</sup> |
@@ -141,9 +154,13 @@ A frame group is matched to an encoder row by frame count, so a sample that is n
 | model | shape | tokens | f32 t=32 | f16 t=32 | q8_0 t=32 | q4_k t=32 | q4_0 t=32 | f16 t=96 |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | ijepa_vith14_1k | 224x224 | 256 | 1468 | 1741 | 1983 | 1295 | 1826 | 2264 |
-| lejepa-vits16-pretrain-in1k | 224x224 | 197 | 15019 | 15383 | 17379 | 15301 | 16411 | – |
+| lejepa-vits16-pretrain-in1k | 224x224 | 197 | 15019 | 15382 | 17380 | 15301 | 16411 | – |
 | levjepa-vitl16 | 16f 224x224 | 3 137 | 2065 | 2097 | 2027 | 1673 | 2023 | 3506 |
-| lewm-pusht | 224x224 | 257 | 28022 | 26356 | 28212 | 24561 | 28243 | – |
+| lewm-pusht | 224x224 | 257 | 28023 | 26356 | 28211 | 24560 | 28242 | – |
+| vjepa2-ac-vitg | 16f 256x256 | 2 048 | 763 | 919 | 882 | – | – | – |
+| vjepa2-ac-vitg | 64f 256x256 | 8 192 | 519 | 520 | 493 | – | – | – |
+| vjepa2-vitg-fpc64-256 | 16f 256x256 | 2 048 | 759 | 859 | 893 | – | – | – |
+| vjepa2-vitg-fpc64-256 | 64f 256x256 | 8 192 | 516 | 503 | 493 | – | – | – |
 | vjepa2-vitl-fpc16-256-ssv2 | 16f 256x256 | 2 048 | 2171 | 2489 | 2582 | 1874 | 2400 | 3629 |
 | vjepa2-vitl-fpc64-256 | 16f 256x256 | 2 048 | 2176 | 2495 | 2579 | 1868 | 2425 | 3614 |
 | vjepa2-vitl-fpc64-256 | 64f 256x256 | 8 192 | 1167 | 1282 | 1264 | 1106 | 1238 | 2034 |
@@ -159,6 +176,10 @@ A frame group is matched to an encoder row by frame count, so a sample that is n
 | lejepa-vits16-pretrain-in1k | 224x224 | 197 | 13.1 | 12.8 | 11.3 | 1.02x | 1.13x |
 | levjepa-vitl16 | 16f 224x224 | 3 137 | 1519 | 1496 | 1547 | 1.02x | 0.97x |
 | lewm-pusht | 224x224 | 257 | 9.2 | 9.8 | 9.1 | 0.94x | 1.07x |
+| vjepa2-ac-vitg | 16f 256x256 | 2 048 | 2683 | 2228 | 2321 | 1.20x | 0.96x |
+| vjepa2-ac-vitg | 64f 256x256 | 8 192 | 15774 | 15747 | 16618 | 1.00x | 0.95x |
+| vjepa2-vitg-fpc64-256 | 16f 256x256 | 2 048 | 2697 | 2384 | 2293 | 1.13x | 1.04x |
+| vjepa2-vitg-fpc64-256 | 64f 256x256 | 8 192 | 15877 | 16286 | 16622 | 0.97x | 0.98x |
 | vjepa2-vitl-fpc16-256-ssv2 | 16f 256x256 | 2 048 | 943 | 823 | 793 | 1.15x | 1.04x |
 | vjepa2-vitl-fpc64-256 | 16f 256x256 | 2 048 | 941 | 821 | 794 | 1.15x | 1.03x |
 | vjepa2-vitl-fpc64-256 | 64f 256x256 | 8 192 | 7020 | 6388 | 6482 | 1.10x | 0.99x |
@@ -265,34 +286,46 @@ Tripling the threads never triples the throughput: the 32-thread runs already sa
 | lewm-pusht | f32 | 224x224 | 69 | 79 | 37 |
 | lewm-pusht | f16 | 224x224 | 38 | 47 | 23 |
 | lewm-pusht | q8_0 | 224x224 | 23 | 33 | 14 |
-| lewm-pusht | q4_k | 224x224 | 15 | 25 | 11 |
+| lewm-pusht | q4_k | 224x224 | 15 | 25 | 12 |
 | lewm-pusht | q4_0 | 224x224 | 15 | 25 | 12 |
+| vjepa2-ac-vitg | f32 | 16f 256x256 | 5025 | 5131 | 2489 |
+| vjepa2-ac-vitg | f16 | 16f 256x256 | 2519 | 2644 | 1007 |
+| vjepa2-ac-vitg | q8_0 | 16f 256x256 | 1344 | 1460 | 570 |
+| vjepa2-ac-vitg | f32 | 64f 256x256 | 5025 | 5511 | 2521 |
+| vjepa2-ac-vitg | f16 | 64f 256x256 | 2519 | 3092 | 1026 |
+| vjepa2-ac-vitg | q8_0 | 64f 256x256 | 1344 | 1876 | 576 |
+| vjepa2-vitg-fpc64-256 | f32 | 16f 256x256 | 3947 | 4053 | 1915 |
+| vjepa2-vitg-fpc64-256 | f16 | 16f 256x256 | 1975 | 2108 | 810 |
+| vjepa2-vitg-fpc64-256 | q8_0 | 16f 256x256 | 1057 | 1178 | 449 |
+| vjepa2-vitg-fpc64-256 | f32 | 64f 256x256 | 3947 | 4435 | 1907 |
+| vjepa2-vitg-fpc64-256 | f16 | 64f 256x256 | 1975 | 2546 | 819 |
+| vjepa2-vitg-fpc64-256 | q8_0 | 64f 256x256 | 1057 | 1580 | 463 |
 | vjepa2-vitl-fpc16-256-ssv2 | f32 | 16f 256x256 | 1432 | 1522 | 635 |
 | vjepa2-vitl-fpc16-256-ssv2 | f16 | 16f 256x256 | 717 | 808 | 332 |
 | vjepa2-vitl-fpc16-256-ssv2 | q8_0 | 16f 256x256 | 383 | 466 | 184 |
-| vjepa2-vitl-fpc16-256-ssv2 | q4_k | 16f 256x256 | 205 | 297 | 111 |
+| vjepa2-vitl-fpc16-256-ssv2 | q4_k | 16f 256x256 | 205 | 297 | 110 |
 | vjepa2-vitl-fpc16-256-ssv2 | q4_0 | 16f 256x256 | 205 | 291 | 106 |
-| vjepa2-vitl-fpc64-256 | f32 | 16f 256x256 | 1243 | 1336 | 581 |
+| vjepa2-vitl-fpc64-256 | f32 | 16f 256x256 | 1244 | 1336 | 581 |
 | vjepa2-vitl-fpc64-256 | f16 | 16f 256x256 | 622 | 720 | 292 |
 | vjepa2-vitl-fpc64-256 | q8_0 | 16f 256x256 | 333 | 426 | 158 |
 | vjepa2-vitl-fpc64-256 | q4_k | 16f 256x256 | 178 | 272 | 90 |
 | vjepa2-vitl-fpc64-256 | q4_0 | 16f 256x256 | 178 | 265 | 97 |
-| vjepa2-vitl-fpc64-256 | f32 | 64f 256x256 | 1243 | 1599 | 567 |
-| vjepa2-vitl-fpc64-256 | f16 | 64f 256x256 | 622 | 1034 | 295 |
+| vjepa2-vitl-fpc64-256 | f32 | 64f 256x256 | 1244 | 1599 | 568 |
+| vjepa2-vitl-fpc64-256 | f16 | 64f 256x256 | 622 | 1034 | 294 |
 | vjepa2-vitl-fpc64-256 | q8_0 | 64f 256x256 | 333 | 713 | 179 |
 | vjepa2-vitl-fpc64-256 | q4_k | 64f 256x256 | 178 | 564 | 95 |
 | vjepa2-vitl-fpc64-256 | q4_0 | 64f 256x256 | 178 | 561 | 106 |
-| vjepa2_1-vitb-384 | f32 | 384x384 | 419 | 435 | 197 |
+| vjepa2_1-vitb-384 | f32 | 384x384 | 418 | 435 | 197 |
 | vjepa2_1-vitb-384 | f16 | 384x384 | 210 | 226 | 97 |
 | vjepa2_1-vitb-384 | q8_0 | 384x384 | 113 | 127 | 60 |
 | vjepa2_1-vitb-384 | q4_k | 384x384 | 62 | 75 | 36 |
 | vjepa2_1-vitb-384 | q4_0 | 384x384 | 62 | 75 | 35 |
-| vjepa2_1-vitb-384 | f32 | 16f 384x384 | 419 | 569 | 246 |
+| vjepa2_1-vitb-384 | f32 | 16f 384x384 | 418 | 569 | 246 |
 | vjepa2_1-vitb-384 | f16 | 16f 384x384 | 210 | 376 | 111 |
 | vjepa2_1-vitb-384 | q8_0 | 16f 384x384 | 113 | 270 | 72 |
 | vjepa2_1-vitb-384 | q4_k | 16f 384x384 | 62 | 218 | 49 |
 | vjepa2_1-vitb-384 | q4_0 | 16f 384x384 | 62 | 220 | 35 |
-| vjepa2_1-vitb-384 | f32 | 64f 384x384 | 419 | 1060 | 198 |
+| vjepa2_1-vitb-384 | f32 | 64f 384x384 | 418 | 1060 | 198 |
 | vjepa2_1-vitb-384 | f16 | 64f 384x384 | 210 | 948 | 105 |
 | vjepa2_1-vitb-384 | q8_0 | 64f 384x384 | 113 | 809 | 62 |
 | vjepa2_1-vitb-384 | q4_k | 64f 384x384 | 62 | 759 | 39 |
@@ -324,29 +357,57 @@ End-to-end classification against the reference — this *is* like-for-like, bec
 
 | model | ftype | shape | tokens | threads | ms mean | ms min | encoder ms | peak RSS MiB |
 |---|---|---|---:|---:|---:|---:|---:|---:|
+| vjepa2-vitg-fpc64-256 | f32 | 16f 256x256 | 2 048 | 32 | 362.3 | 358.9 | 2728.9 | 4059 |
+| vjepa2-vitg-fpc64-256 | f16 | 16f 256x256 | 2 048 | 32 | 354.7 | 354.3 | 2479.0 | 2119 |
+| vjepa2-vitg-fpc64-256 | q8_0 | 16f 256x256 | 2 048 | 32 | 349.0 | 348.3 | 2313.3 | 1182 |
 | vjepa2-vitl-fpc16-256-ssv2 | f32 | 16f 256x256 | 2 048 | 32 | 333.1 | 328.9 | 937.4 | 1531 |
 | vjepa2-vitl-fpc16-256-ssv2 | f16 | 16f 256x256 | 2 048 | 32 | 340.8 | 340.5 | 814.6 | 822 |
-| vjepa2-vitl-fpc16-256-ssv2 | f16 | 16f 256x256 | 2 048 | 96 | 208.0 | 196.5 | 593.4 | 773 |
+| vjepa2-vitl-fpc16-256-ssv2 | f16 | 16f 256x256 | 2 048 | 96 | 208.0 | 196.4 | 593.4 | 773 |
 | vjepa2-vitl-fpc16-256-ssv2 | q8_0 | 16f 256x256 | 2 048 | 32 | 336.8 | 335.7 | 810.6 | 472 |
 | vjepa2-vitl-fpc64-256 | f32 | 16f 256x256 | 2 048 | 32 | 338.3 | 330.1 | 942.9 | 1344 |
 | vjepa2-vitl-fpc64-256 | f16 | 16f 256x256 | 2 048 | 32 | 343.8 | 341.0 | 827.6 | 724 |
 | vjepa2-vitl-fpc64-256 | f16 | 16f 256x256 | 2 048 | 96 | 207.4 | 197.8 | 557.0 | 681 |
 | vjepa2-vitl-fpc64-256 | q8_0 | 16f 256x256 | 2 048 | 32 | 332.7 | 332.3 | 796.8 | 416 |
-| vjepa2_1-vitb-384 | f32 | 16f 384x384 | 4 608 | 32 | 1296.7 | 1286.0 | 824.1 | 593 |
+| vjepa2_1-vitb-384 | f32 | 16f 384x384 | 4 608 | 32 | 1296.7 | 1286.0 | 824.1 | 594 |
 | vjepa2_1-vitb-384 | f16 | 16f 384x384 | 4 608 | 32 | 1303.6 | 1291.2 | 871.2 | 410 |
 | vjepa2_1-vitb-384 | f16 | 16f 384x384 | 4 608 | 96 | 854.4 | 813.6 | 630.3 | 347 |
 | vjepa2_1-vitb-384 | q8_0 | 16f 384x384 | 4 608 | 32 | 1272.6 | 1269.9 | 901.1 | 295 |
 
 Worst case for the predictor: context = target = **every** token, i.e. a sequence of 2 x tokens through the 12-layer 384-d predictor. `encoder ms` is the pass that produced this row's input — the **faster of two warm** encoder graphs (a third, cold one runs first and is discarded), not an average of `repeat` runs like the `ms` columns, so read the Encoder table for the encoder cost proper.
 
+## V-JEPA 2-AC world model and planner
+
+| model | ftype | mode | shape | threads | ms mean | ms min | ms / candidate | peak RSS MiB |
+|---|---|---|---|---:|---:|---:|---:|---:|
+| vjepa2-ac-vitg | f32 | ac | 1f x 256tok, K=1 | 32 | 106.8 | 106.6 | 106.79 | 5061 |
+| vjepa2-ac-vitg | f16 | ac | 1f x 256tok, K=1 | 32 | 94.9 | 94.4 | 94.87 | 2543 |
+| vjepa2-ac-vitg | q8_0 | ac | 1f x 256tok, K=1 | 32 | 83.6 | 83.4 | 83.59 | 1368 |
+| vjepa2-ac-vitg | f32 | ac | 1f x 256tok, K=16 | 32 | 1476.1 | 1472.2 | 92.25 | 5188 |
+| vjepa2-ac-vitg | f16 | ac | 1f x 256tok, K=16 | 32 | 1337.1 | 1334.3 | 83.57 | 2710 |
+| vjepa2-ac-vitg | q8_0 | ac | 1f x 256tok, K=16 | 32 | 1229.8 | 1216.8 | 76.86 | 1515 |
+| vjepa2-ac-vitg | f32 | ac | 1f x 256tok, K=64 | 32 | 6544.7 | 6538.3 | 102.26 | 5722 |
+| vjepa2-ac-vitg | f16 | ac | 1f x 256tok, K=64 | 32 | 5411.2 | 5377.1 | 84.55 | 3338 |
+| vjepa2-ac-vitg | q8_0 | ac | 1f x 256tok, K=64 | 32 | 4936.3 | 4920.9 | 77.13 | 2093 |
+| vjepa2-ac-vitg | f32 | ac-rollout | rollout H=2, K=1 | 32 | 170.1 | 169.5 | 170.13 | 5071 |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=1 | 32 | 138.9 | 137.5 | 138.88 | 2547 |
+| vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=2, K=1 | 32 | 133.3 | 127.7 | 133.34 | 1372 |
+| vjepa2-ac-vitg | f32 | ac-rollout | rollout H=2, K=16 | 32 | 2295.6 | 2294.8 | 143.48 | 5397 |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=16 | 32 | 2049.1 | 2044.4 | 128.07 | 2974 |
+| vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=2, K=16 | 32 | 1874.3 | 1869.9 | 117.14 | 1760 |
+| vjepa2-ac-vitg | f32 | ac-rollout | rollout H=2, K=64 | 32 | 9966.2 | 9926.8 | 155.72 | 6564 |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=64 | 32 | 8242.9 | 8216.7 | 128.80 | 4298 |
+| vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=2, K=64 | 32 | 7508.9 | 7417.9 | 117.33 | 3008 |
+
+`--batch` is the candidate count K, which is the axis a planner scales on: the K action sequences of one CEM iteration share a single graph per horizon step, so `ms / candidate` is what a candidate actually costs. **`ac`** is one `jepa_ac_predict` call; **`ac-rollout`** is `jepa_ac_rollout` over H steps and its ms is **per step**; **`ac-plan`** is `jepa_ac_plan` and its ms is **per CEM iteration**, i.e. what a planner pays per decision. None of them run the encoder — a planner encodes once and scores thousands of candidates against that one encode, which is the whole point of the cached context (see [architecture](architecture.md#the-cached-planning-context)). The rollout modes default to the cached-context entry point; `--no-cached` measures the explicit one, and the two agree to within run-to-run noise.
+
 ## LeWM world model
 
 | model | ftype | mode | shape | threads | ms mean | ms min | steps/s |
 |---|---|---|---|---:|---:|---:|---:|
-| lewm-pusht | f32 | lewm-step | 3f x 192d | 32 | 0.911 | 0.863 | 1097 |
+| lewm-pusht | f32 | lewm-step | 3f x 192d | 32 | 0.911 | 0.863 | 1098 |
 | lewm-pusht | f16 | lewm-step | 3f x 192d | 32 | 0.918 | 0.904 | 1089 |
-| lewm-pusht | q8_0 | lewm-step | 3f x 192d | 32 | 0.739 | 0.718 | 1354 |
-| lewm-pusht | f32 | lewm-rollout | rollout K=20 | 32 | 0.817 | 0.809 | 1225 |
+| lewm-pusht | q8_0 | lewm-step | 3f x 192d | 32 | 0.739 | 0.718 | 1353 |
+| lewm-pusht | f32 | lewm-rollout | rollout K=20 | 32 | 0.817 | 0.809 | 1224 |
 | lewm-pusht | f16 | lewm-rollout | rollout K=20 | 32 | 0.865 | 0.850 | 1156 |
 | lewm-pusht | q8_0 | lewm-rollout | rollout K=20 | 32 | 0.744 | 0.729 | 1344 |
 
@@ -376,13 +437,13 @@ The configurations live in `scripts/bench_gpu.grid`, one line per (model, mode, 
 | setting | value |
 |---|---|
 | GPU | NVIDIA RTX 4500 Ada Generation, 24570 MiB, compute 8.9, 210.00 W board limit |
-| Device | index 0 — every run below has the card to itself |
+| Device | index 1 — every run below has the card to itself |
 | Driver | 580.173.02 (CUDA 13.0 driver API) |
 | Toolkit | `nvcc` 13.0.88 |
 | Kernel | 6.17.0-1032-oem |
 | Host compiler | c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 |
 | ggml | `36da5713`, **`GGML_LLAMAFILE=ON`** (a host-side path, unused here) |
-| jepa.cpp | `35d77369` |
+| jepa.cpp | `97327075` |
 | Precision | `GGML_PREC_F32` on every `mul_mat` unless a row says `--gpu-prec f16`; K/V F16 in flash attention for every file but f32 |
 
 Measurement sessions (one `bench_gpu.sh` invocation each):
@@ -390,6 +451,9 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 | device | warmup + measured | start | end | 1-min load avg | foreign cores | note |
 |---|---|---|---|---|---:|---|
 | CUDA0 | 2 + 5 | 2026-09-01 09:13 UTC | 2026-09-01 09:14 UTC | 0.68 → 1.09 | 0.24 | GPU twin sweep, idle box, device 0 |
+| CUDA1 | 2 + 5 | 2026-09-01 17:06 UTC | 2026-09-01 17:07 UTC | 0.18 → 0.72 | 0.22 | V-JEPA 2-AC + ViT-g rows, plan item 7.1 |
+| CUDA1 | 2 + 5 | 2026-09-01 17:10 UTC | 2026-09-01 17:10 UTC | 0.45 → 0.67 | 0.23 | — |
+| CUDA1 | 2 + 5 | 2026-09-01 19:38 UTC | 2026-09-01 19:41 UTC | 0.75 → 1.00 | 0.22 | V-JEPA 2-AC planning KPIs (7.2) |
 
 `foreign cores` is the CPU time the whole machine spent out of idle over the session minus the CPU time this sweep's own processes spent, divided by the wall clock: how much of the box belonged to somebody else while the card was timed. The highest here is **0.24** of one core out of 192, i.e. an idle box. A GPU row is host-idle by construction, so the load average alone would not have caught a second tenant.
 
@@ -407,6 +471,17 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 | levjepa-vitl16 | q8_0 | 16f 224x224 | 3 137 | CUDA0 | 71.39 | 70.88 | 0.402 | 43942 | 391 | 1496.2 | 21.0x |
 | levjepa-vitl16 | q4_k | 16f 224x224 | 3 137 | CUDA0 | 71.23 | 71.00 | 0.198 | 44038 | 393 | 1496.2 | 21.0x |
 | lewm-pusht | f16 | 224x224 | 257 | CUDA0 | 0.86 | 0.85 | 0.001 | 300409 | 358 | 9.8 | 11.4x |
+| vjepa2-ac-vitg | f16 | 2f 256x256 | 256 | CUDA1 | 27.83 | 27.80 | 0.018 | 9197 | 347 | – | – |
+| vjepa2-ac-vitg | q8_0 | 2f 256x256 | 256 | CUDA1 | 14.04 | 14.03 | 0.006 | 18230 | 350 | – | – |
+| vjepa2-ac-vitg | q4_k | 2f 256x256 | 256 | CUDA1 | 13.37 | 13.37 | 0.002 | 19150 | 356 | – | – |
+| vjepa2-vitg-fpc64-256 | f32 | 16f 256x256 | 2 048 | CUDA1 | 133.24 | 133.03 | 0.141 | 15371 | 386 | 2384.1 | 17.9x |
+| vjepa2-vitg-fpc64-256 | f16 | 16f 256x256 | 2 048 | CUDA1 | 142.84 | 142.57 | 0.141 | 14338 | 389 | 2384.1 | 16.7x |
+| vjepa2-vitg-fpc64-256 | q8_0 | 16f 256x256 | 2 048 | CUDA1 | 101.74 | 101.61 | 0.100 | 20129 | 381 | 2384.1 | 23.4x |
+| vjepa2-vitg-fpc64-256 | q4_k | 16f 256x256 | 2 048 | CUDA1 | 100.70 | 99.54 | 0.589 | 20337 | 387 | 2384.1 | 23.7x |
+| vjepa2-vitg-fpc64-256 | f32 | 64f 256x256 | 8 192 | CUDA1 | 889.62 | 888.80 | 0.518 | 9208 | 475 | 16285.6 | 18.3x |
+| vjepa2-vitg-fpc64-256 | f16 | 64f 256x256 | 8 192 | CUDA1 | 905.12 | 903.64 | 0.834 | 9051 | 480 | 16285.6 | 18.0x |
+| vjepa2-vitg-fpc64-256 | q8_0 | 64f 256x256 | 8 192 | CUDA1 | 831.24 | 830.81 | 0.321 | 9855 | 485 | 16285.6 | 19.6x |
+| vjepa2-vitg-fpc64-256 | q4_k | 64f 256x256 | 8 192 | CUDA1 | 832.29 | 832.17 | 0.073 | 9843 | 491 | 16285.6 | 19.6x |
 | vjepa2-vitl-fpc64-256 | f32 | 16f 256x256 | 2 048 | CUDA0 | 43.57 | 42.94 | 0.338 | 47006 | 382 | 820.7 | 18.8x |
 | vjepa2-vitl-fpc64-256 | f16 | 16f 256x256 | 2 048 | CUDA0 | 46.47 | 46.29 | 0.096 | 44068 | 374 | 820.7 | 17.7x |
 | vjepa2-vitl-fpc64-256 | q8_0 | 16f 256x256 | 2 048 | CUDA0 | 33.86 | 32.87 | 0.595 | 60488 | 379 | 820.7 | 24.2x |
@@ -415,8 +490,8 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 | vjepa2-vitl-fpc64-256 | f16 | 64f 256x256 | 8 192 | CUDA0 | 305.43 | 305.22 | 0.223 | 26821 | 468 | 6388.1 | 20.9x |
 | vjepa2-vitl-fpc64-256 | q8_0 | 64f 256x256 | 8 192 | CUDA0 | 280.42 | 280.35 | 0.071 | 29214 | 473 | 6388.1 | 22.8x |
 | vjepa2-vitl-fpc64-256 | q4_k | 64f 256x256 | 8 192 | CUDA0 | 281.38 | 281.28 | 0.090 | 29113 | 476 | 6388.1 | 22.7x |
-| vjepa2_1-vitb-384 | f16 | 384x384 | 576 | CUDA0 | 4.38 | 4.38 | 0.004 | 131411 | 346 | 60.3 | 13.8x |
-| vjepa2_1-vitb-384 | q4_k | 384x384 | 576 | CUDA0 | 3.44 | 3.44 | 0.002 | 167252 | 352 | 60.3 | 17.5x |
+| vjepa2_1-vitb-384 | f16 | 384x384 | 576 | CUDA0 | 4.38 | 4.38 | 0.004 | 131411 | 346 | – | – |
+| vjepa2_1-vitb-384 | q4_k | 384x384 | 576 | CUDA0 | 3.44 | 3.44 | 0.002 | 167252 | 352 | – | – |
 | vjepa2_1-vitb-384 | f16 | 16f 384x384 | 4 608 | CUDA0 | 42.46 | 42.09 | 0.467 | 108535 | 410 | 853.5 | 20.1x |
 | vjepa2_1-vitb-384 | q4_k | 16f 384x384 | 4 608 | CUDA0 | 37.35 | 37.13 | 0.146 | 123366 | 416 | 853.5 | 22.9x |
 | vjepa2_1-vitb-384 | f16 | 64f 384x384 | 18 432 | CUDA0 | 424.21 | 420.98 | 1.70 | 43450 | 618 | 9036.1 | 21.3x |
@@ -429,6 +504,9 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | ijepa_vith14_1k | 224x224 | 256 | 11.9 | 15.5 | 8.0 | 7.8 | 1.94x | 2.00x |
 | levjepa-vitl16 | 16f 224x224 | 3 137 | 85.9 | 87.6 | 71.4 | 71.2 | 1.23x | 1.23x |
+| vjepa2-ac-vitg | 2f 256x256 | 256 | – | 27.8 | 14.0 | 13.4 | 1.98x | 2.08x |
+| vjepa2-vitg-fpc64-256 | 16f 256x256 | 2 048 | 133 | 143 | 102 | 101 | 1.40x | 1.42x |
+| vjepa2-vitg-fpc64-256 | 64f 256x256 | 8 192 | 890 | 905 | 831 | 832 | 1.09x | 1.09x |
 | vjepa2-vitl-fpc64-256 | 16f 256x256 | 2 048 | 43.6 | 46.5 | 33.9 | 34.7 | 1.37x | 1.34x |
 | vjepa2-vitl-fpc64-256 | 64f 256x256 | 8 192 | 303 | 305 | 280 | 281 | 1.09x | 1.09x |
 | vjepa2_1-vitb-384 | 384x384 | 576 | – | 4.4 | – | 3.4 | – | 1.27x |
@@ -452,10 +530,25 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 | model | ftype | mode | shape | tokens | ms mean | ms min | ms sd | encoder ms | CPU f16 t=32 ms | vs CPU f16 t=32 |
 |---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
 | vjepa2-vitl-fpc16-256-ssv2 | f16 | head | 16f 256x256 | 2 048 | 5.612 | 5.497 | 0.089 | 46.9 | 98.97 | 17.63x |
+| vjepa2-vitg-fpc64-256 | f16 | predictor | 16f 256x256 | 2 048 | 112.242 | 112.172 | 0.056 | 143.7 | 354.68 | 3.16x |
 | vjepa2-vitl-fpc16-256-ssv2 | f16 | predictor | 16f 256x256 | 2 048 | 112.744 | 112.654 | 0.060 | 45.6 | 340.76 | 3.02x |
 | vjepa2-vitl-fpc64-256 | f16 | predictor | 16f 256x256 | 2 048 | 112.804 | 112.721 | 0.063 | 46.3 | 343.84 | 3.05x |
 | lewm-pusht | f16 | lewm-step | 3f x 192d | 3 | 0.450 | 0.441 | 0.006 | – | 0.92 | 2.04x |
 | lewm-pusht | f16 | lewm-rollout | rollout K=20 | 1 | 0.448 | 0.439 | 0.013 | – | 0.86 | 1.93x |
+| vjepa2-ac-vitg | f16 | ac | 1f x 256tok, K=16 | 4 096 | 113.118 | 112.886 | 0.191 | – | 1337.13 | 11.82x |
+| vjepa2-ac-vitg | f16 | ac | 1f x 256tok, K=1 | 256 | 8.984 | 8.896 | 0.072 | – | 94.87 | 10.56x |
+| vjepa2-ac-vitg | f16 | ac | 1f x 256tok, K=64 | 16 384 | 533.225 | 533.008 | 0.138 | – | 5411.15 | 10.15x |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=16 | 256 | 178.038 | 177.567 | 0.248 | – | 2049.10 | 11.51x |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=1 | 256 | 11.871 | 11.820 | 0.037 | – | 138.88 | 11.70x |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=256 | 256 | 3189.827 | 3187.509 | 1.41 | – | – | – |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=64 | 256 | 794.088 | 793.855 | 0.155 | – | 8242.94 | 10.38x |
+| vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=2, K=16 | 256 | 145.151 | 145.046 | 0.078 | – | 2049.10 | 14.12x |
+| vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=2, K=64 | 256 | 751.703 | 751.673 | 0.031 | – | 8242.94 | 10.97x |
+| vjepa2-ac-vitg | f16 | ac-plan | plan K=16, H=2, it=1 | 512 | 357.210 | 356.779 | 0.435 | – | – | – |
+| vjepa2-ac-vitg | f16 | ac-plan | plan K=256, H=2, it=1 | 512 | 6376.896 | 6372.586 | 3.14 | – | – | – |
+| vjepa2-ac-vitg | f16 | ac-plan | plan K=64, H=2, it=1 | 512 | 1591.153 | 1590.828 | 0.326 | – | – | – |
+| vjepa2-ac-vitg | q8_0 | ac-plan | plan K=16, H=2, it=1 | 512 | 291.080 | 290.930 | 0.167 | – | – | – |
+| vjepa2-ac-vitg | q8_0 | ac-plan | plan K=64, H=2, it=1 | 512 | 1503.817 | 1503.687 | 0.145 | – | – | – |
 
 These are the synthetic-input graphs of the *Masked predictor*, *Attentive-pool head* and *LeWM world model* tables above, run on the card. The masked predictor is the one encoder-sized graph that does **not** gain twentyfold: at `head_dim` 32 no CUDA flash-attention kernel exists, so it takes the naive `mul_mat + soft_max_ext` path — genuinely F32, and about 3 TFLOP/s against flash's 50–70 (`docs/architecture.md` "GPU backend"). The LeWM graphs are the opposite end: three rows of 192 dimensions is far below the size at which a kernel launch pays for itself, and `docs/parity.md` *Results — predictors on CUDA0* times the same two graphs on the real fixture state.
 
@@ -480,4 +573,4 @@ These are the synthetic-input graphs of the *Masked predictor*, *Attentive-pool 
 
 ---
 
-Generated by `scripts/gen_benchmarks_md.py` from 80 runs in `tmp/bench` and 32 GPU runs in `tmp/bench-gpu`. Cross-check against `docs/parity.md` (same graphs, real fixture inputs) and `docs/quantization.md` (accuracy per dtype).
+Generated by `scripts/gen_benchmarks_md.py` from 113 runs in `tmp/bench` and 58 GPU runs in `/home/overseer2/workdir/jepa.cpp/tmp/bench-gpu`. Cross-check against `docs/parity.md` (same graphs, real fixture inputs) and `docs/quantization.md` (accuracy per dtype).

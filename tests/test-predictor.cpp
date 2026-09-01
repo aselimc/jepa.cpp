@@ -502,6 +502,43 @@ static void run_ac(jepa_context * ctx, jepa_model * model, const std::string & r
         }
     }
 
+    // ---- 5c. a longer horizon must agree with a shorter one on the steps they share. The rollout
+    // keeps only the PREDICTED frames per candidate (the observed prefix is shared), and the slot
+    // bookkeeping changes shape at the last step, where the tail is already full — H = 2 never
+    // reaches the interior case, so without this nothing would exercise it.
+    {
+        const int H2 = H + 2;
+        std::vector<float> acts2((size_t) K * H2 * A, 0.0f), out2((size_t) K * H2 * HW * D);
+        for (int c = 0; c < K; c++) {
+            // the first H actions are the fixture's; the extra steps repeat the last one
+            memcpy(acts2.data() + (size_t) c * H2 * A, acts.data() + (size_t) c * H * A,
+                   (size_t) H * A * sizeof(float));
+            for (int e = H; e < H2; e++) {
+                memcpy(acts2.data() + ((size_t) c * H2 + e) * A,
+                       acts.data() + ((size_t) c * H + (H - 1)) * A, (size_t) A * sizeof(float));
+            }
+        }
+        if (jepa_ac_rollout(ctx, seed.data(), 1, st0.data(), acts2.data(), nullptr, K, H2, out2.data()) != 0) {
+            printf("  longer-horizon rollout failed\n");
+            g_fail++;
+        } else {
+            double worst = 0;
+            for (int c = 0; c < K; c++) {
+                for (int h = 0; h < H; h++) {
+                    const float * a = out2.data() + ((size_t) c * H2 + h) * HW * D;
+                    const float * b = out.data() + ((size_t) c * H + h) * HW * D;
+                    for (int64_t i = 0; i < HW * D; i++) worst = std::fmax(worst, std::fabs(a[i] - b[i]));
+                }
+            }
+            const bool gpu2 = jepa_model_is_gpu(model);
+            const bool ok = gpu2 ? worst <= 1e-2 : worst == 0.0;
+            if (!ok) g_fail++;
+            snprintf(name, sizeof(name), "H=%d agrees with H=%d on the shared steps", H2, H);
+            printf("  %-44s max|d| = %.3e  %s\n", name, worst,
+                   ok ? (gpu2 ? "OK (<= 1e-2, GPU)" : "OK (bit-identical)") : "FAIL");
+        }
+    }
+
     // ---- 6. batched K == K sequential single-candidate rollouts
     {
         std::vector<float> seq_out((size_t) K * H * HW * D);

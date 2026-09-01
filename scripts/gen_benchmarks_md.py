@@ -79,7 +79,8 @@ PARITY_REQUIRED = [
 
 FTYPE_ORDER = {"f32": 0, "f16": 1, "q8_0": 2, "q6_k": 3, "q5_k": 4, "q5_1": 5, "q5_0": 6,
                "q4_k": 7, "q4_1": 8, "q4_0": 9}
-MODE_ORDER = {"encoder": 0, "head": 1, "predictor": 2, "lewm-step": 3, "lewm-rollout": 4}
+MODE_ORDER = {"encoder": 0, "head": 1, "predictor": 2, "lewm-step": 3, "lewm-rollout": 4,
+              "ac": 5, "ac-rollout": 6, "ac-plan": 7}
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -327,7 +328,9 @@ def baseline_for(bl: dict, label: str, frames: int):
 
 
 def shape_label(r: dict) -> str:
-    if r["mode"] in ("lewm-step", "lewm-rollout"):
+    # These modes encode their own axes in the label the tool built (the LeWM window, the AC
+    # candidate count K and horizon H), which frames/height/width cannot express.
+    if r["mode"] in ("lewm-step", "lewm-rollout", "ac", "ac-rollout", "ac-plan"):
         return r["shape"]
     if r["frames"] > 1:
         return f"{r['frames']}f {r['height']}x{r['width']}"
@@ -335,7 +338,8 @@ def shape_label(r: dict) -> str:
 
 
 def sort_key(r: dict):
-    return (r["model"], MODE_ORDER.get(r["mode"], 9), r["frames"], FTYPE_ORDER.get(r["ftype"], 99), r["threads"])
+    return (r["model"], MODE_ORDER.get(r["mode"], 9), r["frames"], r.get("batch", 1),
+            r.get("steps", 0), FTYPE_ORDER.get(r["ftype"], 99), r["threads"])
 
 
 def table(rows: list[list[str]], header: list[str], align: str) -> str:
@@ -389,9 +393,21 @@ def main() -> int:
         base, base_meta = runs_from_results_json(Path(a.merge_json))
         fresh = len(runs)
         runs = merge_runs(base, runs)
-        # keep the box/session history of the artifact when this sweep did not produce its own
+        # Keep the artifact's provenance: the box fields fall back to it, and the session list is
+        # CONCATENATED, not replaced — a partial re-sweep adds a session, it does not erase the ones
+        # that measured every other row in the table.
+        old_sessions = base_meta.pop("sessions", [])
         for k, v in base_meta.items():
             meta.setdefault(k, v)
+        new_sessions = meta.get("sessions", [])
+        seen, merged = set(), []
+        for sess in list(old_sessions) + list(new_sessions):
+            key = json.dumps(sess, sort_keys=True)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(sess)
+        meta["sessions"] = merged
         print(f"merged {fresh} freshly measured row(s) onto {len(base)} from {a.merge_json} "
               f"-> {len(runs)} total", file=sys.stderr)
     if not runs:
@@ -876,6 +892,32 @@ def main() -> int:
                 A(table(crows, ["model", "ftype", "shape", "threads", "encoder ms", "head ms",
                                 "total ms", "PyTorch ms", "speedup"], "lllrrrrrr"))
                 A("")
+
+    ac = [r for r in runs if r["mode"] in ("ac", "ac-rollout", "ac-plan")]
+    if ac:
+        A("## V-JEPA 2-AC world model and planner")
+        A("")
+        rows = []
+        for r in sorted(ac, key=sort_key):
+            per = r["ms_mean"] / r["batch"] if r.get("batch") else None
+            rows.append([r["model"], r["ftype"], r["mode"], r["shape"], r["threads"],
+                         f"{r['ms_mean']:.1f}", f"{r['ms_min']:.1f}",
+                         f"{per:.2f}" if per else "–",
+                         f"{mib(r.get('peak_rss_bytes', 0)):.0f}"])
+        A(table(rows, ["model", "ftype", "mode", "shape", "threads", "ms mean", "ms min",
+                       "ms / candidate", "peak RSS MiB"], "llllrrrrr"))
+        A("")
+        A("`--batch` is the candidate count K, which is the axis a planner scales on: the K action "
+          "sequences of one CEM iteration share a single graph per horizon step, so `ms / candidate` "
+          "is what a candidate actually costs. **`ac`** is one `jepa_ac_predict` call; "
+          "**`ac-rollout`** is `jepa_ac_rollout` over H steps and its ms is **per step**; "
+          "**`ac-plan`** is `jepa_ac_plan` and its ms is **per CEM iteration**, i.e. what a planner "
+          "pays per decision. None of them run the encoder — a planner encodes once and scores "
+          "thousands of candidates against that one encode, which is the whole point of the cached "
+          "context (see [architecture]({arch})). The rollout modes default to the cached-context "
+          "entry point; `--no-cached` measures the explicit one, and the two agree to within "
+          "run-to-run noise.".replace("{arch}", "architecture.md#the-cached-planning-context"))
+        A("")
 
     lewm = [r for r in runs if r["mode"] in ("lewm-step", "lewm-rollout")]
     if lewm:

@@ -228,6 +228,7 @@ while IFS='|' read -r label mode arg dtypes prec; do
         lewm-rollout)           tag="K$arg"; extra=(--steps "$arg") ;;
         ac)                     tag="K$arg"; extra=(--batch "$arg") ;;
         ac-rollout)             tag="K$arg"; extra=(--batch "$arg" --steps 2) ;;
+        ac-plan)                tag="K$arg"; extra=(--batch "$arg" --steps 2 --cem-steps 1) ;;
         *) echo "grid: unknown mode '$mode'" >&2; exit 1 ;;
     esac
     for ftype in ${dtypes//,/ }; do
