@@ -1,0 +1,557 @@
+/* jepa.cpp documentation theme.
+   A neutral reference-documentation skin over Material: white (or near-black) chrome,
+   hairline rules, and one blue accent carried by links, the active nav item and focus
+   rings. Loaded after the theme's own palette.css, so equal-specificity rules win. */
+
+/* ------------------------------------------------------------------ palette */
+
+:root,
+[data-md-color-scheme="default"] {
+  /* chrome: white header, near-black text on it */
+  --md-primary-fg-color:            #ffffff;
+  --md-primary-fg-color--light:     #ffffff;
+  --md-primary-fg-color--dark:      #eceef1;
+  --md-primary-bg-color:            #14161a;
+  --md-primary-bg-color--light:     #5b6270;
+
+  /* the one accent: links, active nav, focus */
+  --md-accent-fg-color:             #1f4a83;
+  --md-accent-fg-color--transparent: rgba(47, 95, 163, 0.08);
+  --md-accent-bg-color:             #ffffff;
+  --md-accent-bg-color--light:      rgba(255, 255, 255, 0.7);
+  --md-typeset-a-color:             #2f5fa3;
+
+  /* text and surfaces */
+  --md-default-fg-color:            #16181d;
+  --md-default-fg-color--light:     #585f6b;
+  --md-default-fg-color--lighter:   #8a919c;
+  --md-default-fg-color--lightest:  #e3e5e9;
+  --md-default-bg-color:            #ffffff;
+
+  --md-code-fg-color:               #22262c;
+  --md-code-bg-color:               #f6f7f9;
+  --md-code-hl-color--light:        rgba(47, 95, 163, 0.10);
+
+  --md-typeset-table-color:         #e3e5e9;
+  --md-typeset-mark-color:          rgba(47, 95, 163, 0.16);
+
+  /* footer: a quiet light band, not a black bar */
+  --md-footer-fg-color:             #16181d;
+  --md-footer-fg-color--light:      #585f6b;
+  --md-footer-fg-color--lighter:    #8a919c;
+  --md-footer-bg-color:             #ffffff;
+  --md-footer-bg-color--dark:       #fafbfc;
+
+  --jc-border:                      #e3e5e9;
+  --jc-border-strong:               #d3d7de;
+  --jc-surface:                     #f6f7f9;
+  --jc-surface-strong:              #f0f2f5;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-hue: 220deg;
+
+  --md-primary-fg-color:            #131519;
+  --md-primary-fg-color--light:     #1b1e24;
+  --md-primary-fg-color--dark:      #0e1013;
+  --md-primary-bg-color:            #e8eaee;
+  --md-primary-bg-color--light:     #9aa1ad;
+
+  --md-accent-fg-color:             #9dbcec;
+  --md-accent-fg-color--transparent: rgba(126, 166, 230, 0.14);
+  --md-accent-bg-color:             #16181d;
+  --md-accent-bg-color--light:      rgba(22, 24, 29, 0.7);
+  --md-typeset-a-color:             #7ea6e6;
+
+  --md-default-fg-color:            #d9dde3;
+  --md-default-fg-color--light:     #9aa1ad;
+  --md-default-fg-color--lighter:   #6d747f;
+  --md-default-fg-color--lightest:  #2b2f36;
+  --md-default-bg-color:            #16181d;
+
+  --md-code-fg-color:               #cfd4db;
+  --md-code-bg-color:               #1c1f25;
+  --md-code-hl-color--light:        rgba(126, 166, 230, 0.14);
+
+  --md-typeset-table-color:         #2b2f36;
+  --md-typeset-mark-color:          rgba(126, 166, 230, 0.22);
+
+  --md-footer-fg-color:             #d9dde3;
+  --md-footer-fg-color--light:      #9aa1ad;
+  --md-footer-fg-color--lighter:    #6d747f;
+  --md-footer-bg-color:             #16181d;
+  --md-footer-bg-color--dark:       #131519;
+
+  --jc-border:                      #2b2f36;
+  --jc-border-strong:               #3a3f47;
+  --jc-surface:                     #1c1f25;
+  --jc-surface-strong:              #22262d;
+}
+
+/* --------------------------------------------------------------- typography */
+
+body {
+  --md-text-font-family: var(--md-text-font, _), "Inter", -apple-system,
+    BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --md-code-font-family: var(--md-code-font, _), "JetBrains Mono", ui-monospace,
+    SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.md-typeset {
+  font-size: 0.76rem;
+  line-height: 1.68;
+}
+
+.md-typeset h1 {
+  color: var(--md-default-fg-color);
+  font-size: 1.6em;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+  margin: 0 0 0.7em;
+}
+
+.md-typeset h2 {
+  border-top: 0.05rem solid var(--jc-border);
+  font-size: 1.22em;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  margin: 2.2em 0 0.8em;
+  padding-top: 1.1em;
+}
+
+.md-typeset h1 + h2 {
+  border-top: none;
+  margin-top: 1.2em;
+  padding-top: 0;
+}
+
+.md-typeset h3 {
+  font-size: 1.02em;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.4;
+  margin: 1.8em 0 0.6em;
+}
+
+.md-typeset h4 {
+  font-size: 0.92em;
+  font-weight: 600;
+  margin: 1.4em 0 0.5em;
+}
+
+.md-typeset h5,
+.md-typeset h6 {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.78em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* permalinks: hidden until the heading is hovered */
+.md-typeset .headerlink {
+  color: var(--md-default-fg-color--lightest);
+  opacity: 0;
+  transition: opacity 125ms, color 125ms;
+}
+
+.md-typeset :hover > .headerlink,
+.md-typeset .headerlink:focus {
+  color: var(--md-typeset-a-color);
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------------- layout */
+
+/* 64rem of grid leaves roughly a 47rem (16 px) text column between the two
+   12.1rem sidebars — long enough for the wide measurement tables, short enough
+   to read. */
+.md-grid {
+  max-width: 64rem;
+}
+
+.md-main__inner {
+  margin-top: 1.2rem;
+}
+
+.md-content__inner {
+  padding-top: 1rem;
+}
+
+.md-content__inner::before {
+  height: 0;
+}
+
+/* ------------------------------------------------------------------- header */
+
+.md-header {
+  border-bottom: 0.05rem solid var(--jc-border);
+  box-shadow: none;
+}
+
+.md-header--shadow {
+  box-shadow: none;
+}
+
+.md-header__title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.md-header__button.md-logo {
+  display: none;
+}
+
+.md-search__form {
+  background-color: var(--jc-surface);
+  border: 0.05rem solid var(--jc-border);
+  border-radius: 0.15rem;
+  box-shadow: none;
+  height: 1.8rem;
+}
+
+.md-search__form:hover {
+  background-color: var(--jc-surface-strong);
+}
+
+.md-search__input {
+  font-size: 0.7rem;
+}
+
+[data-md-toggle="search"]:checked ~ .md-header .md-search__form {
+  background-color: var(--md-default-bg-color);
+  border-color: var(--jc-border-strong);
+}
+
+.md-search__output {
+  border-radius: 0 0 0.15rem 0.15rem;
+}
+
+/* --------------------------------------------------------------- navigation */
+
+.md-nav {
+  font-size: 0.68rem;
+}
+
+.md-nav__title {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.md-nav--secondary .md-nav__title {
+  box-shadow: none;
+}
+
+/* the header already carries the site name; the drawer still needs it */
+@media screen and (min-width: 76.25em) {
+  .md-sidebar--primary .md-nav--primary > .md-nav__title {
+    display: none;
+  }
+}
+
+.md-nav__item--section > .md-nav__link {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.md-nav__link {
+  color: var(--md-default-fg-color--light);
+  margin-top: 0.42em;
+}
+
+.md-nav__link:focus,
+.md-nav__link:hover {
+  color: var(--md-accent-fg-color);
+}
+
+.md-nav__link--active,
+.md-nav__link--active:focus,
+.md-nav__link--active:hover {
+  color: var(--md-typeset-a-color);
+  font-weight: 600;
+}
+
+.md-sidebar--primary .md-nav--primary > .md-nav__list {
+  border-right: 0;
+}
+
+/* left rule on the table of contents, accent on the item in view */
+.md-nav--secondary .md-nav__list {
+  border-left: 0.05rem solid var(--jc-border);
+  padding-left: 0.4rem;
+}
+
+/* ------------------------------------------------------------------- links */
+
+.md-typeset a {
+  color: var(--md-typeset-a-color);
+  text-decoration: none;
+}
+
+.md-typeset a:hover,
+.md-typeset a:focus {
+  color: var(--md-accent-fg-color);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.md-typeset a.headerlink:hover,
+.md-typeset a.headerlink:focus {
+  text-decoration: none;
+}
+
+/* -------------------------------------------------------------------- code */
+
+.md-typeset code {
+  border: 0.05rem solid var(--jc-border);
+  border-radius: 0.15rem;
+  font-size: 0.82em;
+  padding: 0 0.25em;
+}
+
+.md-typeset pre > code {
+  border: 0.05rem solid var(--jc-border);
+  border-radius: 0.15rem;
+  font-size: 0.78em;
+  line-height: 1.6;
+  padding: 0.7rem 0.8rem;
+}
+
+.md-typeset table code,
+.md-typeset .md-nav code {
+  border: none;
+  background-color: transparent;
+  padding: 0;
+}
+
+.md-clipboard {
+  color: var(--md-default-fg-color--lighter);
+}
+
+.md-clipboard:hover,
+.md-clipboard:focus {
+  color: var(--md-accent-fg-color);
+}
+
+/* ------------------------------------------------------------------ tables */
+
+.md-typeset table:not([class]) {
+  border: 0.05rem solid var(--jc-border);
+  border-radius: 0.15rem;
+  font-size: 0.66rem;
+  line-height: 1.5;
+}
+
+.md-typeset table:not([class]) thead {
+  background-color: var(--jc-surface);
+}
+
+.md-typeset table:not([class]) th {
+  border-bottom: 0.05rem solid var(--jc-border-strong);
+  color: var(--md-default-fg-color);
+  font-weight: 600;
+  min-width: 0;
+  padding: 0.45em 0.6em;
+}
+
+.md-typeset table:not([class]) td {
+  border-top: 0.05rem solid var(--jc-border);
+  padding: 0.45em 0.6em;
+}
+
+.md-typeset table:not([class]) tr:hover {
+  background-color: var(--md-accent-fg-color--transparent);
+}
+
+/* numeric columns: the markdown writes `---:`, python-markdown emits the inline
+   style; line the digits up under it and never break a measurement across lines */
+.md-typeset table:not([class]) td[style*="right"],
+.md-typeset table:not([class]) th[style*="right"] {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* the leftmost column of a measurement table names a model or a shape: give it
+   the width it needs before the numeric columns take theirs */
+@media screen and (min-width: 60em) {
+  .md-typeset table:not([class]) tbody td:first-child {
+    min-width: 7.5rem;
+  }
+}
+
+/* a table of eight columns or more reaches into the gutters rather than folding
+   every model name onto three lines; narrower ones stay flush with the text */
+.md-typeset__scrollwrap:has(th:nth-child(8)) {
+  margin-left: -2rem;
+  margin-right: -2rem;
+}
+
+.md-typeset table:not([class]) td code {
+  font-size: 0.92em;
+}
+
+/* the "Environment" tables are written with a header row that carries no labels:
+   drop the empty band, but only when every cell in it is empty */
+.md-typeset table:not([class]) thead:not(:has(th:not(:empty))) {
+  display: none;
+}
+
+/* ------------------------------------------------------------- admonitions */
+
+/* every flavour reads as the same quiet grey note. The theme colours each type
+   from a selector one class longer than `.md-typeset .admonition`, so the
+   `[class]` matches below exist only to carry the same weight and win on
+   source order — they are not selecting anything the plain selector misses. */
+
+.md-typeset .admonition,
+.md-typeset details,
+.md-typeset .admonition[class],
+.md-typeset details[class] {
+  background-color: var(--jc-surface);
+  border: none;
+  border-left: 0.1rem solid var(--md-typeset-a-color);
+  border-radius: 0 0.15rem 0.15rem 0;
+  box-shadow: none;
+  font-size: 0.7rem;
+  padding: 0 0.8rem;
+}
+
+.md-typeset .admonition[class] > .admonition-title,
+.md-typeset details[class] > summary {
+  background-color: transparent;
+  border: none;
+  font-weight: 600;
+  margin: 0 -0.8rem;
+  padding: 0.5rem 0.8rem 0.2rem 2.2rem;
+}
+
+.md-typeset .admonition[class] > .admonition-title::before,
+.md-typeset details[class] > summary::before {
+  background-color: var(--md-default-fg-color--light);
+  left: 0.8rem;
+  top: 0.62rem;
+}
+
+.md-typeset details[class] > summary::after {
+  color: var(--md-default-fg-color--light);
+  top: 0.5rem;
+}
+
+.md-typeset .admonition > :last-child,
+.md-typeset details > :last-child {
+  margin-bottom: 0.6rem;
+}
+
+/* ----------------------------------------------------------------- figures */
+
+.md-typeset p > img:only-child {
+  border-radius: 0.15rem;
+  display: block;
+  margin: 1.6em auto 0.5em;
+  max-width: 100%;
+}
+
+/* the emphasised line that follows a standalone figure reads as its caption */
+.md-typeset p:has(> img:only-child) + p > em:only-child {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.86em;
+  font-style: normal;
+  line-height: 1.55;
+}
+
+.md-typeset p:has(> img:only-child) + p:has(> em:only-child) {
+  margin: 0 auto 1.8em;
+  max-width: 34rem;
+  text-align: center;
+}
+
+/* the measurement figures are drawn on a near-white ground: in the dark scheme
+   keep them on their own light card rather than letting them glare */
+[data-md-color-scheme="slate"] .md-typeset p > img:only-child {
+  background-color: #fbfbfb;
+  border: 0.05rem solid var(--jc-border-strong);
+  padding: 0.4rem;
+}
+
+/* ------------------------------------------------------------------ footer */
+
+.md-footer {
+  border-top: 0.05rem solid var(--jc-border);
+}
+
+.md-footer-meta {
+  border-top: 0.05rem solid var(--jc-border);
+  font-size: 0.66rem;
+}
+
+.md-footer__link {
+  opacity: 0.85;
+}
+
+.md-footer__link:focus,
+.md-footer__link:hover {
+  opacity: 1;
+}
+
+.md-footer__title {
+  font-weight: 600;
+}
+
+.md-copyright,
+.md-copyright__highlight {
+  color: var(--md-footer-fg-color--light);
+}
+
+.md-copyright a {
+  color: var(--md-typeset-a-color);
+}
+
+.md-copyright a:hover {
+  text-decoration: underline;
+}
+
+/* ------------------------------------------------------------------- misc */
+
+.md-typeset hr {
+  border-bottom: 0.05rem solid var(--jc-border);
+}
+
+.md-typeset blockquote {
+  border-left: 0.1rem solid var(--jc-border-strong);
+  color: var(--md-default-fg-color--light);
+}
+
+.md-typeset .footnote {
+  border-top: 0.05rem solid var(--jc-border);
+  font-size: 0.68rem;
+  padding-top: 0.6rem;
+}
+
+.md-typeset kbd {
+  box-shadow: 0 0 0 0.05rem var(--jc-border-strong);
+}
+
+:focus-visible {
+  outline: 0.1rem solid var(--md-typeset-a-color);
+  outline-offset: 0.1rem;
+}
+
+.md-top {
+  background-color: var(--md-default-bg-color);
+  border: 0.05rem solid var(--jc-border);
+  box-shadow: none;
+  color: var(--md-default-fg-color--light);
+}
+
+.md-top:hover {
+  background-color: var(--md-default-bg-color);
+  color: var(--md-accent-fg-color);
+}

@@ -6,23 +6,9 @@ CUDA backend. Each checkpoint is converted once into a single [GGUF](gguf-schema
 the weights *and* everything needed to run them — dimensions, positional-encoding scheme,
 preprocessing recipe, class labels — so at run time the requirement is one binary and one file. There
 is no Python in the inference path and no per-model C++ code: a new checkpoint of a known family is a
-converter run, because the loader builds the graph from the file's metadata.
-
-Seven model bundles ship today: I-JEPA ViT-H/14, LeJEPA ViT-S/16, LeWorldModel Push-T, V-JEPA 2
-ViT-L/16 (encoder + masked predictor), V-JEPA 2 ViT-L SSv2 (174-class video classifier), V-JEPA 2.1
-ViT-B/16 at 384 px (image *and* video, with a predictor for both) and LeVJEPA ViT-L/16 (a video encoder
-with block-causal attention and a CLS readout). They expose image and video embedding, video
-classification, latent-space prediction and action-conditioned world-model rollout, through four
-command-line tools and one C header.
-
-On 32 CPU threads the engine runs **1.1–1.8× faster than PyTorch** on the models where the comparison
-is like-for-like, and 2.1–2.2× on 96 threads, at half to a quarter of the memory; a CUDA build is
-9–21× faster again on one RTX 4500 Ada. Fidelity is measured rather than assumed: f32 files reproduce
-their PyTorch reference to cosine 1.000000 per token, preprocessing is bit-exact against torchvision,
-and quantized files are scored on real datasets — Imagenette k-NN within **0.13 pp** of PyTorch at
-f16 and q8_0 (0.16 pp on the parameter-free centroid metric), UCF-101 k-NN within one clip of it, and
-the SSv2 classifier at **72.39 %** top-1 on all 24 777 validation clips, PyTorch's own figure to
-within one clip.
+converter run, because the loader builds the graph from the file's metadata. Seven model bundles of
+six families ship today — image and video embedding, video classification, latent-space prediction
+and action-conditioned world-model rollout — through four command-line tools and one C header.
 
 ![jepa.cpp in four numbers: the same SSv2 validation top-1 as PyTorch, faster on a CPU,
 much faster on one GPU, and half the weights at q8_0, over a bar chart of one image
