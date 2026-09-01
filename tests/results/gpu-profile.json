@@ -1,0 +1,1153 @@
+{
+ "task": "where the GPU time of a jepa.cpp encode goes, per CUDA kernel \u2014 the profile behind the fused-RoPE and attention-tiling decisions in docs/performance.md",
+ "generated_by": "scripts/profile_gpu.py",
+ "protocol": {
+  "profiler": "nsys profile --trace=cuda --sample=none --cpuctxsw=none around one tools/jepa-bench process (2 warmup + 5 measured passes, so every launch count is a multiple of the passes)",
+  "gpu_time": "CUDA kernel time plus device-to-device memcpy time; host-to-device and device-to-host transfers are the input upload and the output copy and are outside the timed graph",
+  "grouping": "by (kernel, grid) \u2014 one graph op can share a kernel with another and the grid is what tells them apart",
+  "precision": "each model's own default accumulation precision (src/jepa.cpp, jepa_gpu_prec_f32_default), i.e. the shipping configuration",
+  "caveat": "profiling adds launch overhead, so these milliseconds are a breakdown of one another and not a substitute for tests/results/benchmarks-gpu.json's timings"
+ },
+ "date_utc": "2026-09-01 23:09 UTC",
+ "device_index": 1,
+ "cases": [
+  {
+   "case": "ijepa-vith14-224",
+   "note": "image encoder, 256 tokens, no RoPE \u2014 the control",
+   "gguf": "ijepa_vith14_1k-f16.gguf",
+   "args": [],
+   "layers": 32,
+   "tokens": 256,
+   "passes": 7,
+   "gpu_ms_per_pass": 16.0,
+   "kernel_ms_per_pass": 16.0,
+   "d2d_memcpy_ms_per_pass": 0.0,
+   "flash_attention": {
+    "ms_per_pass": 0.545,
+    "pct_of_gpu_time": 3.41,
+    "ns_per_score_element_per_layer": 0.25994
+   },
+   "groups": [
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      25600,
+      1,
+      1
+     ],
+     "launches": 448,
+     "pct": 28.64,
+     "ms_total": 32.075
+    },
+    {
+     "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_256x128_16x3_tn_align4>(T1::Params)",
+     "grid": [
+      16,
+      3,
+      3
+     ],
+     "launches": 224,
+     "pct": 12.32,
+     "ms_total": 13.797
+    },
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      19200,
+      1,
+      1
+     ],
+     "launches": 224,
+     "pct": 11.21,
+     "ms_total": 12.556
+    },
+    {
+     "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_128x128_16x4_tn_align4>(T1::Params)",
+     "grid": [
+      16,
+      2,
+      3
+     ],
+     "launches": 224,
+     "pct": 10.15,
+     "ms_total": 11.364
+    },
+    {
+     "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_256x64_16x4_tn_align4>(T1::Params)",
+     "grid": [
+      32,
+      2,
+      1
+     ],
+     "launches": 224,
+     "pct": 8.8,
+     "ms_total": 9.859
+    },
+    {
+     "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_128x64_16x6_tn_align4>(T1::Params)",
+     "grid": [
+      32,
+      2,
+      1
+     ],
+     "launches": 231,
+     "pct": 4.38,
+     "ms_total": 4.902
+    },
+    {
+     "kernel": "void flash_attn_ext_f16<(int)80, (int)80, (int)64, (int)1, (bool)0, (bool)0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)",
+     "grid": [
+      120,
+      1,
+      1
+     ],
+     "launches": 224,
+     "pct": 3.41,
+     "ms_total": 3.816
+    },
+    {
+     "kernel": "void norm_f32<(int)1024>(const float *, float *, int, long, long, long, float)",
+     "grid": [
+      256,
+      1,
+      1
+     ],
+     "launches": 455,
+     "pct": 2.91,
+     "ms_total": 3.262
+    },
+    {
+     "kernel": "void cpy_scalar<&cpy_1_scalar<float, __half>>(const char *, char *, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long)",
+     "grid": [
+      5120,
+      1,
+      1
+     ],
+     "launches": 448,
+     "pct": 2.9,
+     "ms_total": 3.254
+    },
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      6400,
+      1,
+      1
+     ],
+     "launches": 224,
+     "pct": 2.61,
+     "ms_total": 2.919
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      5,
+      256,
+      1
+     ],
+     "launches": 910,
+     "pct": 2.6,
+     "ms_total": 2.91
+    },
+    {
+     "kernel": "void flash_attn_stream_k_fixup_general<(int)80, (int)64, (int)1>(float *, const float2 *, int, int, int, int, uint3, uint3, uint3, uint3)",
+     "grid": [
+      120,
+      64,
+      1
+     ],
+     "launches": 224,
+     "pct": 1.83,
+     "ms_total": 2.054
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      1280,
+      1,
+      1
+     ],
+     "launches": 455,
+     "pct": 1.73,
+     "ms_total": 1.941
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      20,
+      256,
+      1
+     ],
+     "launches": 224,
+     "pct": 1.53,
+     "ms_total": 1.71
+    },
+    {
+     "kernel": "void unary_op_kernel<&op_gelu_erf, float>(const T2 *, T2 *, int)",
+     "grid": [
+      5120,
+      1,
+      1
+     ],
+     "launches": 224,
+     "pct": 1.48,
+     "ms_total": 1.654
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      15,
+      256,
+      1
+     ],
+     "launches": 224,
+     "pct": 1.37,
+     "ms_total": 1.53
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_mul, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      5,
+      256,
+      1
+     ],
+     "launches": 455,
+     "pct": 1.21,
+     "ms_total": 1.353
+    },
+    {
+     "kernel": "void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, float, float, float, float, (bool)0, float, float, float, (bool)1, (bool)0, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)",
+     "grid": [
+      40,
+      16,
+      1
+     ],
+     "launches": 224,
+     "pct": 0.93,
+     "ms_total": 1.045
+    }
+   ]
+  },
+  {
+   "case": "vjepa2-vitl-16f",
+   "note": "video encoder, 2048 tokens, 3-D RoPE, no mask",
+   "gguf": "vjepa2-vitl-fpc64-256-f16.gguf",
+   "args": [
+    "--frames",
+    "16"
+   ],
+   "layers": 24,
+   "tokens": 2048,
+   "passes": 7,
+   "gpu_ms_per_pass": 47.028,
+   "kernel_ms_per_pass": 46.455,
+   "d2d_memcpy_ms_per_pass": 0.573,
+   "flash_attention": {
+    "ms_per_pass": 6.569,
+    "pct_of_gpu_time": 13.97,
+    "ns_per_score_element_per_layer": 0.06526
+   },
+   "groups": [
+    {
+     "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_128x128_32x3_tn_align4>(T1::Params)",
+     "grid": [
+      128,
+      1,
+      3
+     ],
+     "launches": 168,
+     "pct": 15.38,
+     "ms_total": 50.629
+    },
+    {
+     "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_128x128_16x5_tn_align4>(T1::Params)",
+     "grid": [
+      128,
+      4,
+      1
+     ],
+     "launches": 168,
+     "pct": 14.31,
+     "ms_total": 47.095
+    },
+    {
+     "kernel": "void flash_attn_ext_f16<(int)64, (int)64, (int)64, (int)1, (bool)0, (bool)0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)",
+     "grid": [
+      120,
+      1,
+      1
+     ],
+     "launches": 168,
+     "pct": 13.97,
+     "ms_total": 45.986
+    },
+    {
+     "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_128x128_16x5_tn_align4>(T1::Params)",
+     "grid": [
+      128,
+      3,
+      1
+     ],
+     "launches": 168,
+     "pct": 11.1,
+     "ms_total": 36.545
+    },
+    {
+     "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_64x128_32x3_tn_align4>(T1::Params)",
+     "grid": [
+      128,
+      2,
+      1
+     ],
+     "launches": 175,
+     "pct": 5.32,
+     "ms_total": 17.512
+    },
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      16384,
+      1,
+      1
+     ],
+     "launches": 336,
+     "pct": 5.3,
+     "ms_total": 17.445
+    },
+    {
+     "kernel": "void norm_f32<(int)1024>(const float *, float *, int, long, long, long, float)",
+     "grid": [
+      2048,
+      1,
+      1
+     ],
+     "launches": 343,
+     "pct": 4.71,
+     "ms_total": 15.495
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      8192,
+      1,
+      1
+     ],
+     "launches": 672,
+     "pct": 4.37,
+     "ms_total": 14.392
+    },
+    {
+     "kernel": "void cpy_scalar<&cpy_1_scalar<float, __half>>(const char *, char *, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long)",
+     "grid": [
+      32768,
+      1,
+      1
+     ],
+     "launches": 336,
+     "pct": 4.03,
+     "ms_total": 13.261
+    },
+    {
+     "kernel": "roll_f32_cuda(const float *, float *, long, long, long, long, int, int, int, int)",
+     "grid": [
+      8192,
+      1,
+      1
+     ],
+     "launches": 336,
+     "pct": 4.01,
+     "ms_total": 13.212
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_mul, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      1,
+      4,
+      2048
+     ],
+     "launches": 672,
+     "pct": 3.02,
+     "ms_total": 9.928
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      16,
+      2048,
+      1
+     ],
+     "launches": 168,
+     "pct": 2.93,
+     "ms_total": 9.647
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      4,
+      2048,
+      1
+     ],
+     "launches": 686,
+     "pct": 2.42,
+     "ms_total": 7.965
+    },
+    {
+     "kernel": "void unary_op_kernel<&op_gelu_erf, float>(const T2 *, T2 *, int)",
+     "grid": [
+      32768,
+      1,
+      1
+     ],
+     "launches": 168,
+     "pct": 2.27,
+     "ms_total": 7.478
+    },
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      12288,
+      1,
+      1
+     ],
+     "launches": 168,
+     "pct": 1.9,
+     "ms_total": 6.259
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      12,
+      2048,
+      1
+     ],
+     "launches": 168,
+     "pct": 1.65,
+     "ms_total": 5.441
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_mul, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      4,
+      2048,
+      1
+     ],
+     "launches": 343,
+     "pct": 1.2,
+     "ms_total": 3.964
+    },
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      4096,
+      1,
+      1
+     ],
+     "launches": 168,
+     "pct": 0.47,
+     "ms_total": 1.539
+    },
+    {
+     "kernel": "void flash_attn_stream_k_fixup_general<(int)64, (int)64, (int)1>(float *, const float2 *, int, int, int, int, uint3, uint3, uint3, uint3)",
+     "grid": [
+      120,
+      64,
+      1
+     ],
+     "launches": 168,
+     "pct": 0.39,
+     "ms_total": 1.28
+    },
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      6144,
+      1,
+      1
+     ],
+     "launches": 7,
+     "pct": 0.03,
+     "ms_total": 0.114
+    },
+    {
+     "kernel": "[CUDA memcpy Device-to-Device] (ggml serves a contiguous GGML_OP_CONT with cudaMemcpyAsync)",
+     "grid": null,
+     "launches": 336,
+     "pct": 1.22,
+     "ms_total": 4.01
+    }
+   ],
+   "rope_plus_cont": {
+    "ms_per_pass": {
+     "add": 1.028,
+     "roll": 1.887,
+     "mul (cos and sin)": 1.418,
+     "cont": 0.573
+    },
+    "launches": {
+     "add": 336,
+     "roll": 336,
+     "mul (cos and sin)": 672,
+     "cont": 336
+    },
+    "attribution": {
+     "add": "half of 672: RoPE's add and the block's two residual adds are both same-shape adds over the same element count, 336 launches each",
+     "roll": "all of it: nothing else in the graph rolls",
+     "mul (cos and sin)": "672 launches = 2 tables x 2 x 24 x 7; LayerNorm's mul has a different grid (it broadcasts over rows, not over the head axis)",
+     "cont": "336 copies = 2 x 24 layers x 7 passes"
+    },
+    "total_ms_per_pass": 4.907,
+    "pct_of_gpu_time": 10.43
+   }
+  },
+  {
+   "case": "vjepa2-vitl-64f",
+   "note": "the same encoder at 8192 tokens",
+   "gguf": "vjepa2-vitl-fpc64-256-f16.gguf",
+   "args": [
+    "--frames",
+    "64"
+   ],
+   "layers": 24,
+   "tokens": 8192,
+   "passes": 7,
+   "gpu_ms_per_pass": 308.606,
+   "kernel_ms_per_pass": 299.701,
+   "d2d_memcpy_ms_per_pass": 8.906,
+   "flash_attention": {
+    "ms_per_pass": 94.432,
+    "pct_of_gpu_time": 30.6,
+    "ns_per_score_element_per_layer": 0.05863
+   },
+   "groups": [
+    {
+     "kernel": "void flash_attn_ext_f16<(int)64, (int)64, (int)64, (int)1, (bool)0, (bool)0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)",
+     "grid": [
+      120,
+      1,
+      1
+     ],
+     "launches": 168,
+     "pct": 30.6,
+     "ms_total": 661.023
+    },
+    {
+     "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_256x128_16x3_tn_align4>(T1::Params)",
+     "grid": [
+      512,
+      2,
+      1
+     ],
+     "launches": 336,
+     "pct": 14.89,
+     "ms_total": 321.713
+    },
+    {
+     "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_128x128_32x3_tn_align4>(T1::Params)",
+     "grid": [
+      512,
+      1,
+      1
+     ],
+     "launches": 168,
+     "pct": 8.42,
+     "ms_total": 181.816
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      32768,
+      1,
+      1
+     ],
+     "launches": 672,
+     "pct": 7.22,
+     "ms_total": 155.893
+    },
+    {
+     "kernel": "void unary_op_kernel<&op_gelu_erf, float>(const T2 *, T2 *, int)",
+     "grid": [
+      131072,
+      1,
+      1
+     ],
+     "launches": 168,
+     "pct": 5.72,
+     "ms_total": 123.591
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      16,
+      8192,
+      1
+     ],
+     "launches": 168,
+     "pct": 5.5,
+     "ms_total": 118.779
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_mul, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      1,
+      4,
+      8192
+     ],
+     "launches": 672,
+     "pct": 4.59,
+     "ms_total": 99.187
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      12,
+      8192,
+      1
+     ],
+     "launches": 168,
+     "pct": 4.02,
+     "ms_total": 86.931
+    },
+    {
+     "kernel": "void norm_f32<(int)1024>(const float *, float *, int, long, long, long, float)",
+     "grid": [
+      8192,
+      1,
+      1
+     ],
+     "launches": 343,
+     "pct": 3.25,
+     "ms_total": 70.182
+    },
+    {
+     "kernel": "roll_f32_cuda(const float *, float *, long, long, long, long, int, int, int, int)",
+     "grid": [
+      32768,
+      1,
+      1
+     ],
+     "launches": 336,
+     "pct": 2.86,
+     "ms_total": 61.685
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      4,
+      8192,
+      1
+     ],
+     "launches": 686,
+     "pct": 2.53,
+     "ms_total": 54.624
+    },
+    {
+     "kernel": "void cpy_scalar<&cpy_1_scalar<float, __half>>(const char *, char *, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long)",
+     "grid": [
+      131072,
+      1,
+      1
+     ],
+     "launches": 336,
+     "pct": 2.4,
+     "ms_total": 51.742
+    },
+    {
+     "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_128x128_16x5_tn_align4>(T1::Params)",
+     "grid": [
+      512,
+      1,
+      1
+     ],
+     "launches": 175,
+     "pct": 2.37,
+     "ms_total": 51.216
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_mul, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      4,
+      8192,
+      1
+     ],
+     "launches": 343,
+     "pct": 1.28,
+     "ms_total": 27.678
+    },
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      16384,
+      1,
+      1
+     ],
+     "launches": 336,
+     "pct": 0.99,
+     "ms_total": 21.325
+    },
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      12288,
+      1,
+      1
+     ],
+     "launches": 168,
+     "pct": 0.33,
+     "ms_total": 7.039
+    },
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      4096,
+      1,
+      1
+     ],
+     "launches": 168,
+     "pct": 0.08,
+     "ms_total": 1.771
+    },
+    {
+     "kernel": "void flash_attn_stream_k_fixup_general<(int)64, (int)64, (int)1>(float *, const float2 *, int, int, int, int, uint3, uint3, uint3, uint3)",
+     "grid": [
+      120,
+      64,
+      1
+     ],
+     "launches": 168,
+     "pct": 0.07,
+     "ms_total": 1.592
+    },
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      6144,
+      1,
+      1
+     ],
+     "launches": 7,
+     "pct": 0.01,
+     "ms_total": 0.119
+    },
+    {
+     "kernel": "[CUDA memcpy Device-to-Device] (ggml serves a contiguous GGML_OP_CONT with cudaMemcpyAsync)",
+     "grid": null,
+     "launches": 336,
+     "pct": 2.89,
+     "ms_total": 62.339
+    }
+   ],
+   "rope_plus_cont": {
+    "ms_per_pass": {
+     "add": 11.135,
+     "mul (cos and sin)": 14.17,
+     "roll": 8.812,
+     "cont": 8.906
+    },
+    "launches": {
+     "add": 336,
+     "mul (cos and sin)": 672,
+     "roll": 336,
+     "cont": 336
+    },
+    "attribution": {
+     "add": "half of 672: RoPE's add and the block's two residual adds are both same-shape adds over the same element count, 336 launches each",
+     "mul (cos and sin)": "672 launches = 2 tables x 2 x 24 x 7; LayerNorm's mul has a different grid (it broadcasts over rows, not over the head axis)",
+     "roll": "all of it: nothing else in the graph rolls",
+     "cont": "336 copies = 2 x 24 layers x 7 passes"
+    },
+    "total_ms_per_pass": 43.023,
+    "pct_of_gpu_time": 13.94
+   }
+  },
+  {
+   "case": "levjepa-vitl16-16f",
+   "note": "video encoder, 3137 tokens, 3-D RoPE and an explicit block-causal mask",
+   "gguf": "levjepa-vitl16-f16.gguf",
+   "args": [
+    "--frames",
+    "16"
+   ],
+   "layers": 24,
+   "tokens": 3137,
+   "passes": 7,
+   "gpu_ms_per_pass": 83.842,
+   "kernel_ms_per_pass": 81.882,
+   "d2d_memcpy_ms_per_pass": 1.959,
+   "flash_attention": {
+    "ms_per_pass": 21.309,
+    "pct_of_gpu_time": 25.42,
+    "ns_per_score_element_per_layer": 0.09022
+   },
+   "groups": [
+    {
+     "kernel": "void flash_attn_ext_f16<(int)64, (int)64, (int)64, (int)1, (bool)0, (bool)0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)",
+     "grid": [
+      120,
+      1,
+      1
+     ],
+     "launches": 168,
+     "pct": 25.42,
+     "ms_total": 149.164
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      16,
+      3137,
+      1
+     ],
+     "launches": 168,
+     "pct": 7.8,
+     "ms_total": 45.803
+    },
+    {
+     "kernel": "ampere_h1688gemm_128x128_ldg8_stages_32x1_tn",
+     "grid": [
+      32,
+      25,
+      1
+     ],
+     "launches": 168,
+     "pct": 6.6,
+     "ms_total": 38.722
+    },
+    {
+     "kernel": "ampere_h1688gemm_128x128_ldg8_stages_32x1_tn",
+     "grid": [
+      8,
+      25,
+      2
+     ],
+     "launches": 168,
+     "pct": 6.45,
+     "ms_total": 37.843
+    },
+    {
+     "kernel": "void convert_unary<float, __half>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      50192,
+      1,
+      1
+     ],
+     "launches": 168,
+     "pct": 5.88,
+     "ms_total": 34.517
+    },
+    {
+     "kernel": "void unary_op_kernel<&op_gelu_erf, float>(const T2 *, T2 *, int)",
+     "grid": [
+      50192,
+      1,
+      1
+     ],
+     "launches": 168,
+     "pct": 5.5,
+     "ms_total": 32.293
+    },
+    {
+     "kernel": "ampere_h1688gemm_128x128_ldg8_stages_32x1_tn",
+     "grid": [
+      24,
+      25,
+      1
+     ],
+     "launches": 168,
+     "pct": 4.75,
+     "ms_total": 27.878
+    },
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      50192,
+      1,
+      1
+     ],
+     "launches": 168,
+     "pct": 4.46,
+     "ms_total": 26.179
+    },
+    {
+     "kernel": "void norm_f32<(int)1024>(const float *, float *, int, long, long, long, float)",
+     "grid": [
+      3137,
+      1,
+      1
+     ],
+     "launches": 343,
+     "pct": 3.84,
+     "ms_total": 22.515
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      12548,
+      1,
+      1
+     ],
+     "launches": 672,
+     "pct": 3.64,
+     "ms_total": 21.364
+    },
+    {
+     "kernel": "void cpy_scalar<&cpy_1_scalar<float, __half>>(const char *, char *, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long)",
+     "grid": [
+      50192,
+      1,
+      1
+     ],
+     "launches": 336,
+     "pct": 3.35,
+     "ms_total": 19.645
+    },
+    {
+     "kernel": "roll_f32_cuda(const float *, float *, long, long, long, long, int, int, int, int)",
+     "grid": [
+      12548,
+      1,
+      1
+     ],
+     "launches": 336,
+     "pct": 3.29,
+     "ms_total": 19.31
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_mul, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      1,
+      4,
+      3137
+     ],
+     "launches": 672,
+     "pct": 3.14,
+     "ms_total": 18.457
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      12,
+      3137,
+      1
+     ],
+     "launches": 168,
+     "pct": 3.04,
+     "ms_total": 17.87
+    },
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      37644,
+      1,
+      1
+     ],
+     "launches": 168,
+     "pct": 2.45,
+     "ms_total": 14.386
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      4,
+      3137,
+      1
+     ],
+     "launches": 679,
+     "pct": 1.95,
+     "ms_total": 11.441
+    },
+    {
+     "kernel": "ampere_h1688gemm_128x128_ldg8_stages_32x1_tn",
+     "grid": [
+      8,
+      25,
+      1
+     ],
+     "launches": 175,
+     "pct": 1.91,
+     "ms_total": 11.221
+    },
+    {
+     "kernel": "void convert_unary<float, __half>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      12548,
+      1,
+      1
+     ],
+     "launches": 504,
+     "pct": 1.79,
+     "ms_total": 10.524
+    },
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      12548,
+      1,
+      1
+     ],
+     "launches": 336,
+     "pct": 1.1,
+     "ms_total": 6.439
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_mul, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      4,
+      3137,
+      1
+     ],
+     "launches": 343,
+     "pct": 0.96,
+     "ms_total": 5.653
+    },
+    {
+     "kernel": "void flash_attn_stream_k_fixup_general<(int)64, (int)64, (int)1>(float *, const float2 *, int, int, int, int, uint3, uint3, uint3, uint3)",
+     "grid": [
+      120,
+      64,
+      1
+     ],
+     "launches": 168,
+     "pct": 0.23,
+     "ms_total": 1.322
+    },
+    {
+     "kernel": "void concat_cont<unsigned int, (int)1>(const T1 *, const T1 *, T1 *, long, long, long, long, long, long)",
+     "grid": [
+      12548,
+      1,
+      1
+     ],
+     "launches": 7,
+     "pct": 0.05,
+     "ms_total": 0.271
+    },
+    {
+     "kernel": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      12544,
+      1,
+      1
+     ],
+     "launches": 7,
+     "pct": 0.02,
+     "ms_total": 0.132
+    },
+    {
+     "kernel": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+     "grid": [
+      4,
+      3136,
+      1
+     ],
+     "launches": 7,
+     "pct": 0.02,
+     "ms_total": 0.12
+    },
+    {
+     "kernel": "void convert_unary<float, __half>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+     "grid": [
+      9408,
+      1,
+      1
+     ],
+     "launches": 7,
+     "pct": 0.02,
+     "ms_total": 0.106
+    },
+    {
+     "kernel": "[CUDA memcpy Device-to-Device] (ggml serves a contiguous GGML_OP_CONT with cudaMemcpyAsync)",
+     "grid": null,
+     "launches": 336,
+     "pct": 2.34,
+     "ms_total": 13.716
+    }
+   ],
+   "rope_plus_cont": {
+    "ms_per_pass": {
+     "add": 1.526,
+     "roll": 2.759,
+     "mul (cos and sin)": 2.637,
+     "cont": 1.959
+    },
+    "launches": {
+     "add": 336,
+     "roll": 336,
+     "mul (cos and sin)": 672,
+     "cont": 336
+    },
+    "attribution": {
+     "add": "half of 672: RoPE's add and the block's two residual adds are both same-shape adds over the same element count, 336 launches each",
+     "roll": "all of it: nothing else in the graph rolls",
+     "mul (cos and sin)": "672 launches = 2 tables x 2 x 24 x 7; LayerNorm's mul has a different grid (it broadcasts over rows, not over the head axis)",
+     "cont": "336 copies = 2 x 24 layers x 7 passes"
+    },
+    "total_ms_per_pass": 8.881,
+    "pct_of_gpu_time": 10.59
+   }
+  }
+ ],
+ "attention_tiling": {
+  "question": "does a token count that is not a multiple of CUDA flash attention's FATTN_KQ_STRIDE (256) pay for the tile it does not fill?",
+  "model": "vjepa2-vitl-fpc64-256-f16",
+  "frames": 16,
+  "layers": 24,
+  "method": "the same encoder at crops whose token count 8*(H/16)*(W/16) straddles the stride; the flash-attention kernel is read on its own out of the profile and normalised by N^2 (the true score matrix) and by N*ceil(N/256)*256 (the matrix a fully-padded kernel would compute)",
+  "rows": [
+   {
+    "size": "256x224",
+    "tokens": 1792,
+    "aligned": true,
+    "tiles": 7,
+    "padded_tokens": 1792,
+    "padding_pct": 0.0,
+    "flash_ms_per_pass": 4.976,
+    "ns_per_score_element_per_layer": 0.06456,
+    "ns_per_padded_element_per_layer": 0.06456
+   },
+   {
+    "size": "256x240",
+    "tokens": 1920,
+    "aligned": false,
+    "tiles": 8,
+    "padded_tokens": 2048,
+    "padding_pct": 6.7,
+    "flash_ms_per_pass": 5.757,
+    "ns_per_score_element_per_layer": 0.06507,
+    "ns_per_padded_element_per_layer": 0.061
+   },
+   {
+    "size": "256x256",
+    "tokens": 2048,
+    "aligned": true,
+    "tiles": 8,
+    "padded_tokens": 2048,
+    "padding_pct": 0.0,
+    "flash_ms_per_pass": 6.511,
+    "ns_per_score_element_per_layer": 0.06469,
+    "ns_per_padded_element_per_layer": 0.06469
+   },
+   {
+    "size": "256x272",
+    "tokens": 2176,
+    "aligned": false,
+    "tiles": 9,
+    "padded_tokens": 2304,
+    "padding_pct": 5.9,
+    "flash_ms_per_pass": 7.363,
+    "ns_per_score_element_per_layer": 0.06479,
+    "ns_per_padded_element_per_layer": 0.06119
+   },
+   {
+    "size": "256x288",
+    "tokens": 2304,
+    "aligned": true,
+    "tiles": 9,
+    "padded_tokens": 2304,
+    "padding_pct": 0.0,
+    "flash_ms_per_pass": 8.243,
+    "ns_per_score_element_per_layer": 0.0647,
+    "ns_per_padded_element_per_layer": 0.0647
+   }
+  ]
+ }
+}
