@@ -8,25 +8,7 @@ across releases.
 
 ## [Unreleased]
 
-### Added
-
-- **Python bindings** — `pip install jepa-cpp` (import `jepa_cpp`), a thin wrapper over
-  `include/jepa.h` with numpy on both ends: `Model.encode` / `pool` / `classify` / `predict` /
-  `lewm_rollout`, the file's metadata as properties, and `jepa_cpp._api` as the unwrapped header.
-  Preprocessing and every floating-point operation stay in C, so on a CPU the bindings reproduce
-  `jepa-embed` bit for bit — `python/tests/test_parity.py` gates that alongside the golden dumps.
-  The wheel bundles one self-contained shared library; `.github/workflows/wheels.yml` builds
-  manylinux x86-64 and macOS arm64.
-- **`jepa_error_reset()` / `jepa_error_text()`** — the text the library logs for a failed call,
-  readable by a caller with no stderr to read. Append-only; nothing else changes.
-- **Native video ingest** — `jepa-embed --video clip.mp4` (repeatable, plus `--video-list`) and
-  `jepa-classify --video clip.mp4` decode a container by running `ffmpeg` and sample `--frames`
-  frames (default: the model's own `jepa.enc.n_frames`) uniformly over the whole clip, so a clip no
-  longer has to be turned into a `.npy` by `scripts/video_frames.py` first. The sampler and the
-  decode match that script's, and the frames are byte-identical to the ones PyAV hands it — checked
-  by the new `video` ctest suite. `ffmpeg` is a run-time dependency of those two tools only: nothing
-  links against it and the build never looks for it. Both tools also gained `--dump-frames`, which
-  writes the sampled frames as a THWC uint8 `.npy`.
+Nothing yet.
 
 ## [0.1.0] — 2026-09-01
 
@@ -87,6 +69,25 @@ inference time.
   on macOS arm64 (with a Metal build), builds on Windows/MSVC, runs an ASAN+UBSAN build, and gates
   the generated documentation artifacts. `.github/workflows/release.yml` publishes the Linux
   x86-64 CPU archive from a `v*` tag.
+
+
+- **Python bindings** — `pip install jepa-cpp` (import `jepa_cpp`), a thin wrapper over
+  `include/jepa.h` with numpy on both ends: `Model.encode` / `pool` / `classify` / `predict` /
+  `lewm_rollout`, the file's metadata as properties, and `jepa_cpp._api` as the unwrapped header.
+  Preprocessing and every floating-point operation stay in C, so on a CPU the bindings reproduce
+  `jepa-embed` bit for bit — `python/tests/test_parity.py` gates that alongside the golden dumps.
+  The wheel bundles one self-contained shared library; `.github/workflows/wheels.yml` builds
+  manylinux x86-64 and macOS arm64.
+- **`jepa_error_reset()` / `jepa_error_text()`** — the text the library logs for a failed call,
+  readable by a caller with no stderr to read. Append-only; nothing else changes.
+- **Native video ingest** — `jepa-embed --video clip.mp4` (repeatable, plus `--video-list`) and
+  `jepa-classify --video clip.mp4` decode a container by running `ffmpeg` and sample `--frames`
+  frames (default: the model's own `jepa.enc.n_frames`) uniformly over the whole clip, so a clip no
+  longer has to be turned into a `.npy` by `scripts/video_frames.py` first. The sampler and the
+  decode match that script's, and the frames are byte-identical to the ones PyAV hands it — checked
+  by the new `video` ctest suite. `ffmpeg` is a run-time dependency of those two tools only: nothing
+  links against it and the build never looks for it. Both tools also gained `--dump-frames`, which
+  writes the sampled frames as a THWC uint8 `.npy`.
 
 ### Known limitations
 
