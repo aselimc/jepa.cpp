@@ -160,18 +160,21 @@ image tier's 0.90 floor while `rel_max` reaches **0.2021** against a 0.15 bar �
 `coco_000000039769`, both gated. V-JEPA 2 ViT-L is the same story one tier over: 1.24× for a
 token-map mean of **0.9887** against 0.99 and `rel_max` **0.6953** against 0.5, on the *bowling*
 clip. The SSv2 classifier built on the same encoder fails identically. Of the four families that do
-pass, three gain between nothing and 11 %.
+pass, one gains 29 % at one shape and loses 2–4 % at the others, and the remaining three gain
+between nothing and 11 %.
 
 The two that flip gain little and lose nothing measurable: LeJEPA's token map moves from a mean of
 0.999994 to 0.999988 and `rel_max` from 5.8e-03 to 6.3e-03, LeVJEPA's `rel_max` from 4.1e-03 to
-1.6e-02 against a bar of 0.62 at 3 137 tokens, and both keep every derived tensor at 0.999999.
+1.6e-02 against a bar of 0.62 at 3 137 tokens, and their worst derived tensor stays at 0.999997 and
+0.999999.
 
 ```bash
 # the parity half — every family, every dtype, both settings
 scripts/gpu_prec_sweep.sh 1 --timing-repeat 4
 
-# the speed half, paired with each family's default row
-scripts/bench_gpu.sh 1 --merge --only 'encoder .*(T1|T16|T64) f16'
+# the speed half, paired with each family's default row (and the batch rows of the next section)
+SEL='^(ijepa_vith14_1k|lejepa-vits16-pretrain-in1k|lewm-pusht|vjepa2_1-vitb-384|levjepa-vitl16|vjepa2-vitl-fpc64-256)'
+scripts/bench_gpu.sh 1 --merge --only "$SEL"' encoder ((T1|T16|T64) f16|T1 q8_0|T[0-9]+B[0-9]+ (f16|q8_0))$'
 
 # either setting by hand, on any tool
 JEPA_GPU_PREC=f16 build-cuda/jepa-embed -m models/gguf/ijepa_vith14_1k-f16.gguf --gpu 1 ...
@@ -181,8 +184,9 @@ build-cuda/jepa-bench -m models/gguf/ijepa_vith14_1k-f16.gguf --gpu 1 --gpu-prec
 *Source: `tests/results/gpu-prec.json` — `timing_repeatability` for the millisecond columns (four
 alternating launches of each setting, five measured runs inside each) and the per-file `prec_f32` /
 `prec_f16` verdicts for the tier column. `tests/results/benchmarks-gpu.json` carries the same pairs
-as single grid rows and agrees to within 1.5 % on every shape except LeWM's, where the difference
-between the two settings is smaller than the difference between two launches. Device 1.*
+as single grid rows and agrees to within 1.2 % on every shape above 5 ms and 2.5 % on the smaller
+ones, where a process launch is a measurable fraction of the graph — which is also why the ratio
+column is read off four alternating launches rather than off one pair. Device 1.*
 
 ## Batched GPU throughput
 
@@ -231,7 +235,7 @@ timing so its compilation is not in the milliseconds):
 | LeJEPA ViT-S, jepa.cpp q8_0 | – | 1.289 | 0.400 | 0.342 | 2 926 |
 | V-JEPA 2 ViT-L 16 f, torch fp16 | eager | 30.30 | 30.09 | – | 33.2 |
 | V-JEPA 2 ViT-L 16 f, torch fp16 | compile | 24.34 | **24.06** | – | **41.6** |
-| V-JEPA 2 ViT-L 16 f, jepa.cpp q8_0 | – | 34.4 ᵈ | – | – | 29.1 |
+| V-JEPA 2 ViT-L 16 f, jepa.cpp q8_0 | – | 33.9 ᵍ | – | – | 29.5 |
 
 **PyTorch keeps the throughput crown on this card and `torch.compile` widens it — except on I-JEPA,
 where it costs 22–50 %.** Batched, jepa.cpp reaches **69 %** of torch-fp16-eager's image throughput
@@ -240,7 +244,7 @@ reports; batching closes part of the gap and none of it is closed by the kernels
 helps most where a graph is small enough for launch overhead to dominate (LeJEPA at b = 1: 2.23 →
 0.92 ms) and least where it already is not.
 
-ᵈ the q8_0 clip row is the CUDA0 sweep's, the only card it was measured on; the batch axis was not
+ᵍ the q8_0 clip row is the CUDA0 sweep's, the only card it was measured on; the batch axis was not
 swept for it because clip batching is flat.
 
 **A multi-stream option is not worth adding, and the reason is measured.** ggml gives a context one
@@ -299,10 +303,10 @@ other side, and it is why the win is largest exactly where the gate refuses it.
 
 ### Attention tiling at off-stride token counts
 
-CUDA flash attention walks the key axis in tiles of `FATTN_KQ_STRIDE` = 256, and no jepa.cpp model
-with a CLS row can ever be a multiple of it: a token count of `frames × h × w + 1` is odd. LeVJEPA's
-3 137 needs 13 tiles for 12.25 tiles' worth of keys. The same encoder at crops that straddle the
-stride says what that costs:
+CUDA flash attention walks the key axis in tiles of `FATTN_KQ_STRIDE` = 256, and a model with a CLS
+row lands on a multiple of it only if `frames × h × w` is odd — which no shape in this model zoo is,
+since every patch grid here has an even side. LeVJEPA's 3 137 needs 13 tiles for 12.25 tiles' worth
+of keys. The same encoder at crops that straddle the stride says what that costs:
 
 | tokens | multiple of 256 | tiles | padded to | flash ms/pass | ns per score element per layer |
 |---:|---|---:|---:|---:|---:|
@@ -321,10 +325,10 @@ for.
 One thing the same source does show: the tile-skipping optimisation ggml applies to a *masked*
 attention — `flash_attn_mask_to_KV_max`, which finds the last unmasked key per query tile and stops
 there — is gated on `K->ne[1] % FATTN_KQ_STRIDE == 0` and is therefore unreachable for a CLS model.
-LeVJEPA pays 0.0902 ns per score element against the unmasked encoder's 0.0647, and roughly half of
-its block-causal score matrix is masked away. Padding K, V and the mask up to the stride with fully
-masked rows would make the optimisation reachable from inside jepa.cpp; that is a change to a
-parity-gated attention path and is not made here.
+LeVJEPA pays 0.0902 ns per score element against the unmasked encoder's 0.0647, and
+[46.9 % of its score matrix is closed](architecture.md#block-causal-attention). Padding K, V and the
+mask up to the stride with fully masked rows would make the optimisation reachable from inside
+jepa.cpp; that is a change to a parity-gated attention path and is not made here.
 
 *Source: `tests/results/gpu-profile.json`, `scripts/profile_gpu.py --device 1`. The per-kernel rows,
 their launch counts and the arithmetic behind every attribution are in the artifact.*
@@ -339,7 +343,7 @@ an encoder can be made to use at all.
 | encoder | shape | tokens | TensorRT fp16 | TensorRT fp32 | torch fp16 | jepa.cpp default | jepa.cpp best |
 |---|---|---:|---:|---:|---:|---:|---:|
 | I-JEPA ViT-H/14 | 224² | 256 | **4.98** | 11.71 | 5.89 | 16.08 (f16) | 8.12 (q8_0) |
-| V-JEPA 2 ViT-L fpc64 | 16 f 256² | 2 048 | – ᵉ | 100.0 | 30.30 | 47.02 (f16) | 34.4 (q8_0) ᵈ |
+| V-JEPA 2 ViT-L fpc64 | 16 f 256² | 2 048 | – ʰ | 100.0 | 30.30 | 47.02 (f16) | 33.9 (q8_0, CUDA0) |
 
 **Read the fp16 column beside its own accuracy.** The I-JEPA engine reproduces the fixture's PyTorch
 dump to a mean per-token cosine of **0.9944**; jepa.cpp scores **0.999986** on the same sample and
@@ -354,7 +358,7 @@ video encoder is not the configuration anyone would deploy, and it is not one je
 survives, and it makes the point that a compiler is not automatically faster at a precision nobody
 tunes for.
 
-ᵉ V-JEPA 2 has no fp16 engine. `torch.onnx.export` of a half module fails outright (`tensor does not
+ʰ V-JEPA 2 has no fp16 engine. `torch.onnx.export` of a half module fails outright (`tensor does not
 have a device`), and converting the fp32 graph leaves the Conv3d patch embedding with a float input
 against a half kernel, which TensorRT 11's strongly-typed parser rejects. The artifact records the
 parser's message verbatim.
@@ -368,8 +372,10 @@ tmp/venv-trt/bin/python  scripts/tensorrt_baseline.py run --device 1 --dtype fp1
 ```
 
 *Source: `tests/results/tensorrt.json` (TensorRT 11.2.1.2, engine built per row, 3 warmup + 7 timed
-executions with a stream synchronise around each, the H2D and D2H copies outside the timed region);
-the torch and jepa.cpp columns are `tests/results/benchmarks-gpu.json`. Device 1.*
+executions with a stream synchronise around each, the H2D and D2H copies outside the timed region,
+and `output_cos_vs_reference` per row); the torch column is `pytorch_gpu_batched` and the jepa.cpp
+columns the `rows` of `tests/results/benchmarks-gpu.json`. Device 1 except the CUDA0 cell named as
+such.*
 
 ### Predictor, head and world model on a GPU
 
