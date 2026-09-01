@@ -37,7 +37,8 @@ add_subdirectory(ggml EXCLUDE_FROM_ALL)
 # --- compiler flags ----------------------------------------------------------
 # MSVC does not speak the GCC/Clang warning spellings, needs /utf-8 for these UTF-8 sources and
 # /bigobj for the translation units that include third_party/json.hpp (tools/jepa-worldmodel.cpp,
-# tests/test-parity.cpp), which otherwise overflow the object file's section limit (C1128).
+# tests/test-parity.cpp, tests/test-video.cpp), which otherwise overflow the object file's section
+# limit (C1128).
 if(MSVC)
   add_compile_options(/utf-8 /bigobj)
   set(JEPA_WARN_FLAGS /W3)
