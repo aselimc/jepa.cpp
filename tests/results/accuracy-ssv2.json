@@ -836,7 +836,7 @@
  },
  "frame_cache": {
   "path": "data/ssv2/frames-val",
-  "note": "git-ignored, ~114 GB, deleted after the sweep; `frames` rebuilds it byte for byte",
+  "note": "git-ignored, 106 GB measured for the validation split, deleted after the sweep; `frames` rebuilds it byte for byte",
   "manifest": {
    "note": "sha256 of the THWC uint8 .npy of the first 16 validation clips, in clips.json order",
    "clips": [

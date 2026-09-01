@@ -20,7 +20,7 @@ Stages (run in this order; each writes into <work>/ and can be re-run on its own
 `frames` decodes every validation clip once into a THWC uint8 `.npy` under
 `data/ssv2/frames-val/` so that every backend sees byte-identical pixels; `lists` freezes the clip
 order and the CPU subsets in `clips.json`, which every logits `.npy` is indexed by.  The frame
-cache is ~114 GB and is meant to be deleted once the sweep is done — `report` copies the clip
+cache is ≈106 GB (measured for the validation split) and is meant to be deleted once the sweep is done — `report` copies the clip
 order, the sampled frame indices and a few tensor digests into the committed JSON so the run can
 be reproduced without it.
 
@@ -415,7 +415,7 @@ def _sha(path: Path) -> str:
 def _manifest(cj: dict, index: dict, n: int) -> dict:
     """Enough to rebuild the frame cache and prove it was rebuilt identically.
 
-    `frames-val/` is ~114 GB and is deleted after the sweep, so the committed artifact carries the
+    `frames-val/` is ≈106 GB (measured) and is deleted after the sweep, so the committed artifact carries the
     sampled frame indices and a sha256 of the first `n` clip tensors instead: re-running
     `frames` and hashing those files reproduces the digests exactly.
     """
@@ -645,7 +645,9 @@ def stage_report(a) -> None:
         "model": {"name": MODEL, "label": LABEL, "hf": "facebook/" + MODEL,
                   "head": "attentive pooler (3 blocks + cross-attention) + 174-way linear",
                   "gguf": f"models/gguf/{MODEL}-<dtype>.gguf"},
-        "env": _v._env(),
+        # like `commit`: a re-report from another interpreter must not restamp the sweep's
+        # environment (torch build, GPU); `--restamp` takes the current one instead
+        "env": prev["env"] if (prev.get("env") and not a.restamp) else _v._env(),
         "protocol": {
             "views": "single view, no test-time augmentation: 1 temporal clip x 1 spatial crop",
             "frames": f"{cj['frames']} frames, {cj['sampling']}",
@@ -685,7 +687,7 @@ def stage_report(a) -> None:
         "cpu_f32_anchor": anchors,
         "cpu_vs_cuda": cpu_vs_cuda,
         "frame_cache": {"path": _relpath(frames_dir),
-                        "note": "git-ignored, ~114 GB, deleted after the sweep; "
+                        "note": "git-ignored, 106 GB measured for the validation split, deleted after the sweep; "
                                 "`frames` rebuilds it byte for byte",
                         "manifest": manifest},
     }
