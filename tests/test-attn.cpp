@@ -36,17 +36,30 @@
 #include <thread>
 #include <vector>
 
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 
 // --- helpers ------------------------------------------------------------------------------------------
 static double now_ms() {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+// Informational only — it goes on the last line of the report; the budget skips size the score
+// matrix analytically. ru_maxrss counts KiB on Linux and bytes on Apple; MSVC has no getrusage and
+// the psapi equivalent is not worth a link dependency for one printed number, so Windows prints 0.
 static double peak_rss_gb() {
+#ifdef _WIN32
+    return 0.0;
+#else
     struct rusage ru;
     getrusage(RUSAGE_SELF, &ru);
-    return (double) ru.ru_maxrss / (1024.0 * 1024.0); // ru_maxrss is in KiB on Linux
+#ifdef __APPLE__
+    return (double) ru.ru_maxrss / (1024.0 * 1024.0 * 1024.0);
+#else
+    return (double) ru.ru_maxrss / (1024.0 * 1024.0);
+#endif
+#endif
 }
 
 // deterministic normal(0,1) generator (xorshift64* + Box-Muller)

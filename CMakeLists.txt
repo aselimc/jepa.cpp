@@ -34,6 +34,17 @@ endif()
 set(GGML_LLAMAFILE ON CACHE BOOL "" FORCE)
 add_subdirectory(ggml EXCLUDE_FROM_ALL)
 
+# --- compiler flags ----------------------------------------------------------
+# MSVC does not speak the GCC/Clang warning spellings, needs /utf-8 for these UTF-8 sources and
+# /bigobj for the translation units that include third_party/json.hpp (tools/jepa-worldmodel.cpp,
+# tests/test-parity.cpp), which otherwise overflow the object file's section limit (C1128).
+if(MSVC)
+  add_compile_options(/utf-8 /bigobj)
+  set(JEPA_WARN_FLAGS /W3)
+else()
+  set(JEPA_WARN_FLAGS -Wall -Wextra -Wno-unused-parameter -Wno-unused-function)
+endif()
+
 # --- core library ------------------------------------------------------------
 add_library(jepa STATIC
   src/jepa.cpp
@@ -46,7 +57,10 @@ add_library(jepa STATIC
 target_include_directories(jepa PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(jepa PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
 target_link_libraries(jepa PUBLIC ggml)
-target_compile_options(jepa PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unused-function)
+target_compile_options(jepa PRIVATE ${JEPA_WARN_FLAGS})
+# jepa_version() reports the project version above, so a release binary cannot disagree with the tag.
+# src/jepa-internal.h keeps a fallback for a build that does not come through this file.
+target_compile_definitions(jepa PUBLIC JEPA_VERSION="${PROJECT_VERSION}")
 
 # --- tools -------------------------------------------------------------------
 if(JEPA_BUILD_TOOLS)

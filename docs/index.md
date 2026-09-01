@@ -8,7 +8,9 @@ preprocessing recipe, class labels — so at run time the requirement is one bin
 is no Python in the inference path and no per-model C++ code: a new checkpoint of a known family is a
 converter run, because the loader builds the graph from the file's metadata. Seven model bundles of
 six families ship today — image and video embedding, video classification, latent-space prediction
-and action-conditioned world-model rollout — through four command-line tools and one C header.
+and action-conditioned world-model rollout — through four command-line tools and one C header. The
+converted files are published on Hugging Face under [**jepacpp**](https://huggingface.co/jepacpp), so
+converting anything yourself is optional: `scripts/download_models.sh` fetches them.
 
 ![jepa.cpp in four numbers: the same SSv2 validation top-1 as PyTorch, faster on a CPU,
 much faster on one GPU, and half the weights at q8_0, over a bar chart of one image
@@ -22,7 +24,7 @@ through V-JEPA 2.1 ViT-B on PyTorch, on jepa.cpp's CPU engine and on its CUDA en
 
 | page | what is on it |
 |---|---|
-| [Getting started](getting-started.md) | build (CPU and CUDA), one-time Python environment, download and convert every supported checkpoint, one worked example per tool, running the test suite |
+| [Getting started](getting-started.md) | build (CPU and CUDA), download the published GGUFs or convert the checkpoints yourself, the per-model licence table, one worked example per tool, running the test suite |
 | [Architecture](architecture.md) | the shared ViT graph, the family matrix, the 3-D RoPE specification, preprocessing, attention and precision, batching, the GPU backend, the runtime switches, and the parity methodology |
 | [GGUF format](gguf-schema.md) | the file format, version 1: every metadata key, the canonical tensor names, the token order, the quantization rules |
 | [Performance](performance.md) | the speed and memory scores: CPU and CUDA encoders against PyTorch, end-to-end classification, predictors, batching, thread scaling, quantization |
