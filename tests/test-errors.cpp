@@ -3,7 +3,7 @@
 // still standing afterwards. Run under ASAN and UBSAN it also asserts there is no leak and no
 // undefined behaviour on the way out.
 //
-//   test-errors [--model MODEL.gguf] [-v]
+//   test-errors [--model MODEL.gguf ...] [-v]
 //
 // The first block forges its own GGUFs in a temp directory (a 2-layer, 8-dimension hfvit that the
 // loader really does accept, then one field of it broken per case), so it needs no weights and runs
@@ -70,6 +70,28 @@ static void check(const char * name, bool refused, bool want_message = true) {
         if (nl != std::string::npos) first.resize(nl);
         printf("ok   %-34s %s\n", name, first.c_str());
     }
+}
+
+// Same, but the message has to name `needle`. A refusal is not automatically the RIGHT refusal:
+// a too-large image on a learned-position model is rejected for its token grid long before any
+// budget is consulted, and a case that cannot tell those apart proves nothing.
+static void check_msg(const char * name, bool refused, const char * needle) {
+    if (!refused) { printf("FAIL %-34s the call did not report an error\n", name); g_fail++; return; }
+    const char * msg = jepa_error_text();
+    if (!msg || !strstr(msg, needle)) {
+        printf("FAIL %-34s refused, but not for the expected reason (no '%s' in: %.200s)\n",
+               name, needle, msg ? msg : "");
+        g_fail++;
+        return;
+    }
+    g_pass++;
+    if (g_verbose) printf("ok   %-34s names '%s'\n", name, needle);
+}
+
+static int g_skip = 0;
+static void skip(const char * name, const char * why) {
+    g_skip++;
+    if (g_verbose) printf("skip %-34s %s\n", name, why);
 }
 
 static void check_ok(const char * name, bool succeeded) {
@@ -512,28 +534,48 @@ static void test_budget(jepa_model * m) {
     jepa_context * tight = jepa_context_new(m, cp);
     if (!tight) { printf("FAIL budget: no context\n"); g_fail++; unsetenv("JEPA_MAX_GRAPH_MIB"); return; }
 
+    // The encoder at the model's own crop. A learned-position model accepts exactly one input size,
+    // so the way to make the budget bite is a small budget, not a big image; whether 1 MiB is small
+    // enough depends on the model, and a model this cannot squeeze is skipped rather than faked.
     const int S = jepa_model_img_size(m);
-    const int P = jepa_model_patch_size(m);
-    const int big = S * 4;                       // 16x the tokens of the native crop
-    if (P > 0 && big % P == 0) {
-        std::vector<float> px((size_t) 3 * big * big, 0.1f);
-        jepa_input in = { px.data(), 1, 3, 1, big, big };
+    const int T = jepa_model_n_frames(m) > 0 ? jepa_model_n_frames(m) : 1;
+    if (S > 0 && S <= 1024) {
+        std::vector<float> px((size_t) 3 * T * S * S, 0.1f);
+        jepa_input in = { px.data(), 1, 3, T, S, S };
         jepa_output out = {};
         jepa_error_reset();
-        check("budget/oversized-image-refused", jepa_encode(tight, &in, &out) != 0);
+        const int rc = jepa_encode(tight, &in, &out);
+        if (rc == 0) skip("budget/oversized-image-refused", "this model fits one item in 1 MiB");
+        else         check_msg("budget/oversized-image-refused", true, "JEPA_MAX_GRAPH_MIB");
         jepa_free(out.data);
     }
+    // The masked predictor: n_target is the caller's and used to size the graph unchecked.
     if (jepa_model_has_predictor(m)) {
-        jepa_output enc = { nullptr, 0, 0 };
         std::vector<float> rows((size_t) jepa_model_embed_dim(m) * 8, 0.1f);
-        enc.data = rows.data(); enc.n_tokens = 8; enc.dim = jepa_model_embed_dim(m);
+        jepa_output enc = { rows.data(), 8, jepa_model_embed_dim(m) };
         std::vector<int32_t> ids(1 << 20);
         for (size_t i = 0; i < ids.size(); i++) ids[i] = (int32_t) (i % 8);
         jepa_output out = {};
         jepa_error_reset();
-        check("budget/absurd-target-count", jepa_predict(tight, &enc, ids.data(), 4,
-                                                         ids.data(), (int) ids.size(), &out) != 0);
+        const bool refused = jepa_predict(tight, &enc, ids.data(), 4, ids.data(), (int) ids.size(), &out) != 0;
+        if (strstr(jepa_error_text(), "not the masked predictor")) {
+            skip("budget/absurd-target-count", "this model's predictor is not the masked one");
+        } else {
+            check_msg("budget/absurd-target-count", refused, "JEPA_MAX_GRAPH_MIB");
+        }
         jepa_free(out.data);
+    }
+    // The LeWM rollout: n_seed + n_steps used to be summed in int and then allocated.
+    if (jepa_lewm_n_frames(m) > 0) {
+        const int D = jepa_model_embed_dim(m), A = jepa_lewm_action_dim(m);
+        std::vector<float> embs((size_t) D, 0.1f), acts((size_t) (A > 0 ? A : 1), 0.2f);
+        // `out` is sized for one step only. The budget refusal happens before the rollout loop
+        // writes anything, so this is safe — and if that ever stops being true, ASAN says so here.
+        std::vector<float> out((size_t) D, 0.0f);
+        jepa_error_reset();
+        check_msg("budget/absurd-rollout-length",
+                  jepa_lewm_rollout(tight, embs.data(), 1, acts.data(), 1 << 24, out.data()) != 0,
+                  "JEPA_MAX_GRAPH_MIB");
     }
     jepa_context_free(tight);
     unsetenv("JEPA_MAX_GRAPH_MIB");
@@ -615,12 +657,12 @@ static void test_images(jepa_model * m) {
 
 // --------------------------------------------------------------------------------------------
 int main(int argc, char ** argv) {
-    std::string model;
+    std::vector<std::string> models;
     for (int i = 1; i < argc; i++) {
         const std::string a = argv[i];
-        if (a == "--model" && i + 1 < argc) model = argv[++i];
+        if (a == "--model" && i + 1 < argc) models.push_back(argv[++i]);
         else if (a == "-v" || a == "--verbose") g_verbose = true;
-        else { fprintf(stderr, "usage: %s [--model MODEL.gguf] [-v]\n", argv[0]); return 2; }
+        else { fprintf(stderr, "usage: %s [--model MODEL.gguf ...] [-v]\n", argv[0]); return 2; }
     }
 
     // A temp directory of our own, so a parallel ctest run cannot collide with us.
@@ -649,19 +691,22 @@ int main(int argc, char ** argv) {
 
     test_loader();
 
-    // Cases that need a real model: the forged one is fine for most of them and is used when no
-    // --model was given, so this block runs everywhere.
-    const std::string use = model.empty() ? tmp("good.gguf") : model;
-    jepa_error_reset();
-    jepa_model * m = jepa_model_load(use.c_str(), false);
-    if (!m) {
-        printf("FAIL could not load %s for the inference cases: %s\n", use.c_str(), jepa_error_text());
-        g_fail++;
-    } else {
+    // Cases that need a real model. The forged one is fine for most of them and is what runs when
+    // no --model was given, so this block runs everywhere; --model is repeatable because the budget
+    // cases are per-family (a projector and a rollout on LeWM, a masked predictor on V-JEPA 2).
+    if (models.empty()) models.push_back(tmp("good.gguf"));
+    for (const std::string & use : models) {
+        jepa_error_reset();
+        jepa_model * m = jepa_model_load(use.c_str(), false);
+        if (!m) {
+            printf("FAIL could not load %s for the inference cases: %s\n", use.c_str(), jepa_error_text());
+            g_fail++;
+            continue;
+        }
         jepa_context_params cp = jepa_context_default_params();
         cp.n_threads = 2;
         jepa_context * ctx = jepa_context_new(m, cp);
-        if (!ctx) { printf("FAIL no context\n"); g_fail++; }
+        if (!ctx) { printf("FAIL no context for %s\n", use.c_str()); g_fail++; }
         else {
             test_api_guards(m, ctx);
             test_images(m);
@@ -679,8 +724,9 @@ int main(int argc, char ** argv) {
     rmdir(g_tmpdir.c_str());
 #endif
     if (!g_verbose) { /* stderr was redirected; stdout still carries the result line */ }
-    printf("test-errors: %d passed, %d failed (model: %s)\n", g_pass, g_fail,
-           model.empty() ? "forged only" : model.c_str());
+    std::string used;
+    for (const std::string & p : models) used += (used.empty() ? "" : ", ") + p;
+    printf("test-errors: %d passed, %d failed, %d skipped (models: %s)\n", g_pass, g_fail, g_skip, used.c_str());
     fflush(stdout);
     return g_fail == 0 ? 0 : 1;
 }
