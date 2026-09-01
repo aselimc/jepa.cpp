@@ -253,6 +253,13 @@ static void test_loader() {
     forge(tmp("f5.gguf"), o); load_case("load/block-causal-on-image-family", tmp("f5.gguf"));
     o = forge_opts{}; o.act = "relu6";
     forge(tmp("f6.gguf"), o); load_case("load/unknown-activation", tmp("f6.gguf"));
+    // 3-D RoPE rotates pairs; an odd head width used to load and then abort inside
+    // jepa_rope3d_apply's GGML_ASSERT(D % 2 == 0) on the first encode.
+    o = forge_opts{}; o.family = "vjepa2"; o.embed_dim = 6; o.n_head = 2;   // head_dim 3
+    forge(tmp("f7.gguf"), o); load_case("load/rope3d-odd-head-dim", tmp("f7.gguf"));
+    // ...and the same shape with an even head width still loads, so the check is not just "vjepa2"
+    o = forge_opts{}; o.family = "vjepa2"; o.embed_dim = 8; o.n_head = 2;   // head_dim 4
+    forge(tmp("f8.gguf"), o); load_case("load/rope3d-even-head-dim-ok", tmp("f8.gguf"), true);
 
     // Dimensions: zero, negative, and past the loader's ceiling. All patched into the bytes of the
     // good file, so each case changes exactly one number and nothing else.

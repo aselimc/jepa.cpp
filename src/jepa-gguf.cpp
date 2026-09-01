@@ -354,6 +354,15 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
         jepa_log("jepa: embed_dim %d not divisible by n_head %d\n", e.embed_dim, e.n_head);
         return false;
     }
+    // 3-D RoPE rotates pairs, so jepa_rope3d_apply asserts head_dim % 2 == 0. Every released video
+    // checkpoint has an even one; a file that does not would abort inside the graph builder.
+    const bool rope3d_enc = hp.family == JEPA_FAMILY_VJEPA2 || hp.family == JEPA_FAMILY_VJEPA2_1 ||
+                            hp.family == JEPA_FAMILY_LEVJEPA || e.pos_type == JEPA_POS_ROPE3D;
+    if (rope3d_enc && e.head_dim() % 2 != 0) {
+        jepa_log("jepa: 3-D RoPE rotates pairs, so the encoder head width has to be even; "
+                 "embed_dim %d / n_head %d is %d\n", e.embed_dim, e.n_head, e.head_dim());
+        return false;
+    }
 
     // --- predictor
     jepa_pred_hparams & p = hp.pred;
@@ -406,6 +415,11 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
         if (p.head_dim == 0 && p.embed_dim % p.n_head != 0) {
             jepa_log("jepa: jepa.pred.embed_dim %d is not divisible by jepa.pred.n_head %d and there is "
                      "no jepa.pred.head_dim to say what the head width should be\n", p.embed_dim, p.n_head);
+            return false;
+        }
+        if (p.kind == "masked" && p.head_dim_eff() % 2 != 0) {
+            jepa_log("jepa: the masked predictor rotates pairs with 3-D RoPE, so its head width has "
+                     "to be even; it is %d\n", p.head_dim_eff());
             return false;
         }
         if (p.kind == "masked" && p.grid_size <= 0 && e.grid_size() <= 0) {
