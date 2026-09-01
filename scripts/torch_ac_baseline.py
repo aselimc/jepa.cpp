@@ -41,6 +41,10 @@ def main(argv=None) -> int:
     ap.add_argument("--repeat", type=int, default=5)
     ap.add_argument("--warmup", type=int, default=2)
     ap.add_argument("--dtype", default="float32", choices=["float32", "float16"])
+    ap.add_argument("--cem", action="store_true",
+                    help="also time a full CEM planning iteration (sample -> H rollout steps -> L1 "
+                         "energy -> topk -> momentum update), which is what jepa-bench --mode ac-plan "
+                         "times on the jepa.cpp side")
     ap.add_argument("--json", default=None)
     a = ap.parse_args(argv)
     a.src = a.src or a.root / "tmp" / "vjepa2-src"
@@ -118,6 +122,47 @@ def main(argv=None) -> int:
                          ms_per_candidate_step=round(ms / (a.horizon * K), 4)))
         print(f"  ac-rollout  K={K:<3d} H={a.horizon}       {ms:9.2f} ms  "
               f"({ms / a.horizon:7.3f} ms/step, {ms / (a.horizon * K):7.3f} ms/candidate-step)")
+
+        if a.cem:
+            # One CEM iteration, Meta's mpc_utils.py::cem inner loop: sample K trajectories in the
+            # 4-d action space, roll them all out, score the final frame with l1, take the topk and
+            # move mean/std. Everything except the predictor calls is negligible, but it is included
+            # so the comparison is against the same unit of work jepa_ac_plan does.
+            mean = torch.zeros(a.horizon, 4, device=dev, dtype=dtype)
+            std = torch.ones(a.horizon, 4, device=dev, dtype=dtype) * 0.05
+            topk = max(1, K // 4)
+
+            def cem_iter():
+                acts_l = []
+                for h in range(a.horizon):
+                    v = torch.randn(K, 4, device=dev, dtype=dtype) * std[h] + mean[h]
+                    v[:, :3] = v[:, :3].clamp(-0.05, 0.05)
+                    v[:, -1:] = v[:, -1:].clamp(-0.75, 0.75)
+                    full = torch.zeros(K, 7, device=dev, dtype=dtype)
+                    full[:, :3] = v[:, :3]
+                    full[:, 6] = v[:, 3]
+                    acts_l.append(full)
+                traj = torch.stack(acts_l, 1)                      # [K, H, 7]
+                z, s_ = z0, st0
+                for h in range(a.horizon):
+                    nxt = predictor(z, traj[:, : h + 1], s_)[:, -HW:]
+                    nxt = F.layer_norm(nxt, (nxt.size(-1),))
+                    z = torch.cat([z, nxt], 1)
+                    s_ = torch.cat([s_, s_[:, -1:]], 1)
+                fin = z[:, -HW:]
+                e = (fin.flatten(1) - goal.flatten(1)).abs().mean(-1)
+                idx = e.topk(topk, largest=False).indices
+                sel = traj[idx]
+                m4 = torch.stack([sel[..., 0], sel[..., 1], sel[..., 2], sel[..., 6]], -1)
+                return m4.mean(0), m4.std(0)
+
+            goal = F.layer_norm(torch.randn(K, HW, D, device=dev, dtype=dtype), (D,))
+            with torch.no_grad():
+                ms = timed(cem_iter)
+            rows.append(dict(mode="ac-plan", candidates=K, horizon=a.horizon, ms_min=round(ms, 3),
+                             ms_per_candidate=round(ms / K, 4)))
+            print(f"  ac-plan     K={K:<3d} H={a.horizon}       {ms:9.2f} ms/iteration "
+                  f"({ms / K:7.3f} ms/candidate)")
 
     out = dict(tool="torch_ac_baseline.py", device=str(dev),
                gpu=torch.cuda.get_device_name(dev) if dev.type == "cuda" else platform.processor(),

@@ -135,6 +135,57 @@ def load_runs(bench_dir: Path) -> tuple[list[dict], dict, list[str]]:
     return runs, meta, skipped
 
 
+def runs_from_results_json(path: Path) -> tuple[list[dict], dict]:
+    """Read the committed CPU artifact back into the `runs` shape `load_runs` produces.
+
+    The GPU half of this generator has always been able to render from its artifact alone; this is
+    the same for the CPU half, and it exists so a sweep that re-measures PART of the grid can be
+    overlaid on the rest instead of truncating it.  Every field the tables read is stored in
+    `tests/results/benchmarks.json` (it is a flat row per configuration, by design), so the
+    round-trip is lossless for rendering purposes; `_file` records where the row came from.
+    """
+    blob = json.loads(path.read_text())
+    runs = []
+    for row in blob.get("rows", []):
+        r = dict(row)
+        # The artifact stores the two byte counts already converted to MiB and rounded to 0.1, so the
+        # inverse is exact to that rounding. Both are only ever used for a printed MiB figure or a
+        # percentage, where 0.1 MiB is far below the displayed precision.
+        # Rows written by a generator that stored the raw fields rebuild exactly; older rows carry
+        # only the rounded ones, and rebuilding those can move a derived column (tokens/s, a MiB
+        # figure) by one in its last printed digit. That is the rounding, not a re-measurement.
+        if "ms_mean_raw" in r:
+            r["ms_mean"] = r.pop("ms_mean_raw")
+        if "load_ms_raw" in r:
+            r["load_ms"] = r.pop("load_ms_raw")
+        if "weights_mib" in r:
+            r.setdefault("weight_bytes", int(round(r["weights_mib"] * (1 << 20))))
+        if "peak_rss_mib" in r:
+            r.setdefault("peak_rss_bytes", int(round(r["peak_rss_mib"] * (1 << 20))))
+        r.setdefault("ms_max", r.get("ms_mean", 0.0))
+        r.setdefault("wall_ms_mean", r.get("ms_mean", 0.0))
+        r.setdefault("load_ms", 0.0)
+        r["_file"] = f"{path.name} (committed artifact)"
+        r["_from_artifact"] = True
+        runs.append(r)
+    meta = dict(blob.get("box", {}))
+    meta["sessions"] = blob.get("sessions", [])
+    return runs, meta
+
+
+def run_key(r: dict) -> tuple:
+    """What makes two measurements the same configuration (and so one an update of the other)."""
+    return (r.get("model"), r.get("ftype"), r.get("mode"), shape_label(r), r.get("threads"))
+
+
+def merge_runs(base: list[dict], fresh: list[dict]) -> list[dict]:
+    """`fresh` wins per configuration; anything only in `base` is carried through untouched."""
+    out = {run_key(r): r for r in base}
+    for r in fresh:
+        out[run_key(r)] = r
+    return list(out.values())
+
+
 def load_gpu_runs(gpu_dir: Path) -> tuple[list[dict], dict, list[str]]:
     """The same, for the `--gpu` half of the sweep (scripts/bench_gpu.sh).  A CPU run found in the
     GPU directory is skipped for the mirror-image reason: these tables are keyed by device and
@@ -310,6 +361,12 @@ def main() -> int:
     ap.add_argument("-o", "--out", default="docs/benchmarks.md")
     ap.add_argument("--results-json", default=None,
                     help="also write a compact machine-readable summary (tests/results/benchmarks.json)")
+    ap.add_argument("--merge-json", default=None, metavar="FILE",
+                    help="seed the CPU rows from this committed artifact and overlay --bench-dir on "
+                         "top, so a sweep that re-measures only part of the grid adds its rows "
+                         "instead of dropping every other model's. A row is replaced when its "
+                         "(model, ftype, mode, shape, threads) matches; the document says which "
+                         "session each row came from.")
     ap.add_argument("--gpu-dir", default=None,
                     help="raw per-run JSONs of a scripts/bench_gpu.sh sweep; with this the GPU "
                          "tables are rebuilt from the sweep and --results-json-gpu is rewritten")
@@ -328,8 +385,18 @@ def main() -> int:
     a = ap.parse_args()
 
     runs, meta, skipped = load_runs(Path(a.bench_dir))
+    if a.merge_json:
+        base, base_meta = runs_from_results_json(Path(a.merge_json))
+        fresh = len(runs)
+        runs = merge_runs(base, runs)
+        # keep the box/session history of the artifact when this sweep did not produce its own
+        for k, v in base_meta.items():
+            meta.setdefault(k, v)
+        print(f"merged {fresh} freshly measured row(s) onto {len(base)} from {a.merge_json} "
+              f"-> {len(runs)} total", file=sys.stderr)
     if not runs:
-        print(f"no bench JSONs in {a.bench_dir}")
+        print(f"no bench JSONs in {a.bench_dir}"
+              f"{' and no rows in ' + a.merge_json if a.merge_json else ''}")
         return 1
 
     # The cross-check column is only worth printing if it is the document's own numbers; a parse that
@@ -972,6 +1039,12 @@ def write_results_json(path: Path, runs, meta, bl, parity, skipped, doc) -> None
             "weights_mib": round(mib(r.get("weight_bytes", 0)), 1),
             "peak_rss_mib": round(mib(r.get("peak_rss_bytes", 0)), 1),
             "load_ms": round(r.get("load_ms", 0.0), 1),
+            # Raw, unrounded, so --merge-json can rebuild this row into a document identical to the
+            # one it came from. The rounded fields above stay: they are what a reader quotes.
+            "weight_bytes": r.get("weight_bytes", 0),
+            "peak_rss_bytes": r.get("peak_rss_bytes", 0),
+            "ms_mean_raw": r["ms_mean"],
+            "load_ms_raw": r.get("load_ms", 0.0),
             "source_json": r.get("_file"),
         }
         if r["mode"] in ("head", "predictor"):

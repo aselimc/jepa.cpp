@@ -171,6 +171,47 @@ position tables, tokens) as F32; `--ftype f32` stores everything as F32. Quantiz
 | V-JEPA 2 ViT-g/16 (fpc64) | `vjepa2-vitg` | `python scripts/convert.py --family vjepa2 --src models/facebook/vjepa2-vitg-fpc64-256 --ftype f16` |
 | V-JEPA 2-AC ViT-g | `vjepa2-ac` | `python scripts/convert.py --family vjepa2_ac --src models/vjepa2_ac/vjepa2-ac-vitg.pt --out models/gguf/vjepa2-ac-vitg-f16.gguf --ftype f16` |
 
+### Planning with V-JEPA 2-AC
+
+The world model answers "what would the scene look like if I did this?", and a planner turns that
+into "what should I do?". `jepa-worldmodel --plan` is the loop from the V-JEPA 2-AC paper: it encodes
+the current frame and a goal frame, samples action sequences, rolls them all out in one batched graph
+per step and keeps the ones whose predicted frame lands closest to the goal.
+
+```bash
+scripts/download_models.sh vjepa2-ac                     # 2.5 GiB, the f16 bundle
+
+# ctx.png is what the robot sees now, goal.png is where it should end up (256x256 RGB)
+build/jepa-worldmodel --plan -m models/gguf/vjepa2-ac-vitg-f16.gguf \
+    --image ctx.png --goal goal.png \
+    --state '0.580,-0.002,0.248,-3.067,0.031,-1.913,0.997' \
+    --samples 64 --topk 8 --cem-steps 10 --horizon 2 --gpu 0
+```
+
+`--state` is the arm's current 7-d pose (xyz, three Euler angles, gripper); it defaults to zeros,
+which is fine for exploring but not for a real arm. The output is the best energy per iteration and
+the chosen action sequence:
+
+```
+CEM: K=64 topk=8 iterations=10 horizon=2 maxnorm=0.050 momentum(mean/std)=0.25/0.95
+
+iteration     best energy
+0                0.463301
+...
+plan (2 steps, 7-d actions):
+  step 0:  0.03974  0.03481  0.04139  0.00000  0.00000  0.00000  0.39948
+```
+
+The three zeros are the rotation dimensions, which this planner does not sample — that is the
+reference's action space, not a limitation of the port. A demo you can run without a robot is in the
+V-JEPA 2 repository: `notebooks/franka_example_traj.npz` holds a real Franka trajectory, and
+`scripts/dump_reference.py --model vjepa2-ac-vitg` writes its first and last frames into the parity
+fixtures. `--noise-npy` replays recorded random draws so a run can be compared against a PyTorch one
+byte for byte.
+
+Use **f16**. A rollout compounds, and at q8_0 and below the plan degrades — at q4_k on a GPU the
+planner picks a different action ([quantization](quantization.md)).
+
 The published files come from exactly these commands plus `jepa-quantize`; every model card records the
 one that produced it and the jepa.cpp commit it ran at, so a local conversion is reproducible against
 the published sha256.

@@ -31,6 +31,18 @@ across releases.
   change; what is new is the golden dumps, the parity fixtures and the honest record of where a
   40-layer model sits against bars fitted on ViT-L (`docs/parity.md` "V-JEPA 2 ViT-g/16"). The numpy
   spec run on the GGUF's own weights matches HF at cosine **1.0000000**, rel 2.893e-05.
+- **A planning API for V-JEPA 2-AC** — the point of an action-conditioned world model.
+  `jepa_ac_context` holds the observed frames' latents on the compute device and the AC graph takes
+  its context as a shared prefix plus a per-candidate tail, so the observed frames are neither
+  replicated across the K candidates nor re-uploaded per step (`jepa_ac_context_new` / `_update` /
+  `_trim` / `_free`, `jepa_ac_rollout_cached`). Measured, it is worth almost nothing in time —
+  786.11 vs 787.32 ms cached against explicit at K = 64 — and everything in shape: one object across
+  CEM iterations and receding-horizon steps. `jepa_ac_plan` is Meta's own `mpc_utils.py::cem` over
+  it, and replaying the random draws their loop made it returns the same plan to **2.98e-08**.
+  `jepa-worldmodel --plan` and `jepa-bench --mode ac-plan` expose both.
+- `jepa_ac_rollout_ex`, which takes the actions between the observed frames — the thing
+  `jepa_ac_rollout` had to guess when `n_seed > 1`, and which nothing exercised. Validated against a
+  two-observed-frame reference built by running Meta's predictor: cosine **1.0000000** on both steps.
 - `scripts/jepa_convert/vjepa2_ac.py`, `scripts/jepa_convert/selftest.py::ac_predictor_forward` (the
   executable spec), `scripts/torch_ac_baseline.py` (the PyTorch-on-the-same-card timing baseline) and
   `dump_reference.py --model vjepa2-ac-vitg | vjepa2-vitg-fpc64-256`.
@@ -39,6 +51,9 @@ across releases.
 
 - `jepa_rope3d_apply` accepts a batched input (`ne[3] > 1`); the cos/sin tables broadcast over it.
   Nothing changes for the existing single-sequence callers.
+- `scripts/gen_benchmarks_md.py --merge-json` seeds the CPU rows from the committed artifact and
+  overlays a sweep on top, so re-measuring part of the grid adds rows instead of dropping every other
+  model's — the CPU half now has the artifact fallback the GPU half always had.
 - Eight new loader checks for the AC keys and nine new `jepa_ac_*` argument guards in `test-errors`
   (118 cases, up from 101), forged from a complete tiny AC model.
 

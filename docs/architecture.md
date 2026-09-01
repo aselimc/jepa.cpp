@@ -314,6 +314,42 @@ reason a single backend beats a scheduler; every measurement on this site warms 
 
 `jepa_context_set_mul_mat_prec_f32(ctx, false)` is the API form of `JEPA_GPU_PREC=f16`.
 
+## The cached planning context
+
+A planner does not run the world model once. It encodes the current frame, then scores hundreds or
+thousands of candidate action sequences against that one encode, over several CEM iterations, and
+does the whole thing again after every observation. `jepa_ac_context` is the object that makes that
+shape explicit: it owns the observed frames' latents **on the compute device**, and the AC graph
+takes its context in two pieces —
+
+```
+shared : [enc_dim, n_observed*256, 1]   the frames every candidate has in common (the handle's
+                                        tensor, referenced directly by the graph)
+tail   : [enc_dim, n_predicted*256, K]  the frames the rollout produced, one set per candidate
+```
+
+— so the observed frames are neither replicated across the K candidates on the host nor re-uploaded
+per step, and `pred.embed` runs on them once per graph instead of K times. `jepa_ac_context_update`
+appends a newly observed frame (the receding-horizon step) and `jepa_ac_context_trim` slides the
+window; capacity is `jepa.pred.n_frames`, allocated once.
+
+**What that is worth, measured: almost nothing in time, and that is the honest answer.** Cached
+against explicit context on CUDA1 at f16 is 786.11 vs 787.32 ms (K = 64, H = 2) and 318.02 vs 317.79
+ms (K = 16, H = 4) — inside run-to-run noise. The shared-prefix broadcast against a fully replicated
+context is 527.95 vs 529.43 ms on the GPU and 2181 vs 2200 ms on the CPU at 16 threads, 0.3–0.9 %.
+The reason is arithmetic: `pred.embed` is one [1408 → 1024] matmul over 256 rows, against 24 blocks
+of 1024-d attention and FFN over K × 258 rows, and the upload is 1.44 MB against a half-second graph.
+The handle earns its place as an **API**, not as a speed-up — one object held across CEM iterations
+and receding-horizon steps, one device allocation for the observed frames — and the parity suite
+gates it as bit-identical to the explicit path.
+
+The planner on top of it, `jepa_ac_plan`, is a port of Meta's `mpc_utils.py::cem`. Two details of
+that loop decide whether an implementation is right: only four of the seven action dimensions are
+sampled (translation and the gripper; rotation is hard zeros), and `selected.std(0)` is torch's
+**unbiased** estimator, a factor 1.155 at topk = 4 applied every iteration. Replaying the random
+draws their loop made, jepa.cpp returns the same plan to max |Δ| 2.98e-08
+([parity](parity.md#v-jepa-2-ac-jepapredkind--ac--the-action-conditioned-world-model)).
+
 ## Robustness
 
 A GGUF is a file someone downloaded, and an image is bytes off a network. Both are parsed before
