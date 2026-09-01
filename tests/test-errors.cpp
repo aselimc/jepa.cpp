@@ -420,6 +420,18 @@ static void test_budget(jepa_model * m) {
         else         check_msg("budget/oversized-image-refused", true, "JEPA_MAX_GRAPH_MIB");
         jepa_free(out.data);
     }
+    // A clip that is absurd rather than merely large. The video families accept any multiple of the
+    // tubelet, so n_frames is purely the caller's number and the budget is the only thing between it
+    // and the allocator. The pixel buffer here is sized for ONE frame: jepa_encode_video refuses on
+    // the budget before it reads a pixel, and if that ever stops being true ASAN says so here.
+    if (T > 1 && S > 0) {
+        std::vector<float> one((size_t) 3 * S * S, 0.1f);
+        jepa_input in = { one.data(), 1, 3, T * 64, S, S };
+        jepa_output out = {};
+        jepa_error_reset();
+        check_msg("budget/absurd-n_frames", jepa_encode(tight, &in, &out) != 0, "JEPA_MAX_GRAPH_MIB");
+        jepa_free(out.data);
+    }
     // The masked predictor: n_target is the caller's and used to size the graph unchecked.
     if (jepa_model_has_predictor(m)) {
         std::vector<float> rows((size_t) jepa_model_embed_dim(m) * 8, 0.1f);
