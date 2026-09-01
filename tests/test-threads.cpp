@@ -19,10 +19,12 @@
 // GGML_OPENMP=OFF matters: TSAN cannot see through libgomp's own synchronisation and reports its
 // thread pool as a race in any program that uses it.
 //
-// (1), (2) and (4) need weights; forging a model here would duplicate tests/test-errors.cpp. With
-// no --model the suite runs the half that needs none — (3) and the pure helpers — and says so, so
-// the registration is unconditional and CI always exercises something.
+// Without --model the suite forges one (tests/forge-gguf.h, the same 8-dimension hfvit
+// tests/test-errors.cpp breaks a knob of): every check above then runs on a runner with no weights,
+// which is what lets the ASAN+UBSAN CI job run this suite at full strength. --model repeats it on a
+// real checkpoint.
 #include "jepa.h"
+#include "forge-gguf.h"
 
 #include <atomic>
 #include <cstdio>
@@ -31,6 +33,19 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#  include <direct.h>
+#  include <process.h>
+#  define jepa_mkdir(p) _mkdir(p)
+#  define jepa_getpid() _getpid()
+#else
+#  include <sys/stat.h>
+#  include <sys/types.h>
+#  include <unistd.h>
+#  define jepa_mkdir(p) mkdir((p), 0755)
+#  define jepa_getpid() getpid()
+#endif
 
 static int g_fail = 0, g_pass = 0;
 static bool g_verbose = false;
@@ -117,54 +132,32 @@ static work_result run_worker(jepa_model * m, const std::vector<float> & px, int
     return r;
 }
 
-int main(int argc, char ** argv) {
-    std::string model;
-    int n_workers = 4, rounds = 2, n_threads = 2;
-    for (int i = 1; i < argc; i++) {
-        const std::string a = argv[i];
-        if (a == "--model" && i + 1 < argc)        model = argv[++i];
-        else if (a == "--threads" && i + 1 < argc) n_workers = atoi(argv[++i]);
-        else if (a == "--rounds" && i + 1 < argc)  rounds = atoi(argv[++i]);
-        else if (a == "--inner" && i + 1 < argc)   n_threads = atoi(argv[++i]);
-        else if (a == "-v" || a == "--verbose")    g_verbose = true;
-        else { fprintf(stderr, "usage: %s [--model M.gguf] [--threads N] [--rounds N] [--inner N] [-v]\n", argv[0]); return 2; }
+// The models this run will use: whatever --model gave, plus a forged one when it gave none.
+// `scratch` receives the forged file's path so the caller can delete it.
+static std::vector<std::string> resolve_models(std::vector<std::string> models, std::string & scratch) {
+    if (!models.empty()) return models;
+    const char * base = getenv("TMPDIR");
+    if (!base || !*base) base = getenv("TEMP");
+    const std::string dir = std::string(base && *base ? base : "/tmp") + "/jepa-test-threads-" +
+                            std::to_string((long) jepa_getpid());
+    if (jepa_mkdir(dir.c_str()) != 0) {
+        fprintf(stderr, "cannot create %s\n", dir.c_str());
+        return models;
     }
-    if (n_workers < 2) n_workers = 2;
-    if (rounds < 1) rounds = 1;
+    scratch = dir + "/forged.gguf";
+    forge(scratch, forge_opts{});
+    models.push_back(scratch);
+    return models;
+}
 
-    // No model: the parts of the contract that need none — thread-local error capture and the
-    // re-entrancy of the pure helpers — still get checked, and the suite says what it skipped.
-    if (model.empty()) {
-        std::atomic<int> mismatches{0};
-        std::vector<std::thread> ts;
-        for (int t = 0; t < n_workers; t++) {
-            ts.emplace_back([t, &mismatches] {
-                for (int k = 0; k < 200; k++) {
-                    jepa_error_reset();
-                    // a load failure only this thread asks for
-                    const std::string path = "/nonexistent/jepa-thread-" + std::to_string(t) + ".gguf";
-                    jepa_model_free(jepa_model_load(path.c_str(), false));
-                    if (strstr(jepa_error_text(), path.c_str()) == nullptr) mismatches++;
-                    float logits[4] = { 1.0f, 2.0f, 3.0f, 0.5f };
-                    float probs[4];
-                    int32_t idx[2];
-                    jepa_softmax(logits, 4, probs);
-                    if (jepa_top_k(logits, 4, 2, idx) != 2 || idx[0] != 2 || idx[1] != 1) mismatches++;
-                }
-            });
-        }
-        for (auto & th : ts) th.join();
-        ok("error-text/thread-local (no model)", mismatches.load() == 0);
-        ok("helpers/re-entrant (no model)", mismatches.load() == 0);
-        printf("test-threads: %d passed, %d failed (no model given: the encode cases were skipped)\n", g_pass, g_fail);
-        return g_fail == 0 ? 0 : 1;
-    }
-
+// Everything the contract says about one model, on `n_workers` threads at once.
+static void run_for_model(const std::string & model, int n_workers, int rounds, int n_threads) {
     jepa_error_reset();
     jepa_model * m = jepa_model_load(model.c_str(), false);
     if (!m) {
         printf("FAIL cannot load %s: %s\n", model.c_str(), jepa_error_text());
-        return 1;
+        g_fail++;
+        return;
     }
 
     // One input, the model's own crop, deterministic content.
@@ -174,7 +167,8 @@ int main(int argc, char ** argv) {
     if (S <= 0 || P <= 0 || S % P != 0) {
         printf("FAIL %s: img_size %d is not a multiple of patch_size %d\n", model.c_str(), S, P);
         jepa_model_free(m);
-        return 1;
+        g_fail++;
+        return;
     }
     std::vector<float> px((size_t) 3 * T * S * S);
     for (size_t i = 0; i < px.size(); i++) px[i] = 0.4f * (float) ((i * 17 % 23) - 11);
@@ -182,7 +176,7 @@ int main(int argc, char ** argv) {
     // The reference: the same work, alone, in this thread.
     const work_result ref = run_worker(m, px, T, S, S, n_threads, rounds, 0);
     ok("reference/encoded", ref.enc.ok, ref.enc.ok ? "" : "the single-threaded run did not produce tokens");
-    if (!ref.enc.ok) { jepa_model_free(m); printf("test-threads: %d passed, %d failed\n", g_pass, g_fail + 1); return 1; }
+    if (!ref.enc.ok) { jepa_model_free(m); return; }
 
     // N workers, one context each, all on the shared model at once.
     std::vector<work_result> res((size_t) n_workers);
@@ -207,9 +201,9 @@ int main(int argc, char ** argv) {
         // back has to name that width, closed by the "]" of the shape, so "-2]" cannot match "-21]".
         own_text += r.error_text.find(std::to_string(-(t + 2)) + "]") != std::string::npos;
     }
-    char buf[160];
-    snprintf(buf, sizeof buf, "%d/%d workers, %d tokens x %d dims, %d rounds each",
-             n_workers, n_workers, (int) ref.enc.n_tokens, (int) ref.enc.dim, rounds);
+    char buf[200];
+    snprintf(buf, sizeof buf, "%d workers, %d tokens x %d dims, %d rounds each, %s",
+             n_workers, (int) ref.enc.n_tokens, (int) ref.enc.dim, rounds, jepa_model_family(m));
     ok("contexts/one per thread", made == n_workers, buf);
     ok("encode/bit-identical to single-threaded", enc_same == n_workers, buf);
     ok("pool_mean/bit-identical", mean_same == n_workers);
@@ -247,7 +241,70 @@ int main(int argc, char ** argv) {
     }
 
     jepa_model_free(m);
+}
+
+int main(int argc, char ** argv) {
+    std::vector<std::string> models;
+    int n_workers = 4, rounds = 2, n_threads = 2;
+    for (int i = 1; i < argc; i++) {
+        const std::string a = argv[i];
+        if (a == "--model" && i + 1 < argc)        models.push_back(argv[++i]);
+        else if (a == "--threads" && i + 1 < argc) n_workers = atoi(argv[++i]);
+        else if (a == "--rounds" && i + 1 < argc)  rounds = atoi(argv[++i]);
+        else if (a == "--inner" && i + 1 < argc)   n_threads = atoi(argv[++i]);
+        else if (a == "-v" || a == "--verbose")    g_verbose = true;
+        else {
+            fprintf(stderr, "usage: %s [--model M.gguf ...] [--threads N] [--rounds N] [--inner N] [-v]\n", argv[0]);
+            return 2;
+        }
+    }
+    if (n_workers < 2) n_workers = 2;
+    if (rounds < 1) rounds = 1;
+
+    // Thread-local error capture with no model in sight: each thread asks for a load failure only
+    // it can name, and must read back only its own message.
+    {
+        std::atomic<int> mismatches{0};
+        std::vector<std::thread> ts;
+        for (int t = 0; t < n_workers; t++) {
+            ts.emplace_back([t, &mismatches] {
+                for (int k = 0; k < 200; k++) {
+                    jepa_error_reset();
+                    const std::string path = "/nonexistent/jepa-thread-" + std::to_string(t) + ".gguf";
+                    jepa_model_free(jepa_model_load(path.c_str(), false));
+                    if (strstr(jepa_error_text(), path.c_str()) == nullptr) mismatches++;
+                    float logits[4] = { 1.0f, 2.0f, 3.0f, 0.5f };
+                    float probs[4];
+                    int32_t idx[2];
+                    jepa_softmax(logits, 4, probs);
+                    if (jepa_top_k(logits, 4, 2, idx) != 2 || idx[0] != 2 || idx[1] != 1) mismatches++;
+                }
+            });
+        }
+        for (auto & th : ts) th.join();
+        ok("error-text/thread-local (no model)", mismatches.load() == 0);
+        ok("helpers/re-entrant (no model)", mismatches.load() == 0);
+    }
+
+    std::string scratch;
+    const std::vector<std::string> use = resolve_models(models, scratch);
+    if (use.empty()) { printf("FAIL no model was given and none could be forged\n"); return 1; }
+    for (const std::string & path : use) run_for_model(path, n_workers, rounds, n_threads);
+
+    std::string names;
+    for (const std::string & p : use) names += (names.empty() ? "" : ", ") + p;
+    if (!scratch.empty()) {
+        remove(scratch.c_str());
+        const size_t slash = scratch.rfind('/');
+        if (slash != std::string::npos) {
+#ifdef _WIN32
+            _rmdir(scratch.substr(0, slash).c_str());
+#else
+            rmdir(scratch.substr(0, slash).c_str());
+#endif
+        }
+    }
     printf("test-threads: %d passed, %d failed (%d workers x %d inner threads on %s)\n",
-           g_pass, g_fail, n_workers, n_threads, model.c_str());
+           g_pass, g_fail, n_workers, n_threads, names.c_str());
     return g_fail == 0 ? 0 : 1;
 }
