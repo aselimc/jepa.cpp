@@ -12,6 +12,11 @@
 #   --keep         do not delete existing JSONs in --out before the sweep
 #   --results-json FILE   the committed artifact (default tests/results/gpu-prec.json)
 #   --no-json      run the checks but write no artifact
+#   --timing-repeat N   also launch tools/jepa-bench N times per precision, alternating, for one
+#                  shape per family, and record the spread. A family's default turns on a speed
+#                  difference as well as a parity verdict, and the shapes where that difference is
+#                  small are launch-bound sub-millisecond graphs whose run-to-run spread is the
+#                  thing to read it against. 0 (the default) skips it.
 #   -n/--dry-run   print the test-parity command lines and exit
 #
 # Why it exists. `GGML_PREC_F32` on every `mul_mat` is what a GPU context marks its GEMMs with by
@@ -45,6 +50,7 @@ ONLY=""
 KEEP=0
 WRITE_JSON=1
 DRY=0
+TIMING_REPEAT=0
 
 if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9]+$ ]]; then DEVICE="$1"; shift; fi
 while [ $# -gt 0 ]; do
@@ -54,9 +60,10 @@ while [ $# -gt 0 ]; do
         --out)   OUT="$2"; shift ;;
         --results-json) RESULTS_JSON="$2"; shift ;;
         --keep)  KEEP=1 ;;
+        --timing-repeat) TIMING_REPEAT="$2"; shift ;;
         --no-json) WRITE_JSON=0 ;;
         -n|--dry-run) DRY=1 ;;
-        -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,28p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument $1" >&2; exit 1 ;;
     esac
     shift
@@ -132,6 +139,45 @@ while IFS='|' read -r label ref extra; do
 done <<< "${GRID:+$(cat "$GRID")}${GRID:-$DEFAULT_GRID}"
 
 [ "$DRY" = 1 ] && exit 0
+
+# ---------------------------------------------------------------------------------------------
+# optional: how much a fresh process moves the two precisions, one shape per family
+# ---------------------------------------------------------------------------------------------
+# <gguf label> | <frames>
+read -r -d '' TIMING_GRID <<'TGRID_EOF'
+ijepa_vith14_1k-f16                 | 1
+lejepa-vits16-pretrain-in1k-f16     | 1
+lewm-pusht-f16                      | 1
+vjepa2-vitl-fpc64-256-f16           | 16
+vjepa2_1-vitb-384-f16               | 1
+vjepa2_1-vitb-384-f16               | 16
+vjepa2_1-vitb-384-f16               | 64
+levjepa-vitl16-f16                  | 16
+TGRID_EOF
+
+BENCH="$ROOT/build-cuda/jepa-bench"
+TOUT="$OUT/timing"
+if [ "$TIMING_REPEAT" -gt 0 ] && [ -x "$BENCH" ]; then
+    mkdir -p "$TOUT"
+    [ "$KEEP" = 1 ] || find "$TOUT" -maxdepth 1 -name '*.json' -delete
+    while IFS='|' read -r label frames; do
+        label="${label// /}"; frames="${frames// /}"
+        [ -n "$label" ] || continue
+        [ -z "$ONLY" ] || echo "$label" | grep -Eq "$ONLY" || continue
+        [ -f "$GGUF_DIR/${label}.gguf" ] || continue
+        i=1
+        while [ "$i" -le "$TIMING_REPEAT" ]; do
+            for prec in f32 f16; do
+                echo "--- timing $label T$frames prec=$prec launch $i" >&2
+                "$BENCH" -m "$GGUF_DIR/${label}.gguf" --frames "$frames" --gpu "$DEVICE" \
+                    --gpu-prec "$prec" --warmup 2 --repeat 5 \
+                    --json "$TOUT/${label}__T${frames}__${prec}__${i}.json" >/dev/null 2>&1
+            done
+            i=$((i + 1))
+        done
+    done <<< "$TIMING_GRID"
+fi
+
 [ "$WRITE_JSON" = 1 ] || exit $(( FAILED_TO_RUN > 0 ))
 
 "$PYTHON" - "$OUT" "$RESULTS_JSON" "$DEVICE" "$ROOT" <<'PY'
@@ -165,6 +211,25 @@ def worst(blob: dict) -> dict:
                 der["rel_max"] = max(der["rel_max"], d["rel_max"])
     return {"tokens": tokens, "token_map": tm, "derived": der}
 
+
+timing = {}
+timing_dir = out_dir / "timing"
+if timing_dir.is_dir():
+    launches = {}
+    for p in sorted(timing_dir.glob("*.json")):
+        label, frames, prec, _idx = p.stem.rsplit("__", 3)
+        label = f"{label} {frames}"
+        run = json.loads(p.read_text())["runs"][0]
+        launches.setdefault(label, {}).setdefault(prec, []).append(run["ms_mean"])
+    for label, d in launches.items():
+        row = {}
+        for prec, ms in d.items():
+            row[prec] = {"launches": len(ms), "ms": [round(m, 4) for m in ms],
+                         "ms_mean": round(sum(ms) / len(ms), 4),
+                         "ms_min": round(min(ms), 4), "ms_max": round(max(ms), 4)}
+        if "f32" in row and "f16" in row:
+            row["f32_over_f16"] = round(row["f32"]["ms_mean"] / row["f16"]["ms_mean"], 4)
+        timing[label] = row
 
 rows, by_file = [], {}
 for p in sorted(out_dir.glob("*.json")):
@@ -236,6 +301,12 @@ blob = {
                   "default row with the setting it does not default to)",
     },
     "box": box,
+    "timing_repeatability": timing,
+    "timing_note": "one or more shapes per family (the key is '<file> T<frames>'), --gpu-prec "
+                   "f32 and f16 alternated over N fresh "
+                   "jepa-bench launches (warmup 2, repeat 5 each). This is the spread a *process* "
+                   "sees; the within-run sd is in tests/results/benchmarks-gpu.json and is far "
+                   "smaller. f32_over_f16 above 1 means f16 accumulation is the faster of the two.",
     "date_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     "rows": rows,
 }

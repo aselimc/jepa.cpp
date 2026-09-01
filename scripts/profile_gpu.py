@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Where the GPU time of an encode goes, per CUDA kernel, and what that says about RoPE and about
-attention tiling.
+"""Where the GPU time of an encode goes, per CUDA kernel, how much of the card one encode leaves
+idle, and what those say about RoPE, about attention tiling and about running graphs concurrently.
 
     scripts/profile_gpu.py --device 1 -o tests/results/gpu-profile.json
     scripts/profile_gpu.py --device 1 --only levjepa --keep      # one case, reusing its .nsys-rep
@@ -19,6 +19,12 @@ otherwise vanish from the total.
 The `attention_tiling` section is the second measurement: the same encoder at token counts that
 straddle CUDA flash attention's `FATTN_KQ_STRIDE` (256), which answers whether an off-stride count
 pays for the tile it does not fill.
+
+The `concurrency` section is the third: N encoders on the same device at once against one, which is
+what a multi-stream option would have to beat. ggml gives a context one CUDA stream and offers no
+way to ask for more without changing the submodule, so independent contexts are the measurement
+available — and the question they answer, whether one encode already saturates the card, is the
+same one.
 """
 from __future__ import annotations
 
@@ -154,6 +160,8 @@ def main() -> int:
     ap.add_argument("--only", default="", help="substring filter over the case names")
     ap.add_argument("--keep", action="store_true", help="reuse an existing .nsys-rep")
     ap.add_argument("--no-tiling", action="store_true", help="skip the attention-tiling sweep")
+    ap.add_argument("--concurrency", default="1,2,4",
+                    help="comma-separated process counts for the concurrency sweep; empty skips it")
     ap.add_argument("-o", "--out", default=str(ROOT / "tests" / "results" / "gpu-profile.json"))
     a = ap.parse_args()
 
@@ -258,6 +266,59 @@ def main() -> int:
                 "ns_per_padded_element_per_layer": round(flash_ns / runs / 24 / (n * padded), 5),
             })
         blob["attention_tiling"] = tiling
+
+
+    if a.concurrency:
+        import subprocess as sp
+        counts = [int(x) for x in a.concurrency.split(",") if x.strip()]
+        conc = {
+            "question": "does running several encoders on one device at once move the card's "
+                        "aggregate throughput? — the bar a multi-stream option would have to clear",
+            "method": "N independent tools/jepa-bench processes started together on the same "
+                      "device, each timing its own graph; `aggregate_items_per_s` is N divided by "
+                      "the slowest process's mean ms. ggml gives one context one CUDA stream, so "
+                      "separate processes are how independent graphs reach the card here.",
+            "models": [], "rows": [],
+        }
+        for label, gguf_name, args in (
+                ("ijepa_vith14_1k", "ijepa_vith14_1k-f16.gguf", []),
+                ("lejepa-vits16-pretrain-in1k", "lejepa-vits16-pretrain-in1k-f16.gguf", []),
+        ):
+            gguf = pathlib.Path(a.gguf_dir) / gguf_name
+            if not gguf.exists():
+                continue
+            conc["models"].append(label)
+            for n in counts:
+                print(f"--- concurrency {label} x{n}", file=sys.stderr)
+                procs, jsons = [], []
+                for i in range(n):
+                    j = out_dir / f"conc-{label}-{n}-{i}.json"
+                    jsons.append(j)
+                    procs.append(sp.Popen([a.bench, "-m", str(gguf)] + args + common
+                                          + ["--json", str(j)], stdout=sp.DEVNULL, stderr=sp.DEVNULL))
+                for pr in procs:
+                    pr.wait()
+                ms = []
+                for j in jsons:
+                    try:
+                        ms.append(json.loads(j.read_text())["runs"][0]["ms_mean"])
+                    except (OSError, ValueError, KeyError, IndexError):
+                        pass
+                if not ms:
+                    continue
+                slowest = max(ms)
+                conc["rows"].append({
+                    "model": label, "processes": n,
+                    "ms_mean_per_process": [round(m, 3) for m in ms],
+                    "slowest_ms": round(slowest, 3),
+                    "aggregate_items_per_s": round(1000.0 * n / slowest, 2),
+                })
+        base = {r["model"]: r["aggregate_items_per_s"] for r in conc["rows"] if r["processes"] == 1}
+        for r in conc["rows"]:
+            b = base.get(r["model"])
+            if b:
+                r["vs_one_process"] = round(r["aggregate_items_per_s"] / b, 3)
+        blob["concurrency"] = conc
 
     out = pathlib.Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)

@@ -16,11 +16,230 @@
   "compute_cap": "8.9",
   "power_limit": "210.00 W",
   "driver": "580.173.02",
-  "git_commit": "b98cfa1a",
+  "git_commit": "9c767ff1",
   "ggml_commit": "36da5713",
   "kernel": "6.17.0-1032-oem"
  },
- "date_utc": "2026-09-01 22:45 UTC",
+ "timing_repeatability": {
+  "ijepa_vith14_1k-f16 T1": {
+   "f16": {
+    "launches": 4,
+    "ms": [
+     8.9245,
+     8.9374,
+     8.8928,
+     8.9374
+    ],
+    "ms_mean": 8.923,
+    "ms_min": 8.8928,
+    "ms_max": 8.9374
+   },
+   "f32": {
+    "launches": 4,
+    "ms": [
+     15.8377,
+     15.9189,
+     15.8889,
+     15.8941
+    ],
+    "ms_mean": 15.8849,
+    "ms_min": 15.8377,
+    "ms_max": 15.9189
+   },
+   "f32_over_f16": 1.7802
+  },
+  "lejepa-vits16-pretrain-in1k-f16 T1": {
+   "f16": {
+    "launches": 4,
+    "ms": [
+     0.9956,
+     0.9965,
+     1.0393,
+     1.04
+    ],
+    "ms_mean": 1.0178,
+    "ms_min": 0.9956,
+    "ms_max": 1.04
+   },
+   "f32": {
+    "launches": 4,
+    "ms": [
+     1.1072,
+     1.1078,
+     1.1577,
+     1.1565
+    ],
+    "ms_mean": 1.1323,
+    "ms_min": 1.1072,
+    "ms_max": 1.1577
+   },
+   "f32_over_f16": 1.1125
+  },
+  "levjepa-vitl16-f16 T16": {
+   "f16": {
+    "launches": 4,
+    "ms": [
+     84.7748,
+     84.7127,
+     84.6155,
+     84.7684
+    ],
+    "ms_mean": 84.7178,
+    "ms_min": 84.6155,
+    "ms_max": 84.7748
+   },
+   "f32": {
+    "launches": 4,
+    "ms": [
+     89.7389,
+     89.7526,
+     89.8036,
+     90.1017
+    ],
+    "ms_mean": 89.8492,
+    "ms_min": 89.7389,
+    "ms_max": 90.1017
+   },
+   "f32_over_f16": 1.0606
+  },
+  "lewm-pusht-f16 T1": {
+   "f16": {
+    "launches": 4,
+    "ms": [
+     0.8808,
+     0.8783,
+     0.8789,
+     0.8791
+    ],
+    "ms_mean": 0.8793,
+    "ms_min": 0.8783,
+    "ms_max": 0.8808
+   },
+   "f32": {
+    "launches": 4,
+    "ms": [
+     0.8526,
+     0.8505,
+     0.9097,
+     0.8497
+    ],
+    "ms_mean": 0.8656,
+    "ms_min": 0.8497,
+    "ms_max": 0.9097
+   },
+   "f32_over_f16": 0.9844
+  },
+  "vjepa2-vitl-fpc64-256-f16 T16": {
+   "f16": {
+    "launches": 4,
+    "ms": [
+     38.4801,
+     38.5553,
+     38.184,
+     38.4497
+    ],
+    "ms_mean": 38.4173,
+    "ms_min": 38.184,
+    "ms_max": 38.5553
+   },
+   "f32": {
+    "launches": 4,
+    "ms": [
+     47.0824,
+     47.7765,
+     47.832,
+     47.4624
+    ],
+    "ms_mean": 47.5383,
+    "ms_min": 47.0824,
+    "ms_max": 47.832
+   },
+   "f32_over_f16": 1.2374
+  },
+  "vjepa2_1-vitb-384-f16 T16": {
+   "f16": {
+    "launches": 4,
+    "ms": [
+     44.4468,
+     44.5507,
+     44.5517,
+     44.5214
+    ],
+    "ms_mean": 44.5177,
+    "ms_min": 44.4468,
+    "ms_max": 44.5517
+   },
+   "f32": {
+    "launches": 4,
+    "ms": [
+     43.6159,
+     43.4107,
+     43.5804,
+     43.3957
+    ],
+    "ms_mean": 43.5007,
+    "ms_min": 43.3957,
+    "ms_max": 43.6159
+   },
+   "f32_over_f16": 0.9772
+  },
+  "vjepa2_1-vitb-384-f16 T1": {
+   "f16": {
+    "launches": 4,
+    "ms": [
+     3.4481,
+     3.5289,
+     3.5703,
+     3.5698
+    ],
+    "ms_mean": 3.5293,
+    "ms_min": 3.4481,
+    "ms_max": 3.5703
+   },
+   "f32": {
+    "launches": 4,
+    "ms": [
+     4.4854,
+     4.488,
+     4.6189,
+     4.6198
+    ],
+    "ms_mean": 4.553,
+    "ms_min": 4.4854,
+    "ms_max": 4.6198
+   },
+   "f32_over_f16": 1.2901
+  },
+  "vjepa2_1-vitb-384-f16 T64": {
+   "f16": {
+    "launches": 4,
+    "ms": [
+     447.9556,
+     446.704,
+     448.7179,
+     448.1697
+    ],
+    "ms_mean": 447.8868,
+    "ms_min": 446.704,
+    "ms_max": 448.7179
+   },
+   "f32": {
+    "launches": 4,
+    "ms": [
+     430.0101,
+     431.1212,
+     433.175,
+     431.8626
+    ],
+    "ms_mean": 431.5422,
+    "ms_min": 430.0101,
+    "ms_max": 433.175
+   },
+   "f32_over_f16": 0.9635
+  }
+ },
+ "timing_note": "one or more shapes per family (the key is '<file> T<frames>'), --gpu-prec f32 and f16 alternated over N fresh jepa-bench launches (warmup 2, repeat 5 each). This is the spread a *process* sees; the within-run sd is in tests/results/benchmarks-gpu.json and is far smaller. f32_over_f16 above 1 means f16 accumulation is the faster of the two.",
+ "date_utc": "2026-09-01 23:35 UTC",
  "rows": [
   {
    "file": "ijepa_vith14_1k-f16",

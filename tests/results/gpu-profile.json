@@ -8,7 +8,7 @@
   "precision": "each model's own default accumulation precision (src/jepa.cpp, jepa_gpu_prec_f32_default), i.e. the shipping configuration",
   "caveat": "profiling adds launch overhead, so these milliseconds are a breakdown of one another and not a substitute for tests/results/benchmarks-gpu.json's timings"
  },
- "date_utc": "2026-09-01 23:09 UTC",
+ "date_utc": "2026-09-01 23:36 UTC",
  "device_index": 1,
  "cases": [
   {
@@ -1147,6 +1147,84 @@
     "flash_ms_per_pass": 8.243,
     "ns_per_score_element_per_layer": 0.0647,
     "ns_per_padded_element_per_layer": 0.0647
+   }
+  ]
+ },
+ "concurrency": {
+  "question": "does running several encoders on one device at once move the card's aggregate throughput? \u2014 the bar a multi-stream option would have to clear",
+  "method": "N independent tools/jepa-bench processes started together on the same device, each timing its own graph; `aggregate_items_per_s` is N divided by the slowest process's mean ms. ggml gives one context one CUDA stream, so separate processes are how independent graphs reach the card here.",
+  "models": [
+   "ijepa_vith14_1k",
+   "lejepa-vits16-pretrain-in1k"
+  ],
+  "rows": [
+   {
+    "model": "ijepa_vith14_1k",
+    "processes": 1,
+    "ms_mean_per_process": [
+     16.069
+    ],
+    "slowest_ms": 16.069,
+    "aggregate_items_per_s": 62.23,
+    "vs_one_process": 1.0
+   },
+   {
+    "model": "ijepa_vith14_1k",
+    "processes": 2,
+    "ms_mean_per_process": [
+     33.837,
+     32.941
+    ],
+    "slowest_ms": 33.837,
+    "aggregate_items_per_s": 59.11,
+    "vs_one_process": 0.95
+   },
+   {
+    "model": "ijepa_vith14_1k",
+    "processes": 4,
+    "ms_mean_per_process": [
+     68.007,
+     66.329,
+     63.39,
+     64.518
+    ],
+    "slowest_ms": 68.007,
+    "aggregate_items_per_s": 58.82,
+    "vs_one_process": 0.945
+   },
+   {
+    "model": "lejepa-vits16-pretrain-in1k",
+    "processes": 1,
+    "ms_mean_per_process": [
+     0.986
+    ],
+    "slowest_ms": 0.986,
+    "aggregate_items_per_s": 1013.89,
+    "vs_one_process": 1.0
+   },
+   {
+    "model": "lejepa-vits16-pretrain-in1k",
+    "processes": 2,
+    "ms_mean_per_process": [
+     1.95,
+     1.95
+    ],
+    "slowest_ms": 1.95,
+    "aggregate_items_per_s": 1025.64,
+    "vs_one_process": 1.012
+   },
+   {
+    "model": "lejepa-vits16-pretrain-in1k",
+    "processes": 4,
+    "ms_mean_per_process": [
+     2.812,
+     2.833,
+     2.62,
+     1.096
+    ],
+    "slowest_ms": 2.833,
+    "aggregate_items_per_s": 1412.03,
+    "vs_one_process": 1.393
    }
   ]
  }
