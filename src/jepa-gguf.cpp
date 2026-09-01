@@ -507,8 +507,9 @@ static bool check_shape(const jepa_model & m, const char * name, int64_t ne0, in
 // Tensors that are added to, multiplied by or concatenated with the F32 activations rather than
 // multiplied through mul_mat. ggml_concat and the elementwise ops require matching types, so an
 // f16 CLS token in an otherwise f32 graph aborts inside the builder. Quantization never touches
-// these: even a q4_k file keeps every norm, bias, token and position table in f32
-// (docs/gguf-schema.md; tools/jepa-quantize.cpp only converts the matmul weights).
+// these — even a q4_k file keeps every norm, bias, token and position table in f32, because
+// tools/jepa-quantize.cpp converts only the matmul weights — and docs/gguf-schema.md
+// "Quantization rules" states it as a requirement, which is what this enforces.
 static bool check_f32(const jepa_model & m, const std::string & name) {
     ggml_tensor * t = m.get(name);
     if (!t || t->type == GGML_TYPE_F32) return true;

@@ -152,7 +152,10 @@ Video tokens are **T-major, then H, then W** (`i = t*gh*gw + h*gw + w`). Image t
 
 ## Quantization rules
 
-Quantize only 2-D weight matrices of `*.attn_qkv` / `attn_q` / `attn_k` / `attn_v` / `attn_out`, `*.ffn_up` / `ffn_down`, `pred.proj*` (incl. `pred.proj_context`), `pred.embed*`, `enc.proj.*`, `head.blk.*`, `head.xattn.{q,k,v}`, `head.cls`. Keep patch embeddings, norms, biases, pos tables, CLS/register/mask/modality tokens, `pred.blk.*.adaln`, and `pred.action_embed.*` in F32/F16. K-quants need `ne[0] % 256 == 0`; fall back per tensor to q8_0 (or the q4_0/q5_0 sibling) otherwise.
+Quantize only 2-D weight matrices of `*.attn_qkv` / `attn_q` / `attn_k` / `attn_v` / `attn_out`, `*.ffn_up` / `ffn_down`, `pred.proj*` (incl. `pred.proj_context`), `pred.embed*`, `enc.proj.*`, `head.blk.*`, `head.xattn.{q,k,v}`, `head.cls`. K-quants need `ne[0] % 256 == 0`; fall back per tensor to q8_0 (or the q4_0/q5_0 sibling) otherwise.
+
+Everything else stays **F32**, and this is a requirement rather than a convention: norms, biases, layer scales, position tables, CLS / register / mask / modality tokens and `pred.blk.*.adaln` biases reach ggml as the right-hand side of an `add`, a `mul` or a `concat`, and those ops take an f32 operand and assert on anything else. The loader checks it and refuses a file that gets it wrong (docs/architecture.md ["Robustness"](architecture.md#robustness)). Patch embeddings and `pred.action_embed.*` are matmul weights and so *may* be F16, but the converter writes them F32 today.
+
 Converter dtype rule for `--ftype f16`: the quantizable set above is written as F16, everything else as F32.
 
 ## Family notes
