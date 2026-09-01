@@ -256,7 +256,9 @@ extern "C" int jepa_predict_mod(jepa_context * ctx, const jepa_output * enc,
     }
     if (m->hp.pred.kind != "masked") {
         jepa_log("jepa: jepa_predict: predictor kind '%s' is not the masked predictor%s\n",
-                 m->hp.pred.kind.c_str(), m->hp.pred.kind == "lewm" ? " (use jepa_lewm_predict)" : "");
+                 m->hp.pred.kind.c_str(),
+                 m->hp.pred.kind == "lewm" ? " (use jepa_lewm_predict)"
+                 : m->hp.pred.kind == "ac" ? " (use jepa_ac_predict)" : "");
         return -1;
     }
     if (modality != JEPA_MODALITY_AUTO && modality != JEPA_MODALITY_VIDEO && modality != JEPA_MODALITY_IMAGE) {

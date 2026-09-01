@@ -139,10 +139,12 @@ struct ggml_tensor * jepa_rope3d_apply(struct ggml_context * ctx, struct ggml_te
     const int64_t D = x->ne[0];
     GGML_ASSERT(D % 2 == 0);
     GGML_ASSERT(x->nb[0] == sizeof(float)); // rows must be contiguous (ggml_roll / binary ops)
-    GGML_ASSERT(x->ne[3] == 1);
     GGML_ASSERT(cos_t->ne[0] == D && cos_t->ne[1] == 1 && cos_t->ne[2] == x->ne[2] && cos_t->ne[3] == 1);
     GGML_ASSERT(ggml_are_same_shape(cos_t, sin_t));
-    const int64_t H = x->ne[1], N = x->ne[2];
+    // ne[3] is the independent-item batch (the AC predictor's K action candidates, src/vjepa2_ac.cpp).
+    // The tables are [D, 1, N, 1] and broadcast over both the head axis and it: ggml_mul only needs
+    // every ne of the right-hand side to divide the left-hand side's.
+    const int64_t H = x->ne[1], N = x->ne[2], B = x->ne[3];
 
     // ggml_roll needs a fully contiguous source (its CUDA kernel indexes as if it were: see
     // ggml/src/ggml-cuda/roll.cu and docs/architecture.md "GPU backend"), and jepa_build_qkv hands us a view
@@ -153,8 +155,8 @@ struct ggml_tensor * jepa_rope3d_apply(struct ggml_context * ctx, struct ggml_te
     // rotate90(x)[j] = -x[j^1] for even j, +x[j^1] for odd j -- i.e. the pair swap with the sign
     // already folded into sin_t. Rolling a length-2 axis by 1 IS that swap: over [2, D/2*H*N],
     // out[0] = in[1] and out[1] = in[0], with no wrap-around lane left to mask off.
-    struct ggml_tensor * sw = ggml_roll(ctx, ggml_reshape_2d(ctx, xc, 2, D * H * N / 2), 1, 0, 0, 0);
-    sw = ggml_reshape_3d(ctx, sw, D, H, N);
+    struct ggml_tensor * sw = ggml_roll(ctx, ggml_reshape_2d(ctx, xc, 2, D * H * N * B / 2), 1, 0, 0, 0);
+    sw = ggml_reshape_4d(ctx, sw, D, H, N, B);
 
     // out = x*C + swap(x)*S'  ==  out[2k] = x[2k]*C[2k] - x[2k+1]*S[2k]
     //                             out[2k+1] = x[2k+1]*C[2k+1] + x[2k]*S[2k+1]

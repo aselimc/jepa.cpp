@@ -137,7 +137,7 @@ struct jepa_enc_hparams {
 
 struct jepa_pred_hparams {
     bool present = false;
-    std::string kind;                 // masked | ac | lewm
+    std::string kind;                 // masked | ac (V-JEPA 2-AC) | lewm
     int   embed_dim = 0, n_layer = 0, n_head = 0, ffn_dim = 0;
     int   n_mask_tokens = 0;
     int   out_dim = 0;
@@ -149,6 +149,12 @@ struct jepa_pred_hparams {
     bool  modality_embed = false;
     bool  context_proj = false;
     int   action_dim = 0, state_dim = 0;
+    // ac: conditioning tokens prepended to every frame's patch tokens (2 = action, state)
+    int   n_cond_tokens = 0;
+    std::string cond_order;           // "action,state"
+    // ac: the world-model loop normalises latents with a non-affine LayerNorm between steps
+    bool  normalize_reps = false;
+    float norm_reps_eps = 1e-5f;
     bool  frame_causal = false;
     int   n_frames = 0;
     int   head_dim = 0;               // 0 -> embed_dim / n_head

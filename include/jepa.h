@@ -214,6 +214,73 @@ int jepa_lewm_predict(jepa_context * ctx, const float * embs, const float * acti
 int jepa_lewm_rollout(jepa_context * ctx, const float * embs, int n_seed,
                       const float * actions, int n_steps, float * out);
 
+// --- V-JEPA 2-AC action-conditioned world model (jepa.pred.kind == "ac") ---------------
+// The predictor of facebookresearch/vjepa2's `vjepa2_ac_vit_giant`: it takes the encoder latents
+// of T context frames plus a 7-d end-effector action and a 7-d state (pose) per frame, and
+// predicts the encoder latents of the NEXT frame. Attention is block-causal over frames, so one
+// call with T frames also yields the prediction after every shorter prefix.
+//
+// Layout, everywhere below: latents are row-major [n_frames * tokens_per_frame, enc_dim] per item
+// with the frames in order and, inside a frame, the encoder's token order (h-major then w);
+// actions and states are [n_frames, action_dim] / [n_frames, state_dim]. `n_batch` items are
+// concatenated in that order. Row block t of a context carries the action that drives the step
+// from frame t to frame t+1 and the state (pose) AT frame t.
+int  jepa_ac_tokens_per_frame(const jepa_model * model);  // grid_size^2 (256 for the released ViT-g)
+int  jepa_ac_action_dim(const jepa_model * model);        // 7
+int  jepa_ac_state_dim(const jepa_model * model);         // 7
+int  jepa_ac_max_frames(const jepa_model * model);        // jepa.pred.n_frames: the frame-slot cap
+// True when the released world-model loop normalises latents between steps (jepa.pred.normalize_reps).
+bool jepa_ac_normalize_reps(const jepa_model * model);
+
+// Non-affine LayerNorm over each row, in place -- Meta's `F.layer_norm(h, (D,))`
+// (notebooks/utils/world_model_wrapper.py). Apply it to the encoder latents BEFORE the first
+// jepa_ac_predict and to any predicted frame you feed back by hand; jepa_ac_rollout does it for you
+// when jepa_ac_normalize_reps() is true. eps comes from jepa.pred.norm_reps_eps (1e-5).
+void jepa_ac_normalize(const jepa_model * model, float * rows, int64_t n_rows, int64_t dim);
+
+// One predictor call over `n_frames` context frames for `n_batch` independent items (the K action
+// candidates of a planning step live on the graph's batch axis; on the CPU at f32 a batched call is
+// bit-identical to n_batch sequential ones -- tests/test-predictor.cpp gates that).
+//   context : [n_batch * n_frames * tokens_per_frame, enc_dim]
+//   actions : [n_batch * n_frames, action_dim]
+//   states  : [n_batch * n_frames, state_dim]
+//   out     : [n_batch * tokens_per_frame, enc_dim] -- the next frame of each item.
+//             Caller frees out->data.
+int jepa_ac_predict(jepa_context * ctx, const float * context, int n_frames, int n_batch,
+                    const float * actions, const float * states, jepa_output * out);
+// Same call, returning every frame's prediction: [n_batch * n_frames * tokens_per_frame, enc_dim].
+// Row block t is the prediction of frame t+1 given frames 0..t -- this is what Meta's
+// `predictor(x, actions, states)` returns, and what the parity fixtures hold.
+int jepa_ac_predict_all(jepa_context * ctx, const float * context, int n_frames, int n_batch,
+                        const float * actions, const float * states, jepa_output * out);
+
+// Autoregressive rollout of `n_cand` candidate action sequences over `horizon` steps, all batched
+// on the batch axis of ONE graph per step. The encoded context is shared by every candidate.
+//   context     : [n_seed * tokens_per_frame, enc_dim] -- already normalised if
+//                 jepa_ac_normalize_reps(); one encode, reused by every candidate (step 7.2 turns
+//                 this argument into a cached handle without changing the rest of the signature)
+//   seed_states : [n_seed, state_dim]
+//   actions     : [n_cand * horizon, action_dim] -- candidate c, step h at row c*horizon + h
+//   states      : [n_cand * horizon, state_dim] poses of the frames the steps produce, or NULL to
+//                 have jepa_ac_next_state() generate them from `actions` (what the reference does)
+//   out         : [n_cand * horizon * tokens_per_frame, enc_dim], caller-allocated: candidate c's
+//                 step h at row (c*horizon + h) * tokens_per_frame
+int jepa_ac_rollout(jepa_context * ctx, const float * context, int n_seed, const float * seed_states,
+                    const float * actions, const float * states, int n_cand, int horizon, float * out);
+
+// Meta's pose update (notebooks/utils/mpc_utils.py::compute_new_pose): translation added, rotation
+// composed as extrinsic-xyz Euler angles, gripper added and clipped to [0, 1]. `state`, `action`
+// and `out` are state_dim/action_dim long; `out` may not alias `state`.
+void jepa_ac_next_state(const jepa_model * model, const float * state, const float * action, float * out);
+
+// The planning energy the reference scores candidates with (notebooks/utils/mpc_utils.py::l1 and
+// the energy-landscape notebook's loss_fn): mean |pred - goal| over ALL rows and dims of one item.
+//   pred : [n_batch * n_rows, dim] (e.g. the last frame of each candidate's rollout)
+//   goal : [n_rows, dim] -- the goal latents, shared by every item
+//   out  : [n_batch] energies; lower is closer to the goal
+void jepa_ac_energy(const float * pred, const float * goal, int n_batch, int64_t n_rows, int64_t dim,
+                    float * out);
+
 // ======================================================================================
 // APPEND-ONLY: encoder batching (src/jepa.cpp).
 // ======================================================================================

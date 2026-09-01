@@ -72,6 +72,11 @@ int main(int argc, char ** argv) {
         printf("             ln_eps=%g adaln_eps=%g act=%s qkv_bias=%s action_dim=%d state_dim=%d n_frames=%d causal=%s\n",
                p.ln_eps, p.adaln_eps, jepa_act_name(p.act), p.qkv_bias ? "yes" : "no", p.action_dim, p.state_dim, p.n_frames,
                p.frame_causal ? "yes" : "no");
+        if (p.kind == "ac") {
+            printf("             ac: cond_tokens=%d (%s) per frame, tokens/frame=%d, normalize_reps=%s (eps %g)\n",
+                   p.n_cond_tokens, p.cond_order.empty() ? "action,state" : p.cond_order.c_str(),
+                   p.grid_size * p.grid_size, p.normalize_reps ? "yes" : "no", p.norm_reps_eps);
+        }
         if (!p.rope_freq_layout.empty()) {
             printf("             rope layout=%s interpolate=%s ref_grid=%d grid_size=%d n_hier_in=%d\n", p.rope_freq_layout.c_str(),
                    p.rope_interpolate ? "yes" : "no", p.rope_ref_grid, p.grid_size, p.n_hier_in);

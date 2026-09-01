@@ -13,6 +13,8 @@ Models (NAME):
   lejepa-vits16               OK-AI ViTv2 via trust_remote_code   (OK-AI/lejepa-vits16-pretrain-in1k)
   lewm-pusht                  LeWorldModel (HF ViT-Ti/14 encoder + AdaLN predictor, re-implemented here)
   vjepa2-vitl-fpc64-256       HF VJEPA2Model (encoder + default predictor pass)
+  vjepa2-vitg-fpc64-256       HF VJEPA2Model ViT-g/16 (facebook/vjepa2-vitg-fpc64-256), same code path
+  vjepa2-ac-vitg              V-JEPA 2-AC world model (Meta code, vjepa2-ac-vitg.pt + the Franka demo trajectory)
   vjepa2-vitl-fpc16-256-ssv2  HF VJEPA2ForVideoClassification (attentive pooler + linear head)
   vjepa2_1-vitb-384           Meta code path (torch.hub, local clone of facebookresearch/vjepa2)
   levjepa-vitl16              LeVJEPAModel via trust_remote_code  (galilai-group/LeVJEPA-VideoMix-Large)
@@ -40,14 +42,17 @@ MODEL_DIRS = {
     "lejepa-vits16": "OK-AI/lejepa-vits16-pretrain-in1k",
     "lewm-pusht": "quentinll/lewm-pusht",
     "vjepa2-vitl-fpc64-256": "facebook/vjepa2-vitl-fpc64-256",
+    "vjepa2-vitg-fpc64-256": "facebook/vjepa2-vitg-fpc64-256",
+    "vjepa2-ac-vitg": "vjepa2_ac/vjepa2-ac-vitg.pt",
     "vjepa2-vitl-fpc16-256-ssv2": "facebook/vjepa2-vitl-fpc16-256-ssv2",
     "vjepa2_1-vitb-384": "vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt",
     "levjepa-vitl16": "galilai-group/LeVJEPA-VideoMix-Large",
 }
 DEFAULT_N_IMAGES = {"ijepa-vith14-1k": 8, "lejepa-vits16": 8, "lewm-pusht": 2, "vjepa2_1-vitb-384": 2,
                     "levjepa-vitl16": 2}
-DEFAULT_FRAMES = {"vjepa2-vitl-fpc64-256": [64, 16], "vjepa2-vitl-fpc16-256-ssv2": [16], "vjepa2_1-vitb-384": [16],
-                  "levjepa-vitl16": [16]}
+DEFAULT_FRAMES = {"vjepa2-vitl-fpc64-256": [64, 16], "vjepa2-vitg-fpc64-256": [64, 16],
+                  "vjepa2-vitl-fpc16-256-ssv2": [16], "vjepa2_1-vitb-384": [16], "levjepa-vitl16": [16],
+                  "vjepa2-ac-vitg": [2]}
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 VJEPA2_SRC_URL = "https://github.com/facebookresearch/vjepa2"
@@ -610,11 +615,10 @@ def _clip_samples(a, frames_list):
             yield clip, n, fr, idx, fps, len(all_frames), dec
 
 
-def dump_vjepa2(a) -> None:
+def dump_vjepa2(a, name: str = "vjepa2-vitl-fpc64-256") -> None:
     import torch
     from transformers import AutoVideoProcessor, VJEPA2Model
 
-    name = "vjepa2-vitl-fpc64-256"
     d = a.models_dir / MODEL_DIRS[name]
     t0 = time.time()
     proc = AutoVideoProcessor.from_pretrained(d)
@@ -622,15 +626,16 @@ def dump_vjepa2(a) -> None:
     load_s = time.time() - t0
     cfg = model.config
     w = RefWriter(
-        a.out / name, name, d, hf_id="facebook/vjepa2-vitl-fpc64-256", hparams=_vjepa2_hparams(cfg),
+        a.out / name, name, d, hf_id=f"facebook/{name}", hparams=_vjepa2_hparams(cfg),
         preprocessing=_vjepa2_preprocessing(proc, cfg.crop_size),
         outputs={"frames_u8": "the sampled RGB frames fed to the processor, THWC uint8",
                  "input": "processor pixel_values_videos, layout NTCHW (batch, frames, channels, H, W); the model permutes to NCTHW internally",
-                 "last_hidden_state": "VJEPA2Model last_hidden_state[0]: [N, 1024] with N = T/2 * 16 * 16 tokens, order t-major then h then w, after final LN",
+                 "last_hidden_state": f"VJEPA2Model last_hidden_state[0]: [N, {cfg.hidden_size}] with N = T/2 * 16 * 16 tokens, "
+                                      "order t-major then h then w, after final LN",
                  "pooled_mean": "mean over tokens",
                  "predictor_last_hidden_state": "VJEPA2Model(...).predictor_output.last_hidden_state[0] with the DEFAULT masks "
                                                 "(context_mask = target_mask = arange(N), i.e. full context, predict all tokens): "
-                                                "[N, 1024] = predictor_proj(predictor_norm(...)) for the N target (mask) tokens"},
+                                                f"[N, {cfg.hidden_size}] = predictor_proj(predictor_norm(...)) for the N target (mask) tokens"},
     )
     for clip, n, fr, idx, fps, n_total, dec in _clip_samples(a, a.frames):
         t = time.time()
@@ -882,11 +887,252 @@ def dump_levjepa(a) -> None:
     w.finish(load_s)
 
 
+# --------------------------------------------------------------------------------------------------
+# V-JEPA 2-AC (action-conditioned world model, Meta code path)
+# --------------------------------------------------------------------------------------------------
+# Everything here runs facebookresearch/vjepa2's own modules on its own demo trajectory:
+#   encoder / predictor  torch.hub vjepa2_ac_vit_giant (src/hub/backbones.py::_make_vjepa2_ac_model),
+#                        weights from vjepa2-ac-vitg.pt ("encoder" and "predictor", 'module.' stripped)
+#   trajectory           notebooks/franka_example_traj.npz (observations uint8 [1,T,256,256,3], states [1,T,7])
+#   transform            make_transforms(scale=(1,1), ratio=(1,1), crop=256): a centre crop of the
+#                        largest square followed by a bilinear resize to 256 (both the identity on the
+#                        square Franka renders), then (x - 255*mean)/(255*std).  Reimplemented here
+#                        because app/vjepa_droid/transforms.py imports cv2, which the venv does not have.
+#   world-model loop     notebooks/utils/world_model_wrapper.py: a frame is encoded as a 2-frame clip
+#                        (the frame repeated along T) and every latent is passed through a non-affine
+#                        LayerNorm before and after the predictor.
+AC_CANDIDATES = 4      # action sequences scored per planning step (the batch axis of jepa_ac_rollout)
+AC_HORIZON = 2         # rollout steps (the notebook's mpc_args["rollout"])
+
+
+def _ac_normalize(t):
+    import torch.nn.functional as F
+    return F.layer_norm(t, (t.size(-1),))
+
+
+def dump_vjepa2_ac(a) -> None:
+    import numpy as np
+    import torch
+
+    name = "vjepa2-ac-vitg"
+    ckpt = a.models_dir / MODEL_DIRS[name]
+    src = a.vjepa2_src
+    if not (src / "hubconf.py").exists():
+        print(f"  cloning {VJEPA2_SRC_URL} -> {src}")
+        subprocess.run(["git", "clone", "--depth", "1", VJEPA2_SRC_URL, str(src)], check=True)
+    traj_path = src / "notebooks" / "franka_example_traj.npz"
+    if not traj_path.exists():
+        sys.exit(f"{traj_path} is missing (it ships with the vjepa2 repo)")
+    sys.path.insert(0, str(src))
+    sys.path.insert(0, str(src / "notebooks"))
+
+    t0 = time.time()
+    encoder, predictor = torch.hub.load(str(src), "vjepa2_ac_vit_giant", source="local", pretrained=False)
+    sd = torch.load(ckpt, map_location="cpu", weights_only=False, mmap=True)
+
+    def clean(state):
+        return {k.replace("module.", "").replace("backbone.", ""): v for k, v in state.items()}
+
+    ckpt_keys = list(sd.keys())
+    encoder.load_state_dict(clean(sd["encoder"]), strict=False)   # the .pt has no pos_embed; RoPE model
+    predictor.load_state_dict(clean(sd["predictor"]), strict=True)
+    encoder = encoder.float().eval()
+    predictor = predictor.float().eval()
+    ckpt_epoch = sd.get("epoch") if isinstance(sd, dict) else None
+    del sd
+    load_s = time.time() - t0
+
+    crop = 256
+    P = encoder.patch_size
+    tpf = (crop // P) ** 2                       # tokens_per_frame, the notebook's `tokens_per_frame`
+    D = encoder.embed_dim
+    pblk = predictor.predictor_blocks[0]
+
+    traj = np.load(traj_path)
+    obs = traj["observations"][0]                # [T, 256, 256, 3] uint8
+    st_np = traj["states"]                       # [1, T, 7]
+    n_traj = len(obs)
+
+    mean = torch.tensor(IMAGENET_MEAN, dtype=torch.float32) * 255.0
+    std = torch.tensor(IMAGENET_STD, dtype=torch.float32) * 255.0
+
+    def transform(frames_u8):
+        """make_transforms(...)(frames) for a square source: THWC uint8 -> CTHW float32."""
+        x = torch.tensor(np.ascontiguousarray(frames_u8), dtype=torch.float32).permute(3, 0, 1, 2)
+        C, T, H, W = x.shape
+        if H != W or H != crop:   # the reference's centre-crop-to-square + bilinear resize
+            side = min(H, W)
+            x = x[:, :, (H - side) // 2: (H - side) // 2 + side, (W - side) // 2: (W - side) // 2 + side]
+            x = torch.nn.functional.interpolate(x, size=(crop, crop), mode="bilinear", align_corners=False)
+        return ((x.permute(1, 2, 3, 0) - mean) / std).permute(3, 0, 1, 2).contiguous()
+
+    clip = transform(obs)                        # [3, T, 256, 256]
+
+    def encode(frame_idx):
+        """world_model_wrapper.WorldModel.encode: one frame -> a 2-frame clip -> tpf tokens."""
+        c = clip[:, frame_idx: frame_idx + 1]                     # [3, 1, H, W]
+        x = c.unsqueeze(0).permute(0, 2, 1, 3, 4).flatten(0, 1).unsqueeze(2).repeat(1, 1, 2, 1, 1)
+        return x, encoder(x)[0]                                   # [1,3,2,H,W], [tpf, D]
+
+    from utils.mpc_utils import compute_new_pose, poses_to_diff
+
+    # The ground-truth first action of the trajectory (energy_landscape_example.ipynb cell 3), plus
+    # three fixed perturbations along x / y / z: a deterministic stand-in for a CEM candidate batch.
+    gt_action = poses_to_diff(st_np[0, 0], st_np[0, 1]).float()    # [7]
+    deltas = torch.tensor([[0.0, 0, 0, 0, 0, 0, 0],
+                           [0.05, 0, 0, 0, 0, 0, 0],
+                           [0.0, 0.05, 0, 0, 0, 0, 0],
+                           [0.0, 0, 0.05, 0, 0, 0, 0]], dtype=torch.float32)
+    cand = (gt_action[None] + deltas)                             # [K, 7]
+    actions = cand[:, None, :].repeat(1, AC_HORIZON, 1)           # [K, H, 7] (each step repeats the action)
+    state0 = torch.tensor(st_np[0, 0], dtype=torch.float32)       # [7]
+
+    w = RefWriter(
+        a.out / name, name, ckpt, source_url="https://dl.fbaipublicfiles.com/vjepa2/vjepa2-ac-vitg.pt",
+        code=f"{VJEPA2_SRC_URL} (hubconf vjepa2_ac_vit_giant, src/models/ac_predictor.py, "
+             f"notebooks/utils/mpc_utils.py + world_model_wrapper.py), local clone at {src}",
+        checkpoint={"top_level_keys": ckpt_keys, "encoder_key_used": "encoder",
+                    "key_cleanup": "strip 'module.' and 'backbone.'", "epoch": ckpt_epoch,
+                    "encoder_equals_target_encoder": True},
+        trajectory={"file": "notebooks/franka_example_traj.npz", "frames": int(n_traj),
+                    "frame_size_hw": [int(obs.shape[1]), int(obs.shape[2])],
+                    "states": [[float(v) for v in row] for row in st_np[0]]},
+        hparams={"embed_dim": D, "n_layer": len(encoder.blocks), "n_head": encoder.num_heads,
+                 "ffn_dim": encoder.blocks[0].mlp.fc1.out_features, "patch_size": P,
+                 "tubelet_size": encoder.tubelet_size, "img_size": crop, "n_frames": encoder.num_frames,
+                 "ln_eps": encoder.blocks[0].norm1.eps, "act": "gelu_erf", "cls_token": False,
+                 "pos_type": "rope3d", "rope_theta": 10000.0, "tokens_per_frame": tpf,
+                 "pred": {"kind": "ac", "embed_dim": predictor.predictor_embed.out_features,
+                          "n_layer": len(predictor.predictor_blocks), "n_head": pblk.attn.num_heads,
+                          "head_dim": pblk.attn.head_dim, "ffn_dim": pblk.mlp.fc1.out_features,
+                          "ln_eps": pblk.norm1.eps, "action_dim": predictor.action_encoder.in_features,
+                          "state_dim": predictor.state_encoder.in_features,
+                          "out_dim": predictor.predictor_proj.out_features,
+                          "grid_size": predictor.grid_height, "n_cond_tokens": 2,
+                          "cond_order": "action,state", "frame_causal": predictor.is_frame_causal,
+                          "use_extrinsics": predictor.use_extrinsics,
+                          "attn_mask_shape": list(predictor.attn_mask.shape),
+                          "rope_dims_per_axis": [pblk.attn.d_dim, pblk.attn.h_dim, pblk.attn.w_dim],
+                          "rope_grid_size": pblk.attn.grid_size, "rope_freq_layout": "tiled"}},
+        preprocessing={
+            "description": "app/vjepa_droid/transforms.py::make_transforms(random_horizontal_flip=False, "
+                           "random_resize_scale=(1,1), random_resize_aspect_ratio=(1,1), crop_size=256): "
+                           "random_resized_crop degenerates to a centre crop of the largest square followed "
+                           "by torch F.interpolate(bilinear, align_corners=False, no antialias) to 256x256, "
+                           "then (x - 255*mean) / (255*std) on the CTHW float tensor. On the 256x256 Franka "
+                           "renders both the crop and the resize are the identity.",
+            "resize": {"height": crop, "width": crop, "keep_aspect": True, "resample": "bilinear",
+                       "antialias": False, "on_dtype": "float32"},
+            "center_crop": "largest square", "rescale": 1 / 255, "mean": IMAGENET_MEAN, "std": IMAGENET_STD},
+        world_model={
+            "encode": "one observation frame -> a 2-frame clip (the frame repeated along T, tubelet 2) -> "
+                      f"{tpf} tokens after the encoder's final LayerNorm; then a NON-AFFINE LayerNorm over "
+                      "the feature dim (torch F.layer_norm default eps 1e-5). world_model_wrapper.py:42-52.",
+            "predict": "predictor(context, actions, states) returns T*tpf rows; the world model keeps the "
+                       "LAST tpf (the next frame) and normalises them again before feeding them back. "
+                       "world_model_wrapper.py:56-64.",
+            "state": "the pose of frame t; the pose after a step is compute_new_pose(pose, action) = "
+                     "(xyz + d_xyz, euler_xyz(R(d) @ R(pose)), clip(gripper + d_gripper, 0, 1)). "
+                     "mpc_utils.py:166-190.",
+            "energy": "l1(a, b) = mean |a - b| over the flattened [tpf * D] final state and goal. "
+                      "mpc_utils.py:17-18 and the loss_fn of energy_landscape_example.ipynb.",
+            "candidates": f"{AC_CANDIDATES} fixed action sequences of {AC_HORIZON} steps: the trajectory's "
+                          "ground-truth first action poses_to_diff(states[0], states[1]) and that action "
+                          "shifted by +0.05 along x, y and z, each repeated over the horizon.",
+        },
+        outputs={"input": "NCTHW float32 (the 2-frame clip of one observation frame)",
+                 "last_hidden_state": f"encoder(input)[0]: [{tpf}, {D}] tokens after the final LN, h-major then w",
+                 "context": "F.layer_norm(last_hidden_state) -- the predictor's input",
+                 "goal": "context of the LAST trajectory frame",
+                 "action/state": "[7] the action driving the step and the pose at the frame",
+                 "pred_next": f"predictor(context, action, state)[-{tpf}:] -- the next frame's latents, un-normalised",
+                 "pred_seq": "predictor over T=2 frames, ALL T*tpf rows (row block t predicts frame t+1)",
+                 "rollout": f"[K, H, {tpf}, {D}] normalised latents per candidate per step",
+                 "rollout_energy": "[K] l1(rollout[:, -1], goal)",
+                 "actions/states_seq": "[K, H, 7] the candidate actions and the poses compute_new_pose produced",
+                 "next_state_ref": "[K, 7] compute_new_pose(state0, actions[:, 0]) -- the jepa_ac_next_state check"},
+    )
+
+    with torch.inference_mode():
+        # ---- 1. encoder samples (also the encoder-parity fixture for the AC bundle)
+        enc_rows = {}
+        for idx, tag in ((0, "frame0"), (n_traj - 1, "goalframe")):
+            t = time.time()
+            x, h = encode(idx)
+            fwd = time.time() - t
+            hn = _ac_normalize(h)
+            enc_rows[tag] = hn
+            w.add(tag, f"franka_example_traj.npz[{idx}]",
+                  {"input": (x, "NCTHW (T=2, the frame repeated)"),
+                   "last_hidden_state": (h, f"[{tpf}, D] h-major then w"),
+                   "pooled_mean": (h.mean(0), "[D]"),
+                   "context": (hn, f"[{tpf}, D] after the non-affine LayerNorm")},
+                  {"preprocess_s": 0.0, "forward_s": round(fwd, 4)}, frame_index=idx, frames=2)
+
+        z0, goal = enc_rows["frame0"], enc_rows["goalframe"]
+
+        # ---- 2. one predictor step (T = 1) with the ground-truth action
+        t = time.time()
+        p1 = predictor(z0[None], gt_action[None, None], state0[None, None])[0]
+        fwd = time.time() - t
+        w.add("step1", "franka_example_traj.npz[0]",
+              {"context": (z0, f"[{tpf}, D]"), "action": (gt_action, "[7]"), "state": (state0, "[7]"),
+               "pred_next": (p1, f"[{tpf}, D] predictor output, T=1")},
+              {"preprocess_s": 0.0, "forward_s": round(fwd, 4)}, frames=1)
+
+        # ---- 3. two frames (T = 2): every row, the block-causal check
+        z1 = _ac_normalize(p1)
+        s1 = compute_new_pose(state0[None, None], gt_action[None, None])[0, 0].float()
+        ctx2 = torch.cat([z0, z1], 0)
+        act2 = torch.stack([gt_action, gt_action])
+        st2 = torch.stack([state0, s1])
+        t = time.time()
+        p2 = predictor(ctx2[None], act2[None], st2[None])[0]
+        fwd = time.time() - t
+        w.add("step2", "franka_example_traj.npz[0]",
+              {"context_seq": (ctx2, f"[2*{tpf}, D]"), "action_seq": (act2, "[2, 7]"), "state_seq": (st2, "[2, 7]"),
+               "pred_seq": (p2, f"[2*{tpf}, D] all rows; block t predicts frame t+1")},
+              {"preprocess_s": 0.0, "forward_s": round(fwd, 4)}, frames=2)
+
+        # ---- 4. K-candidate rollout + the planning energy
+        t = time.time()
+        z_hat = z0[None].repeat(AC_CANDIDATES, 1, 1)              # [K, tpf, D]
+        s_hat = state0[None, None].repeat(AC_CANDIDATES, 1, 1)    # [K, 1, 7]
+        a_hat = actions[:, :1]                                    # [K, 1, 7]
+        roll, states_seq = [], []
+        for h_step in range(AC_HORIZON):
+            nxt = _ac_normalize(predictor(z_hat, a_hat, s_hat)[:, -tpf:])
+            s_next = compute_new_pose(s_hat[:, -1:], a_hat[:, -1:]).float()
+            roll.append(nxt)
+            states_seq.append(s_next[:, 0])
+            z_hat = torch.cat([z_hat, nxt], 1)
+            s_hat = torch.cat([s_hat, s_next], 1)
+            if h_step + 1 < AC_HORIZON:
+                a_hat = torch.cat([a_hat, actions[:, h_step + 1: h_step + 2]], 1)
+        fwd = time.time() - t
+        roll = torch.stack(roll, 1)                               # [K, H, tpf, D]
+        energy = (roll[:, -1] - goal[None]).abs().mean(dim=(1, 2))
+        next_state_ref = compute_new_pose(state0[None, None].repeat(AC_CANDIDATES, 1, 1),
+                                          actions[:, :1])[:, 0].float()
+        w.add("rollout", "franka_example_traj.npz",
+              {"context": (z0, f"[{tpf}, D] shared seed"), "goal": (goal, f"[{tpf}, D]"),
+               "state0": (state0, "[7]"), "actions": (actions, f"[{AC_CANDIDATES}, {AC_HORIZON}, 7]"),
+               "states_seq": (torch.stack(states_seq, 1), f"[{AC_CANDIDATES}, {AC_HORIZON}, 7]"),
+               "rollout": (roll, f"[{AC_CANDIDATES}, {AC_HORIZON}, {tpf}, D]"),
+               "rollout_energy": (energy, f"[{AC_CANDIDATES}]"),
+               "next_state_ref": (next_state_ref, f"[{AC_CANDIDATES}, 7]")},
+              {"preprocess_s": 0.0, "forward_s": round(fwd, 4)},
+              candidates=AC_CANDIDATES, horizon=AC_HORIZON)
+    w.finish(load_s)
+
+
 DUMPERS = {
     "ijepa-vith14-1k": dump_ijepa,
     "lejepa-vits16": dump_lejepa,
     "lewm-pusht": dump_lewm,
     "vjepa2-vitl-fpc64-256": dump_vjepa2,
+    "vjepa2-vitg-fpc64-256": lambda a: dump_vjepa2(a, "vjepa2-vitg-fpc64-256"),
+    "vjepa2-ac-vitg": dump_vjepa2_ac,
     "vjepa2-vitl-fpc16-256-ssv2": dump_vjepa2_ssv2,
     "vjepa2_1-vitb-384": dump_vjepa2_1,
     "levjepa-vitl16": dump_levjepa,

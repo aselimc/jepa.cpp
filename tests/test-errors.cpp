@@ -324,6 +324,70 @@ static void test_loader() {
     forge(tmp("p2.gguf"), o); load_case("load/lewm-predictor-without-tensors", tmp("p2.gguf"));
     o = forge_opts{}; o.head_kind = "attentive_pool";
     forge(tmp("p3.gguf"), o); load_case("load/head-without-tensors", tmp("p3.gguf"));
+
+    // V-JEPA 2-AC: every invariant src/vjepa2_ac.cpp relies on, broken one at a time. Without these
+    // the graph builder would divide by a zero grid, index a conditioning row that does not exist,
+    // rotate an odd head width inside jepa_rope3d_apply, or matmul the wrong action width.
+    o = forge_opts{}; o.ac_pred = true; o.ac_drop_tensors = true;
+    forge(tmp("a1.gguf"), o); load_case("load/ac-predictor-without-tensors", tmp("a1.gguf"));
+    o = forge_opts{}; o.ac_pred = true; o.ac_action_dim = 0;
+    forge(tmp("a2.gguf"), o); load_case("load/ac-predictor-no-action-dim", tmp("a2.gguf"));
+    o = forge_opts{}; o.ac_pred = true; o.ac_state_dim = 0;
+    forge(tmp("a3.gguf"), o); load_case("load/ac-predictor-no-state-dim", tmp("a3.gguf"));
+    o = forge_opts{}; o.ac_pred = true; o.ac_cond_tokens = 0;
+    forge(tmp("a4.gguf"), o); load_case("load/ac-predictor-no-cond-tokens", tmp("a4.gguf"));
+    o = forge_opts{}; o.ac_pred = true; o.ac_grid = 0;
+    forge(tmp("a5.gguf"), o); load_case("load/ac-predictor-no-grid", tmp("a5.gguf"));
+    o = forge_opts{}; o.ac_pred = true; o.ac_frames = 0;
+    forge(tmp("a6.gguf"), o); load_case("load/ac-predictor-no-frame-slots", tmp("a6.gguf"));
+    o = forge_opts{}; o.ac_pred = true; o.ac_pred_dim = 6; o.ac_pred_heads = 2; o.ac_pred_ffn = 12;
+    forge(tmp("a7.gguf"), o); load_case("load/ac-predictor-odd-head-width", tmp("a7.gguf"));
+    o = forge_opts{}; o.ac_pred = true; o.ac_bad_action_shape = true;
+    forge(tmp("a8.gguf"), o); load_case("load/ac-predictor-action-embed-shape", tmp("a8.gguf"));
+
+    // ... and the argument guards of the entry points themselves, on a forged AC model that DOES load.
+    o = forge_opts{}; o.ac_pred = true;
+    forge(tmp("a9.gguf"), o);
+    if (jepa_model * am = jepa_model_load(tmp("a9.gguf").c_str(), false)) {
+        jepa_context * ac = jepa_context_new(am, jepa_context_default_params());
+        const int HW = jepa_ac_tokens_per_frame(am), A = jepa_ac_action_dim(am), S = jepa_ac_state_dim(am);
+        const int D = jepa_model_embed_dim(am), F = jepa_ac_max_frames(am);
+        std::vector<float> c((size_t) (F + 1) * HW * D, 0.1f), av((size_t) (F + 1) * A, 0.0f),
+                           sv((size_t) (F + 1) * S, 0.0f);
+        jepa_output o2 = {};
+        jepa_error_reset();
+        check("ac/predict-null-ctx", jepa_ac_predict(nullptr, c.data(), 1, 1, av.data(), sv.data(), &o2) != 0, false);
+        jepa_error_reset();
+        check("ac/predict-null-context", jepa_ac_predict(ac, nullptr, 1, 1, av.data(), sv.data(), &o2) != 0, false);
+        jepa_error_reset();
+        check("ac/predict-zero-frames", jepa_ac_predict(ac, c.data(), 0, 1, av.data(), sv.data(), &o2) != 0);
+        jepa_error_reset();
+        check("ac/predict-zero-batch", jepa_ac_predict(ac, c.data(), 1, 0, av.data(), sv.data(), &o2) != 0);
+        jepa_error_reset();
+        check("ac/predict-too-many-frames",
+              jepa_ac_predict(ac, c.data(), F + 1, 1, av.data(), sv.data(), &o2) != 0);
+        std::vector<float> ro((size_t) HW * D, 0.0f);
+        jepa_error_reset();
+        check("ac/rollout-zero-candidates",
+              jepa_ac_rollout(ac, c.data(), 1, sv.data(), av.data(), nullptr, 0, 1, ro.data()) != 0);
+        jepa_error_reset();
+        check("ac/rollout-past-frame-slots",
+              jepa_ac_rollout(ac, c.data(), 1, sv.data(), av.data(), nullptr, 1, F + 1, ro.data()) != 0);
+        // and the masked / lewm entry points must refuse an AC file by name
+        jepa_output menc = {};
+        std::vector<float> rows((size_t) HW * D, 0.1f);
+        menc.data = rows.data(); menc.n_tokens = HW; menc.dim = D;
+        jepa_error_reset();
+        check("ac/masked-predict-refuses-ac", jepa_predict(ac, &menc, nullptr, HW, nullptr, HW, &o2) != 0);
+        jepa_error_reset();
+        check("ac/lewm-predict-refuses-ac",
+              jepa_lewm_predict(ac, rows.data(), av.data(), 1, &o2) != 0);
+        jepa_context_free(ac);
+        jepa_model_free(am);
+    } else {
+        printf("FAIL %-34s the forged AC model did not load\n", "ac/forged-model-loads");
+        g_fail++;
+    }
 }
 
 // --------------------------------------------------------------------------------------------

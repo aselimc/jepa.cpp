@@ -25,6 +25,14 @@ struct forge_opts {
     const char * attn_mode = nullptr;   // absent = "full"
     const char * pred_kind = nullptr;
     const char * head_kind = nullptr;
+    // A complete, loadable V-JEPA 2-AC predictor (jepa.pred.kind = "ac", metadata AND tensors),
+    // so the AC-specific loader checks and the jepa_ac_* argument guards can be exercised without
+    // the 5 GB released file. Each knob below breaks exactly one of those invariants.
+    bool ac_pred = false;
+    int  ac_pred_dim = 8, ac_pred_heads = 2, ac_pred_layers = 1, ac_pred_ffn = 16;
+    int  ac_action_dim = 4, ac_state_dim = 4, ac_cond_tokens = 2, ac_grid = 2, ac_frames = 3;
+    bool ac_drop_tensors = false;      // metadata promises a predictor the file does not carry
+    bool ac_bad_action_shape = false;  // pred.action_embed.weight with the wrong input width
     int  n_registers = 0;
     int  extra_patch_in = 0;            // +N on enc.patch_embed.weight ne[0]: a shape mismatch
     int  ln1_len = 0;                   // 0 = embed_dim; anything else is a norm weight that cannot broadcast
@@ -86,6 +94,25 @@ static void forge(const std::string & path, const forge_opts & o) {
     gguf_set_val_f32(gg, "jepa.enc.ln_eps", o.ln_eps);
     if (o.attn_mode) gguf_set_val_str(gg, "jepa.enc.attn_mode", o.attn_mode);
     if (o.pred_kind) gguf_set_val_str(gg, "jepa.pred.kind", o.pred_kind);
+    if (o.ac_pred) {
+        gguf_set_val_str(gg, "jepa.pred.kind", "ac");
+        gguf_set_val_i32(gg, "jepa.pred.embed_dim", o.ac_pred_dim);
+        gguf_set_val_i32(gg, "jepa.pred.n_layer", o.ac_pred_layers);
+        gguf_set_val_i32(gg, "jepa.pred.n_head", o.ac_pred_heads);
+        gguf_set_val_i32(gg, "jepa.pred.ffn_dim", o.ac_pred_ffn);
+        gguf_set_val_i32(gg, "jepa.pred.out_dim", o.embed_dim);
+        gguf_set_val_i32(gg, "jepa.pred.action_dim", o.ac_action_dim);
+        gguf_set_val_i32(gg, "jepa.pred.state_dim", o.ac_state_dim);
+        gguf_set_val_i32(gg, "jepa.pred.n_cond_tokens", o.ac_cond_tokens);
+        gguf_set_val_str(gg, "jepa.pred.cond_order", "action,state");
+        gguf_set_val_i32(gg, "jepa.pred.grid_size", o.ac_grid);
+        gguf_set_val_i32(gg, "jepa.pred.n_frames", o.ac_frames);
+        gguf_set_val_bool(gg, "jepa.pred.frame_causal", true);
+        gguf_set_val_str(gg, "jepa.pred.rope_freq_layout", "tiled");
+        gguf_set_val_f32(gg, "jepa.pred.ln_eps", 1e-6f);
+        gguf_set_val_bool(gg, "jepa.pred.normalize_reps", true);
+        gguf_set_val_f32(gg, "jepa.pred.norm_reps_eps", 1e-5f);
+    }
     if (o.head_kind) gguf_set_val_str(gg, "jepa.head.kind", o.head_kind);
 
     const float mean[3] = { 0.485f, 0.456f, 0.406f };
@@ -132,6 +159,42 @@ static void forge(const std::string & path, const forge_opts & o) {
     }
     add_t(ctx, gg, "enc.norm.weight", D, 0);
     add_t(ctx, gg, "enc.norm.bias", D, 0);
+
+    if (o.ac_pred && !o.ac_drop_tensors) {
+        const int64_t Dp = o.ac_pred_dim, Fp = o.ac_pred_ffn;
+        const int64_t inner = (int64_t) o.ac_pred_heads * (Dp / o.ac_pred_heads);
+        add_t(ctx, gg, "pred.embed.weight", D, Dp);
+        add_t(ctx, gg, "pred.embed.bias", Dp, 0);
+        // A zero action/state width is a metadata-only case (the loader has to refuse it before any
+        // tensor is looked at); ggml cannot hold a zero-row tensor, so skip those two here.
+        if (o.ac_action_dim > 0) {
+            add_t(ctx, gg, "pred.action_embed.weight", o.ac_bad_action_shape ? o.ac_action_dim + 1 : o.ac_action_dim, Dp);
+            add_t(ctx, gg, "pred.action_embed.bias", Dp, 0);
+        }
+        if (o.ac_state_dim > 0) {
+            add_t(ctx, gg, "pred.state_embed.weight", o.ac_state_dim, Dp);
+            add_t(ctx, gg, "pred.state_embed.bias", Dp, 0);
+        }
+        for (int i = 0; i < o.ac_pred_layers; i++) {
+            const std::string q = "pred.blk." + std::to_string(i) + ".";
+            add_t(ctx, gg, (q + "ln1.weight").c_str(), Dp, 0);
+            add_t(ctx, gg, (q + "ln1.bias").c_str(), Dp, 0);
+            add_t(ctx, gg, (q + "attn_qkv.weight").c_str(), Dp, 3 * inner);
+            add_t(ctx, gg, (q + "attn_qkv.bias").c_str(), 3 * inner, 0);
+            add_t(ctx, gg, (q + "attn_out.weight").c_str(), inner, Dp);
+            add_t(ctx, gg, (q + "attn_out.bias").c_str(), Dp, 0);
+            add_t(ctx, gg, (q + "ln2.weight").c_str(), Dp, 0);
+            add_t(ctx, gg, (q + "ln2.bias").c_str(), Dp, 0);
+            add_t(ctx, gg, (q + "ffn_up.weight").c_str(), Dp, Fp);
+            add_t(ctx, gg, (q + "ffn_up.bias").c_str(), Fp, 0);
+            add_t(ctx, gg, (q + "ffn_down.weight").c_str(), Fp, Dp);
+            add_t(ctx, gg, (q + "ffn_down.bias").c_str(), Dp, 0);
+        }
+        add_t(ctx, gg, "pred.norm.weight", Dp, 0);
+        add_t(ctx, gg, "pred.norm.bias", Dp, 0);
+        add_t(ctx, gg, "pred.proj.weight", Dp, D);
+        add_t(ctx, gg, "pred.proj.bias", D, 0);
+    }
 
     if (!gguf_write_to_file(gg, path.c_str(), false)) {
         fprintf(stderr, "cannot forge %s\n", path.c_str());

@@ -34,3 +34,21 @@ ggml_tensor * jepa_build_predictor_masked(jepa_context * ctx, ggml_tensor * inp,
 // Returns [D, T] F32: row t is pred.proj(...) of frame t, i.e. the predicted *next* projected
 // embedding given frames 0..t (the attention is causal over frames).
 ggml_tensor * jepa_build_lewm(jepa_context * ctx, ggml_tensor * emb, ggml_tensor * act, ggml_tensor * mask);
+
+// ---------------------------------------------------------------------------------------------
+// V-JEPA 2-AC action-conditioned predictor (vjepa2_ac.cpp)
+// ---------------------------------------------------------------------------------------------
+// RoPE parameters of the AC predictor over `n_frames` frames: the (n_frames, grid, grid) grid the
+// token ids below are decoded on, head_dim = jepa.pred.embed_dim / n_head (64), tiled layout.
+jepa_rope3d_params jepa_ac_rope_params(const jepa_model & m, int n_frames);
+
+// Build the AC predictor graph on ctx->ctx_g.
+//   ctx_in  : [enc_dim, n_frames*tokens_per_frame, B] F32 (encoder latents), caller-created
+//   act_in  : [action_dim, n_frames, B] F32, st_in: [state_dim, n_frames, B] F32
+//   mask    : [N, N] F16 block-causal mask over frames (nullptr for one frame), N = n_frames*(K+HW)
+//   cos/sin : [head_dim, 1, N] F32 (jepa_rope3d_tables_ids on the interleaved id list)
+//   n_out   : trailing frames to project (n_frames for every prefix, 1 for the next frame only)
+//   returns : [jepa.pred.out_dim, n_out*tokens_per_frame, B] F32
+ggml_tensor * jepa_build_ac(jepa_context * ctx, ggml_tensor * ctx_in, ggml_tensor * act_in,
+                            ggml_tensor * st_in, ggml_tensor * mask, ggml_tensor * cos_t,
+                            ggml_tensor * sin_t, int n_out);

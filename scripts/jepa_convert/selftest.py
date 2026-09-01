@@ -298,6 +298,100 @@ def lewm_predictor_forward(m: Model, emb: np.ndarray, actions: np.ndarray) -> np
 
 
 # ----------------------------------------------------------------------------- references
+# ----------------------------------------------------------------------------- V-JEPA 2-AC predictor
+def ac_block_causal_mask(T: int, n_per_frame: int) -> np.ndarray:
+    """[N, N] bool, True = "query (row) may attend key (column)".
+
+    facebookresearch/vjepa2 src/models/utils/modules.py::build_action_block_causal_attention_mask
+    (:12-24): whole n_per_frame x n_per_frame blocks, block (t1, t2) open iff t2 <= t1.  The
+    conditioning rows of a frame are inside its block, so they are visible to (and see) exactly the
+    same frames as its patch rows.
+    """
+    N = T * n_per_frame
+    frame = np.arange(N) // n_per_frame
+    return frame[:, None] >= frame[None, :]
+
+
+def ac_token_ids(T: int, grid: int, n_cond: int) -> np.ndarray:
+    """Grid ids of the T*(n_cond + grid^2) predictor rows, in sequence order.
+
+    Patch (t, h, w) -> t*grid^2 + h*grid + w, the encoder's own id.  A conditioning row of frame t
+    gets t*grid^2, i.e. h = w = 0: its height/width rotations are cos 1 / sin 0 (the identity), which
+    is exactly what ACRoPEAttention does to the action and state tokens -- it rotates only their
+    first d_dim lanes, with pos = t, and leaves the rest alone (modules.py:186-198).
+    """
+    ids = []
+    for t in range(T):
+        base = t * grid * grid
+        ids += [base] * n_cond
+        ids += [base + i for i in range(grid * grid)]
+    return np.asarray(ids, dtype=np.int64)
+
+
+def ac_predictor_forward(m: Model, context: np.ndarray, actions: np.ndarray, states: np.ndarray) -> np.ndarray:
+    """Executable spec of jepa.pred.kind == "ac" (src/vjepa2_ac.cpp, docs/gguf-schema.md).
+
+    context [T*HW, enc_dim], actions [T, action_dim], states [T, state_dim]
+    -> [T*HW, out_dim], row block t being the prediction of frame t+1 given frames 0..t.
+    """
+    sys.path.insert(0, str(HERE))
+    from vjepa2_numpy_ref import apply_rope, rope_positions, rope_tables
+
+    hp = m.hp
+    D = hp["jepa.pred.embed_dim"]
+    n_head = hp["jepa.pred.n_head"]
+    hd = D // n_head
+    eps = hp["jepa.pred.ln_eps"]
+    act = act_fn(hp["jepa.pred.act"])
+    grid = hp["jepa.pred.grid_size"]
+    n_cond = hp["jepa.pred.n_cond_tokens"]
+    HW = grid * grid
+    T = context.shape[0] // HW
+    if context.shape[0] != T * HW:
+        raise ValueError(f"context has {context.shape[0]} rows, not a multiple of {HW}")
+
+    x = linear(context, m.get("pred.embed.weight"), m.get("pred.embed.bias")).reshape(T, HW, D)
+    a = linear(actions, m.get("pred.action_embed.weight"), m.get("pred.action_embed.bias"))
+    s = linear(states, m.get("pred.state_embed.weight"), m.get("pred.state_embed.bias"))
+    # [a_t, s_t, patches...] per frame (ac_predictor.py:146-153)
+    seq = np.concatenate([a[:, None, :], s[:, None, :], x], axis=1).reshape(T * (n_cond + HW), D)
+
+    ids = ac_token_ids(T, grid, n_cond)
+    pt, ph, pw = rope_positions(ids, grid, grid)
+    cos, sin = rope_tables(pt, ph, pw, hd, hp["jepa.enc.rope_theta"], hp["jepa.pred.rope_freq_layout"])
+    mask = ac_block_causal_mask(T, n_cond + HW) if hp.get("jepa.pred.frame_causal") else None
+
+    N = seq.shape[0]
+    for i in range(hp["jepa.pred.n_layer"]):
+        b = f"pred.blk.{i}."
+        h = layer_norm(seq, m.get(b + "ln1.weight"), m.get(b + "ln1.bias"), eps)
+        qkv = linear(h, m.get(b + "attn_qkv.weight"), m.opt(b + "attn_qkv.bias"))
+        q = qkv[:, :D].reshape(N, n_head, hd).transpose(1, 0, 2)
+        k = qkv[:, D:2 * D].reshape(N, n_head, hd).transpose(1, 0, 2)
+        v = qkv[:, 2 * D:].reshape(N, n_head, hd).transpose(1, 0, 2)
+        q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        att = (q @ k.transpose(0, 2, 1)) / math.sqrt(hd)
+        if mask is not None:
+            att = np.where(mask[None], att, -np.inf)
+        att = att - att.max(-1, keepdims=True)
+        att = np.exp(att)
+        att /= att.sum(-1, keepdims=True)
+        o = (att @ v).transpose(1, 0, 2).reshape(N, D)
+        seq = seq + linear(o, m.get(b + "attn_out.weight"), m.get(b + "attn_out.bias"))
+        h = layer_norm(seq, m.get(b + "ln2.weight"), m.get(b + "ln2.bias"), eps)
+        seq = seq + linear(act(linear(h, m.get(b + "ffn_up.weight"), m.get(b + "ffn_up.bias"))),
+                           m.get(b + "ffn_down.weight"), m.get(b + "ffn_down.bias"))
+
+    rows = seq.reshape(T, n_cond + HW, D)[:, n_cond:, :].reshape(T * HW, D)   # ac_predictor.py:184-185
+    rows = layer_norm(rows, m.get("pred.norm.weight"), m.get("pred.norm.bias"), eps)
+    return linear(rows, m.get("pred.proj.weight"), m.get("pred.proj.bias"))
+
+
+def ac_normalize(x: np.ndarray, eps: float = 1e-5) -> np.ndarray:
+    """Meta's `F.layer_norm(h, (D,))` between world-model steps (world_model_wrapper.py:51/61)."""
+    return layer_norm(x, None, None, eps)
+
+
 def load_images(n: int, size: int = 224):
     from PIL import Image
     files = sorted(MEDIA.glob("*.jpg"))[:n]

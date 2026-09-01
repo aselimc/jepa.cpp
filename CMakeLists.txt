@@ -57,6 +57,7 @@ add_library(jepa STATIC
   src/rope3d.cpp
   src/predictor.cpp
   src/lewm.cpp
+  src/vjepa2_ac.cpp
 )
 target_include_directories(jepa PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(jepa PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/third_party)

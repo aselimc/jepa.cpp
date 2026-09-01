@@ -391,6 +391,10 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
         p.context_proj   = r.getb("jepa.pred.context_proj", false);
         p.action_dim  = r.geti("jepa.pred.action_dim", 0);
         p.state_dim   = r.geti("jepa.pred.state_dim", 0);
+        p.n_cond_tokens = r.geti("jepa.pred.n_cond_tokens", 0);
+        p.cond_order  = r.gets("jepa.pred.cond_order", "");
+        p.normalize_reps = r.getb("jepa.pred.normalize_reps", false);
+        p.norm_reps_eps  = r.getf("jepa.pred.norm_reps_eps", 1e-5f);
         p.frame_causal = r.getb("jepa.pred.frame_causal", false);
         p.n_frames    = r.geti("jepa.pred.n_frames", 0);
         p.head_dim    = r.geti("jepa.pred.head_dim", 0);
@@ -414,7 +418,11 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
             !kv_range("jepa.pred.action_dim",    p.action_dim,    0, JEPA_LIMIT_EMBED_DIM) ||
             !kv_range("jepa.pred.state_dim",     p.state_dim,     0, JEPA_LIMIT_EMBED_DIM) ||
             !kv_range("jepa.pred.n_frames",      p.n_frames,      0, JEPA_LIMIT_N_FRAMES)  ||
+            // one extra row per frame per conditioning token, so this multiplies the sequence
+            // length the AC graph builds; JEPA_LIMIT_N_HEAD is a small, safe ceiling for it
+            !kv_range("jepa.pred.n_cond_tokens", p.n_cond_tokens, 0, JEPA_LIMIT_N_HEAD)    ||
             !kv_finite("jepa.pred.ln_eps",       p.ln_eps,        0.0f, 1.0f)              ||
+            !kv_finite("jepa.pred.norm_reps_eps", p.norm_reps_eps, 0.0f, 1.0f)             ||
             !kv_finite("jepa.pred.adaln_eps",    p.adaln_eps,     0.0f, 1.0f)) {
             return false;
         }
@@ -439,6 +447,35 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
             jepa_log("jepa: a masked predictor needs a position grid: jepa.pred.grid_size is %d and "
                      "jepa.enc.img_size / jepa.enc.patch_size is %d\n", p.grid_size, e.grid_size());
             return false;
+        }
+        // --- V-JEPA 2-AC (docs/gguf-schema.md "vjepa2_ac"; src/vjepa2_ac.cpp builds the graph)
+        if (p.kind == "ac") {
+            if (p.action_dim <= 0 || p.state_dim <= 0) {
+                jepa_log("jepa: an ac predictor needs jepa.pred.action_dim > 0 (is %d) and "
+                         "jepa.pred.state_dim > 0 (is %d)\n", p.action_dim, p.state_dim);
+                return false;
+            }
+            if (p.n_cond_tokens <= 0) {
+                jepa_log("jepa: an ac predictor needs jepa.pred.n_cond_tokens > 0 (is %d): it is how "
+                         "many conditioning rows precede each frame's patch tokens\n", p.n_cond_tokens);
+                return false;
+            }
+            if (p.grid_size <= 0) {
+                // jepa_ac_predict divides the row count by grid*grid to recover the frame count and
+                // decodes the RoPE ids on that grid; without it there is no token layout at all.
+                jepa_log("jepa: an ac predictor needs jepa.pred.grid_size > 0 (is %d)\n", p.grid_size);
+                return false;
+            }
+            if (p.head_dim_eff() % 2 != 0) {
+                jepa_log("jepa: the ac predictor rotates pairs with 3-D RoPE, so its head width has "
+                         "to be even; it is %d\n", p.head_dim_eff());
+                return false;
+            }
+            if (p.n_frames <= 0) {
+                jepa_log("jepa: an ac predictor needs jepa.pred.n_frames > 0 (is %d): it caps the "
+                         "frame slots the block-causal mask is built for\n", p.n_frames);
+                return false;
+            }
         }
         if (p.kind == "lewm" && (p.action_dim <= 0 || p.n_frames <= 0)) {
             jepa_log("jepa: a lewm predictor needs jepa.pred.action_dim > 0 (is %d) and "
@@ -886,6 +923,11 @@ jepa_model * jepa_model_load_ex(const char * gguf_path, const jepa_model_params 
             ok = false;
         }
     }
+    if (p.present && p.kind == "ac") {
+        ok &= require_tensors(*m, "the AC predictor",
+                              { "pred.embed.weight", "pred.action_embed.weight", "pred.state_embed.weight",
+                                "pred.norm.weight", "pred.proj.weight" });
+    }
     if (p.present && p.kind == "lewm") {
         ok &= require_tensors(*m, "the LeWM predictor",
                               { "pred.action_embed.0.weight", "pred.action_embed.2.weight",
@@ -944,6 +986,12 @@ jepa_model * jepa_model_load_ex(const char * gguf_path, const jepa_model_params 
         ok &= check_shape(*m, "pred.proj.weight", Dp, p.out_dim);
         ok &= check_vec(*m, "pred.proj.bias", p.out_dim);
         if (p.action_dim > 0) ok &= check_shape(*m, "pred.action_embed.0.weight", p.action_dim);
+        // AC: single Linear per conditioning stream, action_dim/state_dim -> pred embed_dim. Both
+        // feed a ggml_concat with the projected context rows, which asserts on a width mismatch.
+        if (p.action_dim > 0) ok &= check_shape(*m, "pred.action_embed.weight", p.action_dim, Dp);
+        if (p.state_dim  > 0) ok &= check_shape(*m, "pred.state_embed.weight",  p.state_dim,  Dp);
+        ok &= check_vec(*m, "pred.action_embed.bias", Dp);
+        ok &= check_vec(*m, "pred.state_embed.bias", Dp);
     }
     if (m->hp.head.present && m->hp.head.kind == "attentive_pool") {
         ok &= require_tensors(*m, "the attentive-pool head",

@@ -102,12 +102,13 @@ void jepa_rope3d_tables_ids(const jepa_rope3d_params & p, const int32_t * ids, i
                             bool signed_sin = true);
 
 // Build the rotation in a ggml graph.
-//   x      : F32 [head_dim, n_head, N]; rows (ne0) must be contiguous, strides over n_head / N are
-//            free, so a view into a fused qkv projection is fine (one ggml_cont is inserted for it).
-//            head_dim must be even.
-//   cos_t  : F32 [head_dim, 1, N] (the tables above), broadcast over n_head
+//   x      : F32 [head_dim, n_head, N] or [head_dim, n_head, N, B]; rows (ne0) must be contiguous,
+//            strides over n_head / N are free, so a view into a fused qkv projection is fine (one
+//            ggml_cont is inserted for it). head_dim must be even. B is the independent-item batch
+//            (the AC predictor's K action candidates, src/vjepa2_ac.cpp); one table serves all of it.
+//   cos_t  : F32 [head_dim, 1, N] (the tables above), broadcast over n_head and over B
 //   sin_t  : F32 [head_dim, 1, N] — the SIGNED table (see "Implementation" above)
-// Returns a new contiguous F32 tensor [head_dim, n_head, N]. Backend-agnostic: cont (only when x is
+// Returns a new contiguous F32 tensor of x's shape. Backend-agnostic: cont (only when x is
 // a view) + roll + 2 mul + add, all of which have CPU and CUDA kernels.
 struct ggml_tensor * jepa_rope3d_apply(struct ggml_context * ctx, struct ggml_tensor * x,
                                        struct ggml_tensor * cos_t, struct ggml_tensor * sin_t);
