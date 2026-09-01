@@ -1,0 +1,102 @@
+{
+ "task": "TensorRT fp16 encoder baseline on one GPU \u2014 NOT jepa.cpp, the vendor's own compiler for this card and the ceiling the portable engines are read against",
+ "generated_by": "scripts/tensorrt_baseline.py",
+ "protocol": {
+  "engine": "trt.Builder with FP16 enabled, built from an opset-17 ONNX export of the same HuggingFace module scripts/torch_gpu_baseline.py times",
+  "timing": "3 warmup + 7 timed executions, an explicit stream synchronise around each; the H2D input copy and the D2H output copy are outside the timed region, matching what jepa-bench reports",
+  "input": "the stored preprocessed tensor of a reference fixture \u2014 the same pixels jepa.cpp and PyTorch are timed on",
+  "ms": "mean/min/median/std over the timed executions"
+ },
+ "box": {
+  "device_index": 1,
+  "tensorrt": "11.2.1.2",
+  "date_utc": "2026-09-01 23:28 UTC",
+  "driver": "580.173.02, NVIDIA RTX 4500 Ada Generation"
+ },
+ "rows": [
+  {
+   "model": "ijepa_vith14_1k",
+   "key": "ijepa_vith14_1k",
+   "precision": "fp16",
+   "shape": "224x224",
+   "frames": 1,
+   "tokens": 256,
+   "warmup": 3,
+   "repeat": 7,
+   "ms_mean": 4.977,
+   "ms_min": 4.974,
+   "ms_median": 4.978,
+   "ms_std": 0.003,
+   "engine_build_s": 14.1,
+   "engine_bytes": 1268098556,
+   "output_shape": [
+    1,
+    256,
+    1280
+   ],
+   "io_dtypes": [
+    "DataType.FLOAT",
+    "DataType.FLOAT"
+   ],
+   "output_cos_vs_reference": 0.9944307
+  },
+  {
+   "model": "ijepa_vith14_1k",
+   "key": "ijepa_vith14_1k",
+   "precision": "fp32",
+   "shape": "224x224",
+   "frames": 1,
+   "tokens": 256,
+   "warmup": 3,
+   "repeat": 7,
+   "ms_mean": 11.708,
+   "ms_min": 11.646,
+   "ms_median": 11.711,
+   "ms_std": 0.028,
+   "engine_build_s": 7.8,
+   "engine_bytes": 2525774828,
+   "output_shape": [
+    1,
+    256,
+    1280
+   ],
+   "io_dtypes": [
+    "DataType.FLOAT",
+    "DataType.FLOAT"
+   ],
+   "output_cos_vs_reference": 0.9999815
+  },
+  {
+   "model": "vjepa2-vitl-fpc64-256",
+   "key": "vjepa2-vitl-fpc64-256@16",
+   "shape": "16f 256x256",
+   "skipped": "RuntimeError: ONNX parse failed: In node 6608 with name: /m/encoder/embeddings/patch_embeddings/proj/Conv and operator: Conv (parseNode): INVALID_NODE: Invalid Node - /m/encoder/embeddings/patch_embeddings/proj/Conv\nITensor::getDimensions: Error Code 4: API Usage Error (/m/encoder/embeddings/patch_embeddings/proj/Conv: IConvolutionLayer `input` and `kernel` must be of same type. `input` type is Float but `kernel` is of type Half. In validateTypes at /_src/optimizer/common/nodes/convolutionNode.cpp:87)\nITensor::getDimensions: Error Code 4: API Usage Error (Output shape can not be computed for node /m/encoder/embeddings/patch_embeddings/proj/Conv. In needTypeAndDimensions at /_src/optimizer/shapeof/graphShapeAnalyzer.cpp:2998)"
+  },
+  {
+   "model": "vjepa2-vitl-fpc64-256",
+   "key": "vjepa2-vitl-fpc64-256@16",
+   "precision": "fp32",
+   "shape": "16f 256x256",
+   "frames": 16,
+   "tokens": 2048,
+   "warmup": 3,
+   "repeat": 7,
+   "ms_mean": 100.024,
+   "ms_min": 99.987,
+   "ms_median": 100.024,
+   "ms_std": 0.033,
+   "engine_build_s": 24.0,
+   "engine_bytes": 1223525940,
+   "output_shape": [
+    1,
+    2048,
+    1024
+   ],
+   "io_dtypes": [
+    "DataType.FLOAT",
+    "DataType.FLOAT"
+   ],
+   "output_cos_vs_reference": 0.9997522
+  }
+ ]
+}
