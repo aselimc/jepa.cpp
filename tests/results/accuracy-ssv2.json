@@ -1,7 +1,7 @@
 {
  "benchmark": "Something-Something-v2 validation accuracy (single view) \u2014 PyTorch vs jepa.cpp",
  "date": "2026-09-01",
- "commit": "8b025dd",
+ "commit": "78f3b5e",
  "model": {
   "name": "vjepa2-vitl-fpc16-256-ssv2",
   "label": "V-JEPA 2 ViT-L/16 (fpc16-256, SSv2 head)",
@@ -20,7 +20,7 @@
   "views": "single view, no test-time augmentation: 1 temporal clip x 1 spatial crop",
   "frames": "16 frames, idx = round(linspace(0, T_total-1, n)) over all PyAV-decoded rgb24 frames",
   "preprocess": "shortest edge -> 292 (bilinear), centre crop 256, /255, mean (0.485,0.456,0.406) / std (0.229,0.224,0.225) \u2014 the checkpoint's own video_preprocessor_config.json, applied by each backend to the same THWC uint8 frames",
-  "reference": "transformers VJEPA2ForVideoClassification, torch.no_grad, float32, TF32 disabled on both matmul and cuDNN",
+  "reference": "transformers VJEPA2ForVideoClassification, torch.no_grad, float32, TF32 disabled on both matmul and cuDNN, 4 clips per forward (the processor is batch-invariant, the model forward moves a logit by ~2e-04 and no argmax with it)",
   "metric": "top-1 / top-5 over the 174 SSv2 classes; agreement = fraction of clips where the jepa.cpp argmax equals the PyTorch argmax; logit cos = per-clip cosine between the two 174-vectors",
   "scopes": {
    "full": "all validation clips",
@@ -817,6 +817,7 @@
  "cpu_vs_cuda": {
   "cpp-cpu-f16-sub10": {
    "cuda_run": "cpp-cuda1-f16-full",
+   "dtype": "f16",
    "n_clips": 2478,
    "top1_agreement": 0.9995964487489911,
    "logit_cos_mean": 0.9999855519412026,
@@ -825,6 +826,7 @@
   },
   "cpp-cpu-f32-sub10": {
    "cuda_run": "cpp-cuda1-f32-full",
+   "dtype": "f32",
    "n_clips": 2478,
    "top1_agreement": 0.9975786924939467,
    "logit_cos_mean": 0.9999643963874466,

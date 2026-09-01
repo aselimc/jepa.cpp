@@ -36,7 +36,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import subprocess
 import sys
 import time
@@ -135,12 +134,18 @@ def _npy_path(out: Path, cid: str) -> Path:
 
 
 def _decode_one(job):
-    cid, src, dst, n_frames = job
+    cid, src, dst, n_frames, prev = job
     dst = Path(dst)
     if dst.exists():
+        # A warm cache still has to answer with the *whole* record — `frame_indices`,
+        # `n_frames_total` and `fps` are what the committed manifest is built from, and a run that
+        # dropped them would write an index that silently degrades the artifact on the next
+        # `report`.  They are carried over from the previous index rather than re-decoded.
         a = np.load(dst, mmap_mode="r")
+        rec = {k: v for k, v in (prev or {}).items()
+               if k in ("n_frames_total", "frame_indices", "fps")}
         return {"id": cid, "npy": str(dst), "cached": True,
-                "frame_size_hw": [int(a.shape[1]), int(a.shape[2])]}
+                "frame_size_hw": [int(a.shape[1]), int(a.shape[2])], **rec}
     try:
         frames, fps = decode_video(Path(src))
         fr, idx = sample_frames(frames, n_frames)
@@ -160,8 +165,11 @@ def stage_frames(a) -> None:
     out = Path(a.out) if a.out else shared(DATA) / "frames-val"
     vids = shared(DATA) / "videos"
     ents = validation_entries()
-    jobs = [(e["id"], str(vids / (e["id"] + ".webm")), str(_npy_path(out, e["id"])), a.frames)
-            for e in ents]
+    idx_p = out / "index.json"
+    prev_idx = json.loads(idx_p.read_text()) if idx_p.exists() else {}
+    prev = {r["id"]: r for r in prev_idx.get("clips", [])}
+    jobs = [(e["id"], str(vids / (e["id"] + ".webm")), str(_npy_path(out, e["id"])), a.frames,
+             prev.get(e["id"])) for e in ents]
     if a.limit:
         jobs = jobs[:a.limit]
     print(f"{len(jobs)} validation clips, {a.frames} frames each -> {out} ({a.jobs} jobs)", flush=True)
@@ -173,12 +181,18 @@ def stage_frames(a) -> None:
                 print(f"  {i}/{len(jobs)}  {time.time()-t0:.1f}s", flush=True)
     wall = time.time() - t0
     bad = [r for r in recs if "error" in r]
-    idx = out / "index.json"
+    n_new = sum(1 for r in recs if not r.get("cached") and "error" not in r)
+    # `wall_s` is the time the cache cost to build, and a second pass over a warm cache costs
+    # nothing — recording that 0.0 would quietly erase a measured figure from the artifact, so a
+    # pass that decodes nothing keeps the one it found.
+    idx = idx_p
     idx.write_text(json.dumps({
         "dataset": DATA, "split": "validation", "frames": a.frames,
         "sampling": "idx = round(linspace(0, T_total-1, n)) over all PyAV-decoded rgb24 frames",
         "layout": "THWC uint8 .npy per clip", "n_clips": len(recs), "n_failed": len(bad),
-        "wall_s": round(wall, 1), "clips": recs}, indent=1))
+        "n_decoded_this_pass": n_new,
+        "wall_s": round(wall, 1) if n_new else float(prev_idx.get("wall_s", 0.0)),
+        "clips": recs}, indent=1))
     print(f"decoded {sum(0 if r.get('cached') or 'error' in r else 1 for r in recs)}/{len(recs)} "
           f"clips in {wall:.1f}s, {len(bad)} failed -> {idx}")
     for r in bad[:20]:
@@ -238,8 +252,8 @@ def stage_torch(a) -> None:
     # fp32 and says so in the JSON.
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
-    torch.set_num_threads(a.threads)
-    os.environ.setdefault("OMP_NUM_THREADS", str(a.threads))
+    torch.set_num_threads(a.threads)   # OMP_NUM_THREADS has to be exported before torch is
+                                       # imported to have any effect, so the recipes do that
     from transformers import AutoVideoProcessor, VJEPA2ForVideoClassification
 
     work = Path(a.work)
@@ -332,8 +346,10 @@ def stage_cpp(a) -> None:
     subprocess.run(cmd, check=True)
     p = work / f"{tag}.json"
     d = json.loads(p.read_text())
-    # `dtype` is the file's suffix, not jepa-embed's `file_type`: the GGUF ftype enum cannot spell
-    # a k-quant mix, so a q4_k file reports itself as q4_0.
+    # `dtype` is the file's suffix rather than jepa-embed's `file_type`.  The two agree on every
+    # file this benchmark runs (q4_k included — `GGML_FTYPE_MOSTLY_Q4_K` exists and jepa-info
+    # prints it), but the suffix is what `--dtype` asked for and what the docs label the row with,
+    # so the label cannot drift from the request if a future writer stamps the enum differently.
     d.update({"scope": a.scope, "device": a.device, "backend": "cuda" if gpu else "cpu",
               "dtype": a.dtype, "gguf": str(gguf.relative_to(SHARED)), "loadavg_start": la0,
               "loadavg_end": loadavg(), "occupancy": occ.close()})
@@ -417,6 +433,48 @@ def _manifest(cj: dict, index: dict, n: int) -> dict:
                     f"{n} validation clips, in clips.json order", "clips": out}
 
 
+def _relpath(p: Path) -> str:
+    """Repo-relative when it can be, absolute when it cannot.
+
+    `--frames-dir` may point anywhere; `Path.relative_to` raises for a path outside the checkout,
+    and doing that here would kill `report` after a multi-hour sweep.
+    """
+    try:
+        return str(p.resolve().relative_to(SHARED))
+    except ValueError:
+        return str(p)
+
+
+def _frame_facts(index: dict, cj: dict, n: int, prev: dict) -> tuple[dict, dict]:
+    """The frame-cache half of the artifact: from the live index, or from the previous artifact.
+
+    The cache is a hundred gigabytes and change, and the sweep deletes it, so a later `report` —
+    regenerating the docs, say — would otherwise overwrite a measured decode count, wall time and
+    manifest with zeros and nulls, and `docs/accuracy-video.md` would render "0 clips decoded".
+    Whatever this run can still see wins; the rest is carried forward, the way
+    scripts/bench_accuracy_video.py carries the UCF `decode_s` forward.  With no cache present the
+    two together make `report` round-trip byte for byte from the committed artifacts alone.
+    """
+    live = [r for r in index.get("clips", []) if "npy" in r]
+    if live:
+        return ({"n_clips_decoded": len(live),
+                 "n_decode_failures": int(index.get("n_failed", 0)),
+                 "decode_failures": [r for r in index["clips"] if "error" in r][:50],
+                 "decode_s": float(index.get("wall_s", 0.0))},
+                _manifest(cj, index, n))
+    pd = prev.get("dataset") or {}
+    man = (prev.get("frame_cache") or {}).get("manifest")
+    if not man:
+        return ({"n_clips_decoded": 0, "n_decode_failures": 0, "decode_failures": [],
+                 "decode_s": 0.0}, _manifest(cj, index, n))
+    man = {**man, "clips": [{**c, "frame_indices": _Raw(c.get("frame_indices") or [])}
+                            for c in man["clips"]]}
+    return ({"n_clips_decoded": int(pd.get("n_clips_decoded", 0)),
+             "n_decode_failures": int(pd.get("n_decode_failures", 0)),
+             "decode_failures": pd.get("decode_failures") or [],
+             "decode_s": float(pd.get("decode_s", 0.0))}, man)
+
+
 def _run_rows(work: Path, cj: dict, y_all: np.ndarray, ref_all: np.ndarray | None) -> list[dict]:
     rows = []
     for p in sorted(work.glob("cpp-*-logits.npy")) + sorted(work.glob("torch-*-logits.npy")):
@@ -490,6 +548,9 @@ def stage_report(a) -> None:
     frames_dir = Path(a.frames_dir) if a.frames_dir else shared(DATA) / "frames-val"
     index_p = frames_dir / "index.json"
     index = json.loads(index_p.read_text()) if index_p.exists() else {"clips": [], "n_failed": 0}
+    out_p = Path(a.out_json)
+    prev = json.loads(out_p.read_text()) if out_p.exists() else {}
+    frames, manifest = _frame_facts(index, cj, a.manifest_clips, prev)
 
     ref_p = work / "torch-cuda1-full-logits.npy"
     if not ref_p.exists():
@@ -534,9 +595,14 @@ def stage_report(a) -> None:
                       for r in rows if r["stats"].get("gguf")}):
         g = shared("models/gguf") / f"{MODEL}-{dt}.gguf"
         labels = gguf_label_list(g)
-        gguf_check[dt] = ("not checked — the `gguf` module is not installed here" if labels is None
-                          else "identical to id2label order" if labels == cj["labels"]
-                          else f"DIFFERS from id2label ({len(labels)} labels)")
+        if labels is None:                      # no `gguf` module here — recorded, not asserted
+            gguf_check[dt] = "not checked — the `gguf` module is not installed here"
+        elif labels != cj["labels"]:
+            sys.exit(f"{g.name}: jepa.head.labels is not the checkpoint's id2label order "
+                     f"({len(labels)} labels) — every logit column in this sweep would be "
+                     "mislabelled")
+        else:
+            gguf_check[dt] = "identical to id2label order"
 
     # CPU against CUDA at the same dtype, on the clips both ran: the one comparison that isolates
     # the backend, with the engine and the file held fixed.
@@ -552,12 +618,11 @@ def stage_report(a) -> None:
         B = np.load(gpu[0]).astype(np.float64)[idx]
         cm, cn = _cos(A, B)
         cpu_vs_cuda[tag] = {"cuda_run": gpu[0].name[: -len("-logits.npy")],
-                            "n_clips": int(len(A)),
+                            "dtype": meta["dtype"], "n_clips": int(len(A)),
                             "top1_agreement": float(np.mean(A.argmax(1) == B.argmax(1))),
                             "logit_cos_mean": cm, "logit_cos_min": cn,
                             "logit_max_abs_diff": float(np.abs(A - B).max())}
 
-    n_dec = sum(1 for r in index["clips"] if "npy" in r)
     payload = {
         "benchmark": "Something-Something-v2 validation accuracy (single view) — "
                      "PyTorch vs jepa.cpp",
@@ -576,7 +641,9 @@ def stage_report(a) -> None:
                           "own video_preprocessor_config.json, applied by each backend to the same "
                           "THWC uint8 frames",
             "reference": "transformers VJEPA2ForVideoClassification, torch.no_grad, float32, "
-                         "TF32 disabled on both matmul and cuDNN",
+                         "TF32 disabled on both matmul and cuDNN, 4 clips per forward (the "
+                         "processor is batch-invariant, the model forward moves a logit by ~2e-04 "
+                         "and no argmax with it)",
             "metric": "top-1 / top-5 over the 174 SSv2 classes; agreement = fraction of clips where "
                       "the jepa.cpp argmax equals the PyTorch argmax; logit cos = per-clip cosine "
                       "between the two 174-vectors",
@@ -586,11 +653,12 @@ def stage_report(a) -> None:
         "published": PUBLISHED,
         "dataset": {
             "root": DATA, "split": "validation", "n_entries": cj["n_entries"],
-            "n_classes": len(cj["labels"]), "n_clips_decoded": n_dec,
-            "n_decode_failures": int(index.get("n_failed", 0)),
-            "decode_failures": [r for r in index["clips"] if "error" in r][:50],
+            "n_classes": len(cj["labels"]),
+            "n_clips_decoded": frames["n_clips_decoded"],
+            "n_decode_failures": frames["n_decode_failures"],
+            "decode_failures": frames["decode_failures"],
             "n_skipped": len(cj["skipped"]), "skipped": cj["skipped"][:50],
-            "decode_s": float(index.get("wall_s", 0.0)),
+            "decode_s": frames["decode_s"],
             "label_mapping": {**cj["label_mapping"], "gguf_head_labels": gguf_check},
             "clip_ids": _Raw([r["id"] for r in cj["clips"]]),
             "labels_true": _Raw([int(v) for v in y_all]),
@@ -603,10 +671,10 @@ def stage_report(a) -> None:
         "runs": rows,
         "cpu_f32_anchor": anchors,
         "cpu_vs_cuda": cpu_vs_cuda,
-        "frame_cache": {"path": str(frames_dir.relative_to(SHARED)),
+        "frame_cache": {"path": _relpath(frames_dir),
                         "note": "git-ignored, ~114 GB, deleted after the sweep; "
                                 "`frames` rebuilds it byte for byte",
-                        "manifest": _manifest(cj, index, a.manifest_clips)},
+                        "manifest": manifest},
     }
     out = Path(a.out_json)
     out.parent.mkdir(parents=True, exist_ok=True)

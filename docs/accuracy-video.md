@@ -112,7 +112,7 @@ The same checkpoint scored on the task it was trained for: the **full 24 777-cli
 - **Clip** 16 frames, idx = round(linspace(0, T_total-1, n)) over all PyAV-decoded rgb24 frames, decoded once into a THWC uint8 `.npy` every backend reads.
 - **Preprocessing** shortest edge -> 292 (bilinear), centre crop 256, /255, mean (0.485,0.456,0.406) / std (0.229,0.224,0.225) — the checkpoint's own video_preprocessor_config.json, applied by each backend to the same THWC uint8 frames.
 - **Labels** the class index is `id2label` of the checkpoint; validation.json `template` is a verbatim id2label value, and labels.json id == id2label index for all 174 classes after removing the '[' ']' placeholder brackets. The GGUFs' own `jepa.head.labels` are f16: identical to id2label order, f32: identical to id2label order, q4_k: identical to id2label order, q8_0: identical to id2label order.
-- **Reference** transformers VJEPA2ForVideoClassification, torch.no_grad, float32, TF32 disabled on both matmul and cuDNN.
+- **Reference** transformers VJEPA2ForVideoClassification, torch.no_grad, float32, TF32 disabled on both matmul and cuDNN, 4 clips per forward (the processor is batch-invariant, the model forward moves a logit by ~2e-04 and no argmax with it).
 - **Scopes** `full` = all validation clips; `sub10` = every 10th clip of the validation order; `sub100` = every 100th clip of the validation order.
 
 ### Full validation split (24 777 clips)
@@ -127,7 +127,7 @@ The same checkpoint scored on the task it was trained for: the **full 24 777-cli
 
 PyTorch and jepa.cpp read the same `.npy` frames and each applies the checkpoint's own preprocessing to them, so the only difference between the rows is the engine and the weight dtype. In clips rather than percentage points the jepa.cpp rows differ from the reference by f32 +1, f16 +1, q8_0 +19, q4_k +32 of 24 777.
 
-The published figure for this architecture is **73.7 %** top-1 (arXiv:2506.09985 Table 4, V-JEPA 2 ViT-L), measured with 16 frames x 2 temporal crops x 3 spatial crops, logits averaged across the 6 clips against the single view taken here; the model card of the released checkpoint publishes no number of its own.
+The published figure for this architecture is **73.7 %** top-1 (arXiv:2506.09985 Table 4, V-JEPA 2 ViT-L). That run aggregates 16 frames x 2 temporal crops x 3 spatial crops, logits averaged across the 6 clips; this one takes a single view. Neither the multi-view protocol nor the published run's decoder and probe are reproduced here, so the difference between the two figures is reported rather than attributed — what the rows above do settle is that the engine is not part of it. The released checkpoint's model card publishes no number of its own.
 
 ### CPU against CUDA on the `sub10` subset (2 478 clips)
 
@@ -235,8 +235,31 @@ $B torch --model vjepa2-vitl-fpc64-256 --no-skip-predictor
 $B report --out-json tests/results/accuracy-video.json --out-md docs/accuracy-video.md
 ```
 
-**Wall time at 32 threads**, measured: frame decode 4.6 s for all 405 clips (32 processes), then vjepa2-vitl-fpc64-256 torch 480 s, vjepa2-vitl-fpc64-256 f16 360 s, vjepa2-vitl-fpc64-256 q8_0 351 s, vjepa2_1-vitb-384 torch 398 s, vjepa2_1-vitb-384 f32 378 s, vjepa2_1-vitb-384 f16 360 s, vjepa2_1-vitb-384 q8_0 361 s, levjepa-vitl16 torch 777 s, levjepa-vitl16 f32 699 s, levjepa-vitl16 f16 649 s, levjepa-vitl16 q8_0 664 s, ssv2 f16 106 s, ssv2 q8_0 102 s, ssv2 pytorch 138 s, vjepa2-vitl-fpc64-256 torch control run (predictor included) 678 s — 108 min of compute in total, run strictly one stage at a time so that no clips/s number is measured against another stage. `report` takes a few seconds.
+The SSv2 validation tables come from a second harness and a second dataset, and `report` above only renders the artifact it writes. That sweep is:
 
-Every stage writes into `tmp/accuracy-video/` (git-ignored) and can be re-run alone; `lists` fixes the clip order once in `tmp/accuracy-video/clips.json`, which every feature `.npy` is indexed by, and `tmp/frames/index.json` records the sampled frame indices per clip.
+```bash
+# data/ssv2 is licence-gated — scripts/download_datasets.sh says where to get it.
+# The frame cache is a hundred gigabytes and change; delete it when the sweep is done.
+S="tmp/venv-cuda/bin/python scripts/bench_accuracy_ssv2.py"   # torch + CUDA venv
+
+$PY scripts/bench_accuracy_ssv2.py frames --jobs 48       # decode the 24 777 val clips
+$PY scripts/bench_accuracy_ssv2.py lists                  # clip order + the subsets
+$S torch --device cuda:1 --batch 4 --threads 8            # the fp32 reference
+$S cpp   --dtype f16  --device cuda:1                     # then q8_0, q4_k, f32
+$S cpp   --dtype f16  --device cpu --scope sub10 --threads 32     # then f32
+OMP_NUM_THREADS=32 $PY scripts/bench_accuracy_ssv2.py \
+      torch --device cpu --scope sub100 --batch 1 --threads 32    # the f32 anchor
+$S report --out-json tests/results/accuracy-ssv2.json
+$B report --out-json tests/results/accuracy-video.json \
+      --out-md docs/accuracy-video.md                     # picks the SSv2 artifact up
+```
+
+`bench_accuracy_ssv2.py report` carries the decode count, the decode wall time and the frame manifest forward from the artifact it is overwriting when the frame cache is no longer on the machine, so both `report` stages round-trip byte for byte from the committed artifacts alone — which is what the two commands above do on a checkout with neither dataset decoded.
+
+**Wall time of the UCF-101 sweep at 32 threads**, measured: frame decode 4.6 s for all 405 clips (32 processes), then vjepa2-vitl-fpc64-256 torch 480 s, vjepa2-vitl-fpc64-256 f16 360 s, vjepa2-vitl-fpc64-256 q8_0 351 s, vjepa2_1-vitb-384 torch 398 s, vjepa2_1-vitb-384 f32 378 s, vjepa2_1-vitb-384 f16 360 s, vjepa2_1-vitb-384 q8_0 361 s, levjepa-vitl16 torch 777 s, levjepa-vitl16 f32 699 s, levjepa-vitl16 f16 649 s, levjepa-vitl16 q8_0 664 s, ssv2 f16 106 s, ssv2 q8_0 102 s, ssv2 pytorch 138 s, vjepa2-vitl-fpc64-256 torch control run (predictor included) 678 s — 108 min of compute in total, run strictly one stage at a time so that no clips/s number is measured against another stage. `report` takes a few seconds.
+
+**Wall time of the SSv2 sweep**, measured: frame decode 97 s for all 24 777 clips (48 processes), then cpp-cpu-f16-sub10 2437 s, cpp-cpu-f32-sub10 2889 s, cpp-cuda1-f16-full 2024 s, cpp-cuda1-f32-full 1748 s, cpp-cuda1-q4_k-full 1693 s, cpp-cuda1-q8_0-full 1675 s, torch-cpu-sub100 300 s, torch-cuda1-full 3442 s — 4.5 h of compute, again one stage at a time. The CPU rows are the 32-thread ones; everything else is on the GPU.
+
+The UCF-101 stages write into `tmp/accuracy-video/` and the SSv2 stages into `tmp/accuracy-ssv2/` (both git-ignored), and each can be re-run alone; `lists` fixes the clip order once per benchmark in that directory's `clips.json`, which every feature and logits `.npy` is indexed by, and the frame index of each dataset records the sampled frame indices per clip.
 
 `jepa-embed --frames-list list.txt` walks a whole clip list in one process — one model load, one `jepa_context`, one `[n_clips, D]` `.npy` in list order, `--logits` for the attentive-pool head and `--json` for the timings. It replaced the out-of-tree `jepa-embed-clips` driver this benchmark used to need (removed); the features it writes are bit-identical to that driver's and to `jepa-embed --frames-npy F --pool mean` per clip.

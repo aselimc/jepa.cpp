@@ -694,13 +694,20 @@ def render_ssv2_val(p2: dict | None) -> list[str]:
     Written by `scripts/bench_accuracy_ssv2.py report`; this function is the only thing that turns
     it into prose, so `docs/accuracy-video.md` keeps one generator.  Returns an empty list when the
     artifact is absent, which is what a checkout without the (licence-gated) dataset looks like.
+
+    A half-written artifact drops this section and nothing else: the rest of the document does not
+    depend on it, so a missing reference row must not take the whole generator down with it.
     """
     if not p2 or not p2.get("runs"):
+        return []
+    ref = _ssv2_ref(p2, "full")
+    if ref is None or not all(k in p2 for k in ("dataset", "protocol", "published")):
+        print("note: the SSv2 artifact has no full-split PyTorch row — section left out",
+              file=sys.stderr)
         return []
     L: list[str] = []
     A = L.append
     ds, pr, pub = p2["dataset"], p2["protocol"], p2["published"]
-    ref = _ssv2_ref(p2, "full")
     A("## SSv2 validation accuracy — the real task\n")
     A(f"The same checkpoint scored on the task it was trained for: the **full "
       f"{_th(ds['n_entries'])}-clip Something-Something-v2 validation split**, "
@@ -734,8 +741,11 @@ def render_ssv2_val(p2: dict | None) -> list[str]:
           for r in sorted(_ssv2_rows(p2, "cuda", "full"), key=_dtkey))
       + f" of {_th(ref['n_clips'])}.\n")
     A(f"The published figure for this architecture is **{pub['top1']} %** top-1 ({pub['source']}, "
-      f"{pub['model']}), measured with {pub['views']} against the single view taken here; the model "
-      "card of the released checkpoint publishes no number of its own.\n")
+      f"{pub['model']}). That run aggregates {pub['views']}; this one takes a single view. Neither "
+      "the multi-view protocol nor the published run's decoder and probe are reproduced here, so "
+      "the difference between the two figures is reported rather than attributed — what the rows "
+      "above do settle is that the engine is not part of it. The released checkpoint's model card "
+      "publishes no number of its own.\n")
 
     sub = sorted(_ssv2_rows(p2, "cpu", "sub10"), key=_dtkey)
     if sub:
@@ -762,8 +772,9 @@ def render_ssv2_val(p2: dict | None) -> list[str]:
         A("| dtype | clips | argmax agreement % | logit cos mean | logit cos min "
           "| max abs logit diff |")
         A("|---|--:|--:|--:|--:|--:|")
-        for tag, v in sorted(cvc.items(), key=lambda kv: _dtkey({"dtype": kv[0].split("-")[2]})):
-            A(f"| {tag.split('-')[2]} | {v['n_clips']} | {100*v['top1_agreement']:.2f} | "
+        # the dtype is a field of the record, not something to parse back out of the run tag
+        for tag, v in sorted(cvc.items(), key=lambda kv: _dtkey(kv[1])):
+            A(f"| {v.get('dtype') or tag} | {v['n_clips']} | {100*v['top1_agreement']:.2f} | "
               f"{v['logit_cos_mean']:.6f} | {v['logit_cos_min']:.6f} | "
               f"{v['logit_max_abs_diff']:.3f} |")
         A("")
@@ -1089,6 +1100,30 @@ def render_md(p: dict, cj: dict, ssv2_val: dict | None = None) -> str:
     A("")
     A("$B report --out-json tests/results/accuracy-video.json --out-md docs/accuracy-video.md")
     A("```\n")
+    if ssv2_val and ssv2_val.get("runs"):
+        A("The SSv2 validation tables come from a second harness and a second dataset, and "
+          "`report` above only renders the artifact it writes. That sweep is:\n")
+        A("```bash")
+        A("# data/ssv2 is licence-gated — scripts/download_datasets.sh says where to get it.")
+        A("# The frame cache is a hundred gigabytes and change; delete it when the sweep is done.")
+        A("S=\"tmp/venv-cuda/bin/python scripts/bench_accuracy_ssv2.py\"   # torch + CUDA venv")
+        A("")
+        A("$PY scripts/bench_accuracy_ssv2.py frames --jobs 48       # decode the 24 777 val clips")
+        A("$PY scripts/bench_accuracy_ssv2.py lists                  # clip order + the subsets")
+        A("$S torch --device cuda:1 --batch 4 --threads 8            # the fp32 reference")
+        A("$S cpp   --dtype f16  --device cuda:1                     # then q8_0, q4_k, f32")
+        A("$S cpp   --dtype f16  --device cpu --scope sub10 --threads 32     # then f32")
+        A("OMP_NUM_THREADS=32 $PY scripts/bench_accuracy_ssv2.py \\")
+        A("      torch --device cpu --scope sub100 --batch 1 --threads 32    # the f32 anchor")
+        A("$S report --out-json tests/results/accuracy-ssv2.json")
+        A("$B report --out-json tests/results/accuracy-video.json \\")
+        A("      --out-md docs/accuracy-video.md                     # picks the SSv2 artifact up")
+        A("```\n")
+        A("`bench_accuracy_ssv2.py report` carries the decode count, the decode wall time and the "
+          "frame manifest forward from the artifact it is overwriting when the frame cache is no "
+          "longer on the machine, so both `report` stages round-trip byte for byte from the "
+          "committed artifacts alone — which is what the two commands above do on a checkout with "
+          "neither dataset decoded.\n")
     walls = [(f"{n} {dt}", b["stats"]["wall_s"]) for n, m in p["models"].items()
              for dt, b in m["backends"].items() if b["stats"].get("wall_s")]
     walls += [(f"ssv2 {dt}", b["stats"]["wall_s"]) for dt, b in (s2.get("backends") or {}).items()
@@ -1099,15 +1134,28 @@ def render_md(p: dict, cj: dict, ssv2_val: dict | None = None) -> str:
               for n, v in (p.get("pytorch_predictor_overhead") or {}).items()]
     if walls:
         tot = sum(w for _, w in walls) + p["dataset"].get("decode_s", 0)
-        A(f"**Wall time at 32 threads**, measured: frame decode "
+        A(f"**Wall time of the UCF-101 sweep at 32 threads**, measured: frame decode "
           f"{p['dataset'].get('decode_s', 0):.1f} s for all "
           f"{p['dataset']['gallery']['n'] + p['dataset']['queries']['val+test']['n']} clips (32 processes), "
           "then " + ", ".join(f"{k} {v:.0f} s" for k, v in walls) + f" — {tot/60:.0f} min of compute "
           "in total, run strictly one stage at a time so that no clips/s number is measured against "
           "another stage. `report` takes a few seconds.\n")
-    A("Every stage writes into `tmp/accuracy-video/` (git-ignored) and can be re-run alone; "
-      "`lists` fixes the clip order once in `tmp/accuracy-video/clips.json`, which every feature "
-      "`.npy` is indexed by, and `tmp/frames/index.json` records the sampled frame indices per clip.\n")
+    if ssv2_val and ssv2_val.get("runs"):
+        w2 = [(r["tag"], (r.get("stats") or {}).get("wall_s")) for r in ssv2_val["runs"]]
+        w2 = [(k, v) for k, v in w2 if v]
+        if w2:
+            t2 = sum(v for _, v in w2) + float(ssv2_val["dataset"].get("decode_s", 0.0))
+            A(f"**Wall time of the SSv2 sweep**, measured: frame decode "
+              f"{ssv2_val['dataset'].get('decode_s', 0):.0f} s for all "
+              f"{_th(ssv2_val['dataset']['n_clips_decoded'])} clips (48 processes), then "
+              + ", ".join(f"{k} {v:.0f} s" for k, v in sorted(w2))
+              + f" — {t2/3600:.1f} h of compute, again one stage at a time. The CPU rows are the "
+              "32-thread ones; everything else is on the GPU.\n")
+    A("The UCF-101 stages write into `tmp/accuracy-video/` and the SSv2 stages into "
+      "`tmp/accuracy-ssv2/` (both git-ignored), and each can be re-run alone; `lists` fixes the "
+      "clip order once per benchmark in that directory's `clips.json`, which every feature and "
+      "logits `.npy` is indexed by, and the frame index of each dataset records the sampled frame "
+      "indices per clip.\n")
     A("`jepa-embed --frames-list list.txt` walks a whole clip list in one process — one model "
       "load, one `jepa_context`, one `[n_clips, D]` `.npy` in list order, `--logits` for the "
       "attentive-pool head and `--json` for the timings. It replaced the out-of-tree "
