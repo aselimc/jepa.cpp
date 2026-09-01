@@ -75,9 +75,26 @@ enum jepa_pos_id {
 };
 
 jepa_family_id jepa_family_from_string(const std::string & s);
-jepa_act_id    jepa_act_from_string(const std::string & s);      // aborts on unknown
+// Unknown spelling: logs, clears *ok (when given) and returns gelu_erf. Callers in the loader turn
+// that into a refused file — never a silent default (docs/architecture.md "Robustness").
+jepa_act_id    jepa_act_from_string(const std::string & s, bool * ok = nullptr);
 jepa_pos_id    jepa_pos_from_string(const std::string & s);
 const char *   jepa_act_name(jepa_act_id a);
+
+// Range limits the loader enforces on the jepa.* integer metadata of an untrusted GGUF. Each is two
+// to three orders of magnitude above the largest released checkpoint (V-JEPA 2 ViT-g: D 1408,
+// 40 layers, 22 heads, ffn 6144, patch 16, 64 frames), so a real file never meets one; a file that
+// does is refused by name, because past these values the size arithmetic below stops being
+// meaningful and the allocations stop being survivable. docs/architecture.md "Robustness".
+#define JEPA_LIMIT_EMBED_DIM   65536
+#define JEPA_LIMIT_N_LAYER      1024
+#define JEPA_LIMIT_N_HEAD       1024
+#define JEPA_LIMIT_FFN_DIM   1048576
+#define JEPA_LIMIT_PATCH_SIZE    1024
+#define JEPA_LIMIT_IMG_SIZE     65536
+#define JEPA_LIMIT_N_FRAMES     65536
+#define JEPA_LIMIT_IN_CHANS      1024
+#define JEPA_LIMIT_N_TOKENS   4194304   // pos-table rows, registers, class counts, mask tokens
 
 struct jepa_enc_hparams {
     int   embed_dim    = 0;

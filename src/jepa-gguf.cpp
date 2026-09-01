@@ -1,10 +1,12 @@
 // GGUF loading: hparam parsing (docs/gguf-schema.md) and tensor upload to the CPU backend.
 #include "jepa-internal.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <sstream>
 
 // ---------------------------------------------------------------------------------------------
@@ -21,12 +23,15 @@ jepa_family_id jepa_family_from_string(const std::string & s) {
     return JEPA_FAMILY_UNKNOWN;
 }
 
-jepa_act_id jepa_act_from_string(const std::string & s) {
+// An unknown activation used to abort(). It is metadata from an untrusted file, so it is now a
+// load failure like any other: *ok is cleared and the caller returns nullptr with the message below.
+jepa_act_id jepa_act_from_string(const std::string & s, bool * ok) {
     if (s == "gelu_erf" || s == "gelu")  return JEPA_ACT_GELU_ERF;
     if (s == "gelu_tanh" || s == "gelu_new" || s == "gelu_pytorch_tanh") return JEPA_ACT_GELU_TANH;
     if (s == "silu" || s == "swish")     return JEPA_ACT_SILU;
     jepa_log("jepa: unknown activation '%s' (expected gelu_erf | gelu_tanh | silu)\n", s.c_str());
-    abort();
+    if (ok) *ok = false;
+    return JEPA_ACT_GELU_ERF;
 }
 
 const char * jepa_act_name(jepa_act_id a) {
@@ -220,6 +225,27 @@ struct kv_reader {
     }
 };
 
+// ---------------------------------------------------------------------------------------------
+// range checks (docs/architecture.md "Robustness")
+// ---------------------------------------------------------------------------------------------
+// Every integer below is metadata from a file the caller did not write. Left unchecked, a zero
+// n_head divides by zero, a negative dimension becomes a huge size_t, and an n_layer of 2^31 asks
+// for 300 GiB of per-block bundles before a single tensor is read. The bounds are two to three
+// orders of magnitude above anything a real checkpoint uses (JEPA_LIMIT_* in jepa-internal.h), so
+// they only ever fire on a file that is broken or hostile — and they fire with a message naming the
+// key, never with a silent clamp.
+static bool kv_range(const char * key, int64_t v, int64_t lo, int64_t hi) {
+    if (v >= lo && v <= hi) return true;
+    jepa_log("jepa: %s = %" PRId64 " is out of range [%" PRId64 ", %" PRId64 "]\n", key, v, lo, hi);
+    return false;
+}
+
+static bool kv_finite(const char * key, float v, float lo, float hi) {
+    if (v >= lo && v <= hi) return true;   // false for NaN, which is the point
+    jepa_log("jepa: %s = %g is not a finite value in [%g, %g]\n", key, (double) v, (double) lo, (double) hi);
+    return false;
+}
+
 } // namespace
 
 bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
@@ -268,8 +294,22 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
     e.img_size     = r.geti("jepa.enc.img_size", 224);
     e.n_frames     = r.geti("jepa.enc.n_frames", 1);
     e.in_chans     = r.geti("jepa.enc.in_chans", 3);
+    if (!kv_range("jepa.enc.embed_dim",    e.embed_dim,    1, JEPA_LIMIT_EMBED_DIM)  ||
+        !kv_range("jepa.enc.n_layer",      e.n_layer,      1, JEPA_LIMIT_N_LAYER)    ||
+        !kv_range("jepa.enc.n_head",       e.n_head,       1, JEPA_LIMIT_N_HEAD)     ||
+        !kv_range("jepa.enc.ffn_dim",      e.ffn_dim,      1, JEPA_LIMIT_FFN_DIM)    ||
+        !kv_range("jepa.enc.patch_size",   e.patch_size,   1, JEPA_LIMIT_PATCH_SIZE) ||
+        !kv_range("jepa.enc.tubelet_size", e.tubelet_size, 1, JEPA_LIMIT_PATCH_SIZE) ||
+        !kv_range("jepa.enc.img_size",     e.img_size,     1, JEPA_LIMIT_IMG_SIZE)   ||
+        !kv_range("jepa.enc.n_frames",     e.n_frames,     1, JEPA_LIMIT_N_FRAMES)   ||
+        !kv_range("jepa.enc.in_chans",     e.in_chans,     1, JEPA_LIMIT_IN_CHANS)) {
+        return false;
+    }
     e.ln_eps       = r.getf("jepa.enc.ln_eps", 1e-6f);
-    e.act          = jepa_act_from_string(r.gets("jepa.enc.act", "gelu_erf"));
+    if (!kv_finite("jepa.enc.ln_eps", e.ln_eps, 0.0f, 1.0f)) return false;
+    bool act_ok = true;
+    e.act          = jepa_act_from_string(r.gets("jepa.enc.act", "gelu_erf"), &act_ok);
+    if (!act_ok) return false;
     e.pos_type_str = r.gets("jepa.enc.pos_type", "");
     e.pos_type     = jepa_pos_from_string(e.pos_type_str);
     e.rope_theta   = r.getf("jepa.enc.rope_theta", 10000.0f);
@@ -302,7 +342,12 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
         return false;
     }
     e.has_proj     = r.has("jepa.enc.proj_act");
-    e.proj_act     = jepa_act_from_string(r.gets("jepa.enc.proj_act", "gelu_erf"));
+    e.proj_act     = jepa_act_from_string(r.gets("jepa.enc.proj_act", "gelu_erf"), &act_ok);
+    if (!act_ok) return false;
+    if (!kv_range("jepa.enc.n_registers", e.n_registers, 0, JEPA_LIMIT_N_TOKENS)) return false;
+    if (!kv_finite("jepa.enc.rope_theta", e.rope_theta, 1e-6f, 1e12f)) return false;
+    if (!kv_range("jepa.enc.rope_ref_grid", e.rope_ref_grid, 0, JEPA_LIMIT_IMG_SIZE)) return false;
+    // n_head is >= 1 by the range check above, so this modulo cannot divide by zero
     if (e.embed_dim % e.n_head != 0) {
         jepa_log("jepa: embed_dim %d not divisible by n_head %d\n", e.embed_dim, e.n_head);
         return false;
@@ -333,10 +378,45 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
         p.head_dim    = r.geti("jepa.pred.head_dim", 0);
         p.ln_eps      = r.getf("jepa.pred.ln_eps", 1e-6f);
         p.adaln_eps   = r.getf("jepa.pred.adaln_eps", 1e-6f);
-        p.act         = jepa_act_from_string(r.gets("jepa.pred.act", "gelu_erf"));
+        p.act         = jepa_act_from_string(r.gets("jepa.pred.act", "gelu_erf"), &act_ok);
         p.qkv_bias    = r.getb("jepa.pred.qkv_bias", true);
-        p.action_act  = jepa_act_from_string(r.gets("jepa.pred.action_act", "silu"));
-        p.proj_act    = jepa_act_from_string(r.gets("jepa.pred.proj_act", "gelu_erf"));
+        p.action_act  = jepa_act_from_string(r.gets("jepa.pred.action_act", "silu"), &act_ok);
+        p.proj_act    = jepa_act_from_string(r.gets("jepa.pred.proj_act", "gelu_erf"), &act_ok);
+        if (!act_ok) return false;
+        if (!kv_range("jepa.pred.embed_dim",     p.embed_dim,     1, JEPA_LIMIT_EMBED_DIM) ||
+            !kv_range("jepa.pred.n_layer",       p.n_layer,       1, JEPA_LIMIT_N_LAYER)   ||
+            !kv_range("jepa.pred.n_head",        p.n_head,        1, JEPA_LIMIT_N_HEAD)    ||
+            !kv_range("jepa.pred.ffn_dim",       p.ffn_dim,       1, JEPA_LIMIT_FFN_DIM)   ||
+            !kv_range("jepa.pred.out_dim",       p.out_dim,       1, JEPA_LIMIT_FFN_DIM)   ||
+            !kv_range("jepa.pred.head_dim",      p.head_dim,      0, JEPA_LIMIT_EMBED_DIM) ||
+            !kv_range("jepa.pred.n_mask_tokens", p.n_mask_tokens, 0, JEPA_LIMIT_N_TOKENS)  ||
+            !kv_range("jepa.pred.grid_size",     p.grid_size,     0, JEPA_LIMIT_IMG_SIZE)  ||
+            !kv_range("jepa.pred.rope_ref_grid", p.rope_ref_grid, 0, JEPA_LIMIT_IMG_SIZE)  ||
+            !kv_range("jepa.pred.n_hier_in",     p.n_hier_in,     0, JEPA_LIMIT_N_LAYER)   ||
+            !kv_range("jepa.pred.action_dim",    p.action_dim,    0, JEPA_LIMIT_EMBED_DIM) ||
+            !kv_range("jepa.pred.state_dim",     p.state_dim,     0, JEPA_LIMIT_EMBED_DIM) ||
+            !kv_range("jepa.pred.n_frames",      p.n_frames,      0, JEPA_LIMIT_N_FRAMES)  ||
+            !kv_finite("jepa.pred.ln_eps",       p.ln_eps,        0.0f, 1.0f)              ||
+            !kv_finite("jepa.pred.adaln_eps",    p.adaln_eps,     0.0f, 1.0f)) {
+            return false;
+        }
+        // head_dim_eff() divides by n_head, which the range check pinned at >= 1
+        if (p.head_dim == 0 && p.embed_dim % p.n_head != 0) {
+            jepa_log("jepa: jepa.pred.embed_dim %d is not divisible by jepa.pred.n_head %d and there is "
+                     "no jepa.pred.head_dim to say what the head width should be\n", p.embed_dim, p.n_head);
+            return false;
+        }
+        if (p.kind == "masked" && p.grid_size <= 0 && e.grid_size() <= 0) {
+            // jepa_predictor_rope_params divides the token id by grid*grid to recover the frame
+            jepa_log("jepa: a masked predictor needs a position grid: jepa.pred.grid_size is %d and "
+                     "jepa.enc.img_size / jepa.enc.patch_size is %d\n", p.grid_size, e.grid_size());
+            return false;
+        }
+        if (p.kind == "lewm" && (p.action_dim <= 0 || p.n_frames <= 0)) {
+            jepa_log("jepa: a lewm predictor needs jepa.pred.action_dim > 0 (is %d) and "
+                     "jepa.pred.n_frames > 0 (is %d)\n", p.action_dim, p.n_frames);
+            return false;
+        }
     }
 
     // --- head
@@ -347,6 +427,10 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
         h.n_classes     = r.geti("jepa.head.n_classes", 0);
         h.n_pool_layers = r.geti("jepa.head.n_pool_layers", 0);
         h.labels        = r.get_sarr("jepa.head.labels");
+        if (!kv_range("jepa.head.n_classes",     h.n_classes,     0, JEPA_LIMIT_N_TOKENS) ||
+            !kv_range("jepa.head.n_pool_layers", h.n_pool_layers, 0, JEPA_LIMIT_N_LAYER)) {
+            return false;
+        }
     }
 
     // --- preprocessing
@@ -358,6 +442,18 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
     pre.resample     = r.gets("jepa.pre.resample", "bilinear");
     pre.resize_mode  = r.gets("jepa.pre.resize_mode", "shortest_edge");
     pre.rescale      = r.getf("jepa.pre.rescale", 1.0f / 255.0f);
+    // resize_short drives the intermediate buffer of src/preprocess.cpp; crop 0 means "the short
+    // side of the resized image", which is why it is allowed to be zero and resize_short is not.
+    if (!kv_range("jepa.pre.resize_short", pre.resize_short, 1, JEPA_LIMIT_IMG_SIZE) ||
+        !kv_range("jepa.pre.crop",         pre.crop,         0, JEPA_LIMIT_IMG_SIZE) ||
+        !kv_finite("jepa.pre.rescale",     pre.rescale,      1e-9f, 1e9f)) {
+        return false;
+    }
+    for (int i = 0; i < 3; i++) {
+        if (!kv_finite("jepa.pre.mean", pre.mean[i], -1e6f, 1e6f)) return false;
+        // a zero std would divide every pixel by zero
+        if (!kv_finite("jepa.pre.std", pre.std[i], 1e-9f, 1e6f)) return false;
+    }
     return true;
 }
 
@@ -405,6 +501,138 @@ static bool check_shape(const jepa_model & m, const char * name, int64_t ne0, in
     return ok;
 }
 
+// Tensors that are added to, multiplied by or concatenated with the F32 activations rather than
+// multiplied through mul_mat. ggml_concat and the elementwise ops require matching types, so an
+// f16 CLS token in an otherwise f32 graph aborts inside the builder. Quantization never touches
+// these: even a q4_k file keeps every norm, bias, token and position table in f32
+// (docs/gguf-schema.md; tools/jepa-quantize.cpp only converts the matmul weights).
+static bool check_f32(const jepa_model & m, const std::string & name) {
+    ggml_tensor * t = m.get(name);
+    if (!t || t->type == GGML_TYPE_F32) return true;
+    jepa_log("jepa: tensor %s is %s, but it is added to or concatenated with the f32 activations and "
+             "has to be f32 (only the matmul weights may be quantized)\n", name.c_str(), ggml_type_name(t->type));
+    return false;
+}
+
+// A vector: exactly `n` f32 values, whatever rank the file gave it. Every one of these reaches ggml
+// as the right-hand side of a ggml_mul or ggml_add, which asserts on a length that cannot broadcast
+// and on a type that does not match — so an unchecked norm weight is an abort inside the graph
+// builder rather than an error. Absent is fine: the builders treat a missing weight or bias as
+// "no affine term".
+static bool check_vec(const jepa_model & m, const std::string & name, int64_t n) {
+    ggml_tensor * t = m.get(name);
+    if (!t) return true;
+    bool ok = check_f32(m, name);
+    if (ggml_nelements(t) != n) {
+        jepa_log("jepa: tensor %s holds %" PRId64 " values, expected %" PRId64 "\n",
+                 name.c_str(), ggml_nelements(t), n);
+        ok = false;
+    }
+    return ok;
+}
+
+// Refuse a weight whose dtype this backend has no matrix-multiply kernel for. ggml's CPU mul_mat
+// dispatches through type_traits_cpu[type].vec_dot, which is a null pointer for the types that are
+// part of the format but not of any GEMM — the fuzzer produced an i32 ffn_up.weight and it is a
+// call through address 0 inside ggml_compute_forward, not an error. ggml_backend_dev_supports_op is
+// the same predicate jepa_graph_validate walks a GPU graph with; here it is asked once per distinct
+// dtype in the file, on a probe mul_mat, before anything is built.
+// ggml_backend_dev_supports_op is no help here: its MUL_MAT arm looks at src1 (the f32 activation)
+// and says nothing about the weight's own dtype. So the rule is stated directly — every tensor in a
+// jepa GGUF is a weight, a bias or a table, so every one of them is float or quantized. That
+// excludes exactly the integer types, which is the class the fuzzer found.
+static bool check_tensor_types(const jepa_model & m, ggml_backend_dev_t dev) {
+    const bool on_cpu = !dev || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU;
+    bool ok = true;
+    for (const auto & kv : m.tensors) {
+        const ggml_type ty = kv.second->type;
+        if (ty == GGML_TYPE_F32) continue;                       // always fine, and the common case
+        const bool numeric = ty == GGML_TYPE_F16 || ty == GGML_TYPE_BF16 || ggml_is_quantized(ty);
+        // ...and on the CPU, ask the backend itself: mul_mat dispatches through
+        // type_traits_cpu[type].vec_dot, which is a null pointer for a type with no GEMM kernel and
+        // is therefore a call through address 0 rather than an error.
+        const bool has_kernel = !on_cpu || ggml_get_type_traits_cpu(ty)->vec_dot != nullptr;
+        if (!numeric || !has_kernel) {
+            jepa_log("jepa: tensor %s has dtype %s, which is not a weight dtype this engine can "
+                     "compute with (f32, f16, bf16 or a quantized type)\n", kv.first.c_str(), ggml_type_name(ty));
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// Every tensor jepa_build_block may touch, for one block. `inner` is n_head * head_dim, which is D
+// for the encoder and the head and is not for the LeWM predictor (16 heads x 64 over a 192-d model).
+static bool check_block_shapes(const jepa_model & m, const std::string & p, int64_t D, int64_t inner, int64_t ffn) {
+    bool ok = true;
+    ok &= check_shape(m, (p + "attn_qkv.weight").c_str(), D, 3 * inner);
+    ok &= check_vec(m, p + "attn_qkv.bias", 3 * inner);
+    ok &= check_shape(m, (p + "attn_q.weight").c_str(), D, inner);
+    ok &= check_shape(m, (p + "attn_k.weight").c_str(), D, inner);
+    ok &= check_shape(m, (p + "attn_v.weight").c_str(), D, inner);
+    ok &= check_vec(m, p + "attn_q.bias", inner);
+    ok &= check_vec(m, p + "attn_k.bias", inner);
+    ok &= check_vec(m, p + "attn_v.bias", inner);
+    ok &= check_shape(m, (p + "attn_out.weight").c_str(), inner, D);
+    ok &= check_vec(m, p + "attn_out.bias", D);
+    ok &= check_vec(m, p + "ln1.weight", D);
+    ok &= check_vec(m, p + "ln1.bias", D);
+    ok &= check_vec(m, p + "ln2.weight", D);
+    ok &= check_vec(m, p + "ln2.bias", D);
+    ok &= check_shape(m, (p + "ffn_up.weight").c_str(), D, ffn);
+    ok &= check_vec(m, p + "ffn_up.bias", ffn);
+    ok &= check_shape(m, (p + "ffn_down.weight").c_str(), ffn, D);
+    ok &= check_vec(m, p + "ffn_down.bias", D);
+    ok &= check_vec(m, p + "ls1", D);
+    ok &= check_vec(m, p + "ls2", D);
+    return ok;
+}
+
+// 64-bit absolute seek / size. `fseek`+`ftell` take a `long`, which is 32-bit on Windows: the 2.5 GB
+// I-JEPA ViT-H f32 file would fail to load there (tools/jepa-quantize.cpp carries the same pair).
+static int jepa_seek64(FILE * f, uint64_t offset) {
+#ifdef _WIN32
+    return _fseeki64(f, (long long) offset, SEEK_SET);
+#else
+    return fseeko(f, (off_t) offset, SEEK_SET);
+#endif
+}
+
+static int64_t jepa_file_size(FILE * f) {
+#ifdef _WIN32
+    if (_fseeki64(f, 0, SEEK_END) != 0) return -1;
+    const int64_t n = _ftelli64(f);
+#else
+    if (fseeko(f, 0, SEEK_END) != 0) return -1;
+    const int64_t n = (int64_t) ftello(f);
+#endif
+    return n;
+}
+
+// Tensors the graph builders call m->require() for. require() aborts when a name is missing, which
+// is the right behaviour for an internal invariant and the wrong one for a file the caller did not
+// write — so the file is checked here instead, once, and refused with the missing name. Everything
+// listed is unconditionally dereferenced by the builder named in the comment.
+static bool require_tensors(const jepa_model & m, const char * what, std::initializer_list<const char *> names) {
+    bool ok = true;
+    for (const char * n : names) {
+        if (!m.get(n)) {
+            jepa_log("jepa: %s needs tensor '%s', which is not in %s\n", what, n, m.path.c_str());
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// A transformer block jepa_build_block can actually run: the two layer norms, the output and FFN
+// projections and either a fused qkv or all three of q/k/v (jepa_build_qkv asserts on the rest).
+static bool block_complete(const jepa_layer & L, const char * prefix, int i) {
+    if (L.ln1_w && L.ln2_w && L.out_w && L.up_w && L.down_w && (L.qkv_w || (L.q_w && L.k_w && L.v_w))) return true;
+    jepa_log("jepa: block %d is incomplete (%s%d.*): needs ln1/ln2/attn_out/ffn_up/ffn_down and "
+             "attn_qkv or attn_q+attn_k+attn_v\n", i, prefix, i);
+    return false;
+}
+
 jepa_model_params jepa_model_default_params(void) {
     jepa_model_params p;
     p.verbose = false;
@@ -443,6 +671,41 @@ jepa_model * jepa_model_load_ex(const char * gguf_path, const jepa_model_params 
         ggml_free(ctx_meta);
         delete m;
         return nullptr;
+    }
+
+    // Every tensor has to be inside the file BEFORE anything is allocated. gguf_init_from_file with
+    // no_alloc = true validates the offsets against each other but never against the file's length,
+    // so a 4 KB file may legitimately parse as one that promises terabytes of weights — and the
+    // weight buffer below is allocated from those promises, not from the bytes on disk.
+    {
+        FILE * probe = fopen(gguf_path, "rb");
+        if (!probe) {
+            jepa_log("jepa: cannot open %s for tensor data\n", gguf_path);
+            gguf_free(gg); ggml_free(ctx_meta); delete m;
+            return nullptr;
+        }
+        const int64_t fsize = jepa_file_size(probe);
+        fclose(probe);
+        const size_t data_offset = gguf_get_data_offset(gg);
+        const int64_t n_tensors = gguf_get_n_tensors(gg);
+        for (int64_t i = 0; i < n_tensors; i++) {
+            const char * name = gguf_get_tensor_name(gg, i);
+            ggml_tensor * t = ggml_get_tensor(ctx_meta, name);
+            if (!t) {
+                jepa_log("jepa: tensor %s missing from the metadata context\n", name);
+                gguf_free(gg); ggml_free(ctx_meta); delete m;
+                return nullptr;
+            }
+            const uint64_t offs   = (uint64_t) data_offset + gguf_get_tensor_offset(gg, i);
+            const uint64_t nbytes = (uint64_t) ggml_nbytes(t);
+            if (fsize < 0 || offs > (uint64_t) fsize || nbytes > (uint64_t) fsize - offs) {
+                jepa_log("jepa: tensor %s claims %" PRIu64 " bytes at offset %" PRIu64 ", past the end of "
+                         "%s (%" PRId64 " bytes) — the file is truncated or its header is not describing it\n",
+                         name, nbytes, offs, gguf_path, fsize);
+                gguf_free(gg); ggml_free(ctx_meta); delete m;
+                return nullptr;
+            }
+        }
     }
 
     // tensors: ctx_meta already holds one (unallocated) ggml_tensor per GGUF tensor.
@@ -487,7 +750,7 @@ jepa_model * jepa_model_load_ex(const char * gguf_path, const jepa_model_params 
         const size_t nbytes = ggml_nbytes(t);
         const size_t offs = data_offset + gguf_get_tensor_offset(gg, i);
         buf.resize(nbytes);
-        if (fseek(f, (long) offs, SEEK_SET) != 0 || fread(buf.data(), 1, nbytes, f) != nbytes) {
+        if (jepa_seek64(f, offs) != 0 || fread(buf.data(), 1, nbytes, f) != nbytes) {
             jepa_log("jepa: short read for tensor %s (%zu bytes @ %zu)\n", name, nbytes, offs);
             fclose(f); gguf_free(gg); jepa_model_free(m);
             return nullptr;
@@ -531,30 +794,115 @@ jepa_model * jepa_model_load_ex(const char * gguf_path, const jepa_model_params 
         }
     }
 
-    // sanity checks on the shapes we rely on
-    bool ok = true;
+    // sanity checks on the dtypes and the shapes we rely on
+    bool ok = check_tensor_types(*m, dev);
     const int64_t D = e.embed_dim;
     const int64_t patch_in = (int64_t) e.in_chans * e.tubelet_size * e.patch_size * e.patch_size;
     if (!m->patch_embed_w) { jepa_log("jepa: enc.patch_embed.weight missing\n"); ok = false; }
     ok &= check_shape(*m, "enc.patch_embed.weight", patch_in, D);
-    ok &= check_shape(*m, "enc.patch_embed.bias", D);
+    ok &= check_vec(*m, "enc.patch_embed.bias", D);
     ok &= check_shape(*m, "enc.pos_embed", D);
-    ok &= check_shape(*m, "enc.cls_token", D);
-    ok &= check_shape(*m, "enc.norm.weight", D);
+    ok &= check_vec(*m, "enc.cls_token", D);
+    ok &= check_vec(*m, "enc.norm.weight", D);
+    ok &= check_vec(*m, "enc.norm.bias", D);
+    ok &= check_vec(*m, "enc.mod_embed_img", D);
+    ok &= check_vec(*m, "enc.mod_embed_video", D);
+    ok &= check_shape(*m, "enc.reg_tokens", D);
+    ok &= check_f32(*m, "enc.reg_tokens");
+    ok &= check_f32(*m, "enc.pos_embed");
+    ok &= check_shape(*m, "enc.proj.0.weight", D);
+    ok &= check_vec(*m, "enc.proj.2.bias", D);
+    if (m->proj0_w && m->proj2_w) {   // the LeWM projector: D -> hidden -> D
+        ok &= check_vec(*m, "enc.proj.0.bias", m->proj0_w->ne[1]);
+        ok &= check_shape(*m, "enc.proj.2.weight", m->proj0_w->ne[1], D);
+    }
     for (int i = 0; i < e.n_layer && ok; i++) {
-        const jepa_layer & L = m->enc_layers[i];
         std::string p = "enc.blk." + std::to_string(i) + ".";
-        if (!L.ln1_w || !L.ln2_w || !L.out_w || !L.up_w || !L.down_w || !(L.qkv_w || (L.q_w && L.k_w && L.v_w))) {
-            jepa_log("jepa: block %d is incomplete (%s*)\n", i, p.c_str());
-            ok = false;
-            break;
-        }
-        ok &= check_shape(*m, (p + "attn_qkv.weight").c_str(), D, 3 * D);
-        ok &= check_shape(*m, (p + "attn_out.weight").c_str(), D, D);
-        ok &= check_shape(*m, (p + "ffn_up.weight").c_str(), D, e.ffn_dim);
-        ok &= check_shape(*m, (p + "ffn_down.weight").c_str(), e.ffn_dim, D);
+        if (!block_complete(m->enc_layers[i], "enc.blk.", i)) { ok = false; break; }
+        // the encoder's head_dim is embed_dim / n_head, so its attention inner width is D
+        ok &= check_block_shapes(*m, p, D, D, e.ffn_dim);
     }
     if (e.cls_token && !m->cls_token) { jepa_log("jepa: cls_token=true but enc.cls_token missing\n"); ok = false; }
+    if (e.n_registers > 0 && (!m->reg_tokens || m->reg_tokens->ne[1] != e.n_registers)) {
+        // jepa_build_encoder_image asserts on this rather than returning, so it has to be a load error
+        jepa_log("jepa: jepa.enc.n_registers is %d but enc.reg_tokens is %s\n", e.n_registers,
+                 m->reg_tokens ? "a different shape" : "missing");
+        ok = false;
+    }
+    if (m->pos_embed && !kv_range("enc.pos_embed rows", m->pos_embed->ne[1], 1, JEPA_LIMIT_N_TOKENS)) ok = false;
+
+    // Predictor and head: the graph builders reach for these through m->require(), which aborts.
+    // Check them here so an incomplete file is a refused load rather than a crash on first use.
+    const jepa_pred_hparams & p = m->hp.pred;
+    if (p.present && p.kind == "masked") {
+        ok &= require_tensors(*m, "the masked predictor", { "pred.mask_tokens", "pred.norm.weight", "pred.proj.weight" });
+        if (!m->get("pred.embed.weight") && !(m->get("pred.embed.0.weight") && m->get("pred.embed.2.weight"))) {
+            jepa_log("jepa: the masked predictor needs pred.embed.weight, or pred.embed.0.weight and "
+                     "pred.embed.2.weight for the 2-layer form\n");
+            ok = false;
+        }
+        if (p.modality_embed && !m->get("pred.mod_embed_video")) {
+            jepa_log("jepa: jepa.pred.modality_embed is set but pred.mod_embed_video is missing\n");
+            ok = false;
+        }
+    }
+    if (p.present && p.kind == "lewm") {
+        ok &= require_tensors(*m, "the LeWM predictor",
+                              { "pred.action_embed.0.weight", "pred.action_embed.2.weight",
+                                "pred.norm.weight", "pred.proj.0.weight", "pred.proj.2.weight" });
+    }
+    if (p.present) {
+        const int64_t Dp = p.embed_dim;
+        const int64_t inner_p = (int64_t) p.n_head * p.head_dim_eff();
+        for (int i = 0; i < p.n_layer && ok; i++) {
+            const std::string q = "pred.blk." + std::to_string(i) + ".";
+            if (!block_complete(m->pred_layers[i], "pred.blk.", i)) { ok = false; break; }
+            if (p.kind == "lewm" && !m->pred_layers[i].adaln_w) {
+                jepa_log("jepa: the LeWM predictor needs tensor '%sadaln.weight', which is not in %s\n",
+                         q.c_str(), m->path.c_str());
+                ok = false;
+                break;
+            }
+            ok &= check_block_shapes(*m, q, Dp, inner_p, p.ffn_dim);
+            ok &= check_shape(*m, (q + "adaln.weight").c_str(), Dp, 6 * Dp);
+            ok &= check_vec(*m, q + "adaln.bias", 6 * Dp);
+        }
+        ok &= check_vec(*m, "pred.norm.weight", Dp);
+        ok &= check_vec(*m, "pred.norm.bias", Dp);
+        ok &= check_shape(*m, "pred.mask_tokens", Dp);
+        ok &= check_f32(*m, "pred.mask_tokens");
+        ok &= check_vec(*m, "pred.mod_embed_img", Dp);
+        ok &= check_vec(*m, "pred.mod_embed_video", Dp);
+        ok &= check_shape(*m, "pred.pos_embed", Dp);
+        ok &= check_f32(*m, "pred.pos_embed");
+        ok &= check_shape(*m, "pred.embed.weight", D, Dp);
+        ok &= check_vec(*m, "pred.embed.bias", Dp);
+        ok &= check_shape(*m, "pred.proj.weight", Dp, p.out_dim);
+        ok &= check_vec(*m, "pred.proj.bias", p.out_dim);
+        if (p.action_dim > 0) ok &= check_shape(*m, "pred.action_embed.0.weight", p.action_dim);
+    }
+    if (m->hp.head.present && m->hp.head.kind == "attentive_pool") {
+        ok &= require_tensors(*m, "the attentive-pool head",
+                              { "head.query", "head.xattn.ln_kv.weight", "head.xattn.q.weight",
+                                "head.xattn.k.weight", "head.xattn.v.weight", "head.xattn.ln2.weight",
+                                "head.xattn.ffn_up.weight", "head.xattn.ffn_down.weight", "head.cls.weight" });
+        for (int i = 0; i < m->hp.head.n_pool_layers && ok; i++) {
+            const std::string q = "head.blk." + std::to_string(i) + ".";
+            if (!block_complete(m->head_layers[i], "head.blk.", i)) { ok = false; break; }
+            ok &= check_block_shapes(*m, q, D, D, e.ffn_dim);
+        }
+        // the cross-attention pooler runs at the encoder width throughout
+        ok &= check_vec(*m, "head.query", D);
+        ok &= check_vec(*m, "head.xattn.ln_kv.weight", D);
+        ok &= check_vec(*m, "head.xattn.ln_kv.bias", D);
+        ok &= check_vec(*m, "head.xattn.ln2.weight", D);
+        ok &= check_vec(*m, "head.xattn.ln2.bias", D);
+        ok &= check_shape(*m, "head.xattn.q.weight", D, D);
+        ok &= check_shape(*m, "head.xattn.k.weight", D, D);
+        ok &= check_shape(*m, "head.xattn.v.weight", D, D);
+        ok &= check_shape(*m, "head.xattn.ffn_up.weight", D);
+        ok &= check_shape(*m, "head.cls.weight", D);
+    }
     if (!ok) { jepa_model_free(m); return nullptr; }
 
     if (verbose) {
