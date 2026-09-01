@@ -24,6 +24,15 @@
 #include <map>
 #include <string>
 #include <thread>
+
+// 64-bit absolute seek: fseeko is POSIX, MSVC spells it _fseeki64.
+static int jq_seek64(FILE * f, uint64_t offset) {
+#ifdef _WIN32
+    return _fseeki64(f, (long long) offset, SEEK_SET);
+#else
+    return fseeko(f, (off_t) offset, SEEK_SET);
+#endif
+}
 #include <vector>
 
 namespace {
@@ -450,7 +459,7 @@ int main(int argc, char ** argv) {
     size_t written = 0;
     for (const plan_item & it : plan) {
         src.resize(it.src_bytes);
-        if (fseeko(fin, (off_t) (in_data_offset + it.src_offset), SEEK_SET) != 0 || fread(src.data(), 1, it.src_bytes, fin) != it.src_bytes) {
+        if (jq_seek64(fin, in_data_offset + it.src_offset) != 0 || fread(src.data(), 1, it.src_bytes, fin) != it.src_bytes) {
             fprintf(stderr, "error: short read on %s\n", it.name.c_str());
             return 1;
         }
