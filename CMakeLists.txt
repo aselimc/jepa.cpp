@@ -52,7 +52,14 @@ target_compile_options(jepa PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unu
 if(JEPA_BUILD_TOOLS)
   foreach(tool jepa-embed jepa-classify jepa-quantize jepa-bench jepa-info jepa-worldmodel)
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/${tool}.cpp)
-      add_executable(${tool} tools/${tool}.cpp)
+      set(_tool_src tools/${tool}.cpp)
+      # --video: ffmpeg is a *run-time* dependency of these two tools, never a build-time one, so
+      # the decoder is plain C++ compiled into them and a checkout without ffmpeg still builds
+      # (and still runs, minus that one flag).
+      if(tool STREQUAL "jepa-embed" OR tool STREQUAL "jepa-classify")
+        list(APPEND _tool_src tools/video-decode.cpp)
+      endif()
+      add_executable(${tool} ${_tool_src})
       target_link_libraries(${tool} PRIVATE jepa)
       target_include_directories(${tool} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party ${CMAKE_CURRENT_SOURCE_DIR}/src)
     endif()
