@@ -349,7 +349,10 @@ threads; a `jepa_context` belongs to one thread; `jepa_error_reset` / `jepa_erro
 thread-local; preprocessing is re-entrant; the "said once" warnings are published atomically.
 Concurrent encodes through per-thread contexts are bit-identical to the same work run serially.
 `n_threads` is the width of the pool *inside* one graph — a context per thread parallelises calls,
-and doing both oversubscribes the machine.
+and doing both oversubscribes the machine. The suite forges its own model when given none, so it is
+a real check on a runner with no weights; run it under TSan with
+`-fsanitize=thread -DGGML_OPENMP=OFF` (TSan cannot see through libgomp's own synchronisation and
+reports its pool as a race in any program that uses it).
 
 **Running the fuzzer.** `tests/fuzz/fuzz-gguf-load.cpp` feeds arbitrary bytes to `jepa_model_load`
 and, when they load, to a shallow encode/pool/predict pass. It is off by default; CI builds it and
@@ -411,6 +414,7 @@ tests/test-backend    GPU graph validation and CPU/GPU agreement; skips cleanly 
 tests/test-video      --video decode+sampling vs the reference dumps' PyAV frames; skips without ffmpeg
 tests/test-errors     the failure paths: forged and truncated GGUFs, bad shapes, budget refusals
 tests/test-threads    one model, N threads, a context each: outputs bit-identical to single-threaded
+tests/forge-gguf.h    builds a tiny loadable GGUF, one knob per thing that can be wrong with it
 tests/fuzz/           the GGUF loader fuzz target (-DJEPA_FUZZ=ON) and its corpus generator
 
 scripts/convert.py          HF safetensors / torch.hub .pt -> GGUF
