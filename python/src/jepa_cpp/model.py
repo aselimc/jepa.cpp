@@ -174,7 +174,10 @@ class Model:
     ``Model`` owns one ``jepa_context``, which is per-thread compute state in the C library, so
     calls are serialised on an internal lock: several Python threads may share a ``Model`` safely,
     but they will not run graphs concurrently. For real parallelism give each thread its own
-    ``Model`` (or raise ``threads``, which parallelises inside one graph).
+    ``Model`` (or raise ``threads``, which parallelises inside one graph). That lock is what makes
+    this class safe under the C thread contract stated in ``include/jepa.h`` — a model may be
+    shared, a context may not — and the same contract is why ``jepa_error_text()`` reads back only
+    the calling thread's message, which is what the error handling here relies on.
 
     >>> with Model("models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf", threads=8) as m:
     ...     feat = m.encode("cat.jpg", pool="cls")     # [384]
