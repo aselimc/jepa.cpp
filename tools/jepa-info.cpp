@@ -47,9 +47,9 @@ int main(int argc, char ** argv) {
     printf("weights:     %.1f MiB in %zu tensors\n", m->n_bytes_weights / (1024.0 * 1024.0), m->tensors.size());
     printf("encoder:     D=%d layers=%d heads=%d (head_dim %d) ffn=%d patch=%d tubelet=%d img=%d frames=%d chans=%d\n",
            e.embed_dim, e.n_layer, e.n_head, e.head_dim(), e.ffn_dim, e.patch_size, e.tubelet_size, e.img_size, e.n_frames, e.in_chans);
-    printf("             ln_eps=%g act=%s pos=%s cls=%s registers=%d qkv_fused=%s layer_scale=%s\n",
+    printf("             ln_eps=%g act=%s pos=%s cls=%s registers=%d qkv_fused=%s layer_scale=%s attn=%s\n",
            e.ln_eps, jepa_act_name(e.act), e.pos_type_str.c_str(), e.cls_token ? "yes" : "no", e.n_registers,
-           e.qkv_fused ? "yes" : "no", e.layer_scale ? "yes" : "no");
+           e.qkv_fused ? "yes" : "no", e.layer_scale ? "yes" : "no", e.attn_mode.c_str());
     if (e.pos_type == JEPA_POS_ROPE3D) {
         printf("             rope: theta=%g layout=%s interpolate=%s ref_grid=%d\n", e.rope_theta, e.rope_freq_layout.c_str(),
                e.rope_interpolate ? "yes" : "no", e.rope_ref_grid);
