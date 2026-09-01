@@ -261,6 +261,17 @@ static int ac_predict(jepa_context * ctx, const float * context, int n_frames, i
         jepa_log("jepa: jepa_ac_predict: need n_frames > 0 and n_batch > 0 (got %d / %d)\n", n_frames, n_batch);
         return -1;
     }
+    // The interleave in jepa_build_ac builds exactly the two rows the released checkpoint has --
+    // action, then state. Meta's `use_extrinsics=True` variant would add a third
+    // (`extrinsics_encoder`), which no released file sets and which this graph does not build; a file
+    // declaring one would otherwise get a sequence short of what its mask and its RoPE ids describe.
+    if (K != 2) {
+        jepa_log("jepa: jepa_ac_predict: jepa.pred.n_cond_tokens is %lld, but this graph builds exactly "
+                 "2 conditioning rows per frame (%s) -- an extrinsics-conditioned predictor is not "
+                 "implemented\n", (long long) K,
+                 p.cond_order.empty() ? "action,state" : p.cond_order.c_str());
+        return -1;
+    }
     if (p.n_frames > 0 && T > p.n_frames) {
         jepa_log("jepa: jepa_ac_predict: %d context frames, but the predictor's block-causal mask was "
                  "built for %d frame slots (jepa.pred.n_frames)\n", n_frames, p.n_frames);
