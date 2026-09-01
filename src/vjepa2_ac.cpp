@@ -24,7 +24,7 @@
 //        action/state of frame t -> id  t*grid*grid
 //        patch (t, h, w)         -> id  t*grid*grid + h*grid + w
 //    (modules.py:180-181 also rescales h/w by grid_size/H; the released checkpoint runs at its own
-//    grid, where the factor is 1, and jepa_ac_predict refuses anything else.)
+//    grid, where the factor is 1; the loader does not check a file against that grid yet.)
 //
 //  * The mask is block-causal over FRAMES, not over tokens: every row of frame t sees every row of
 //    frames 0..t, including the conditioning rows (build_action_block_causal_attention_mask fills

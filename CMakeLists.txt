@@ -170,7 +170,7 @@ if(JEPA_BUILD_TESTS)
     # V-JEPA 2-AC predictor parity (f16) against the Meta world-model dump: the single-step and
     # two-frame predictions, block-causality, the K x H rollout, jepa_ac_next_state, the planning
     # energy and its ranking, and batched-K == sequential-K. f32 passes the same suite (bit-exact
-    # everywhere); q8_0 and below do not clear the rollout bars and are run by hand — see
+    # everywhere); q4_0 and q4_k do not clear the AC bars on the CPU and q8_0 misses one bar on CUDA; those are run by hand — see
     # docs/parity.md, "V-JEPA 2-AC".
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/vjepa2-ac-vitg-f16.gguf AND
        EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2-ac-vitg/manifest.json)

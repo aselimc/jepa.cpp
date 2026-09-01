@@ -15,7 +15,7 @@ The graph is **built from that metadata, not from per-model code**. `jepa_model_
 hyperparameters and the tensor table; `jepa_context_new` allocates a compute arena; `jepa_encode`
 builds a ggml graph for the requested shape and runs it on the context's backend. A new checkpoint of
 a known family therefore needs no C++ change — the converter writes the metadata and the loader picks
-the branches, which is why seven models of six families share one builder.
+the branches, which is why nine models of six families share one builder.
 
 Around that sit four layers: preprocessing (pixels to a normalised tensor, host-side), the shared ViT
 graph, the optional heads, and pooling. The public surface is one C header, `include/jepa.h`
