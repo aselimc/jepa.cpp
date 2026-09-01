@@ -215,15 +215,24 @@ On the CUDA backend the picture differs and jepa.cpp cannot change it:
 | | CPU | CUDA |
 |---|---|---|
 | `mul_mat`, f32 weights | strict FP32 | **TF32** — ggml passes `CUBLAS_GEMM_DEFAULT_TENSOR_OP` to every `cublasGemmEx` and never calls `cublasSetMathMode`, and `ggml_mul_mat_set_prec` only selects the compute type |
-| `mul_mat`, f16 weights | F32 accumulation | F16 accumulation unless `GGML_PREC_F32` is set, which jepa.cpp sets by default on a GPU |
+| `mul_mat`, f16 weights | F32 accumulation | F16 accumulation unless `GGML_PREC_F32` is set, which jepa.cpp sets by default for four of its six families |
 | `flash_attn_ext` | F32 K/V honoured | K/V always converted to F16, PV accumulator `half2`; `ggml_flash_attn_ext_set_prec` is a no-op |
 | `ggml_norm` | centred two-pass variance | one-pass `E[x²] − mean²` |
 
-`GGML_PREC_F32` on every `mul_mat` is the GPU default and takes the f16 matmul error from 4.6e-03 to
+`GGML_PREC_F32` on every `mul_mat` takes the f16 matmul error from 4.6e-03 to
 2.6e-05, i.e. below the CPU's own 3.0e-04. It is not free, and what it costs depends on how much work
 there is to hide it behind: on one matmul, **−21 % throughput at N = 2048 and +9 % at N = 8192**; end
-to end, **1.76× at I-JEPA's 256 tokens against 1.06× at 8 192**. Quantized weights never reach cuBLAS,
-so for them it costs nothing. `$JEPA_GPU_PREC=f16` opts out; on the CPU the call is a no-op. The one-pass variance is a per-row *scale* error that cosine is structurally blind to, which is
+to end, **1.78× at I-JEPA's 256 tokens against 0.96× at 18 432**. Quantized weights never reach cuBLAS,
+so for them it costs nothing.
+
+**Which of the two a GPU context picks is decided per family** (`jepa_gpu_prec_f32_default` in
+`src/jepa.cpp`), by two measurements: whether the family still clears its GPU parity tier with f16
+accumulation, and whether f16 accumulation is faster at its shapes.
+`hfvit` and `levjepa` pass and gain, so they accumulate in f16; `ijepa` and `vjepa2` gain the most
+and fail the tier, `lewm` and `vjepa2_1` pass and gain nothing at their shapes, so all four keep
+`GGML_PREC_F32`. [performance.md](performance.md#accumulation-precision-on-a-gpu) is the table and
+`tests/results/gpu-prec.json` the artifact. `$JEPA_GPU_PREC` overrides either way; on the CPU the
+call is a no-op. The one-pass variance is a per-row *scale* error that cosine is structurally blind to, which is
 why every GPU parity tier gates `rel_max` as well; over 1.66 M real pre-LayerNorm rows the ratio that
 governs its failure peaks at 2.72, far from the 100–2000 where it degrades.
 
@@ -306,13 +315,14 @@ reason a single backend beats a scheduler; every measurement on this site warms 
 | variable | tool flag | effect |
 |---|---|---|
 | `JEPA_DEVICE=cuda:N` \| `cpu` \| `N` | `--gpu [N]` | select the compute device; default CPU |
-| `JEPA_GPU_PREC=f16` | `--gpu-prec f16` (`jepa-bench`) | opt out of the default `GGML_PREC_F32` matmuls on a GPU. Bench-only and not parity-gated: read its numbers as a measured upper bound, not a shipping configuration |
+| `JEPA_GPU_PREC=f16` \| `f32` | `--gpu-prec f16\|f32` (`jepa-bench`) | override the family's GPU accumulation precision for the process; both settings are parity-measured per family in `tests/results/gpu-prec.json` |
 | `JEPA_VALIDATE_GRAPH=0` | — | disable the pre-compute graph validation. Debugging only — without it an unsupported node on a single CUDA backend computes a silently wrong answer |
 | `JEPA_MAX_BATCH` | `--batch B` | image items per encoder graph; default 32 |
 | `JEPA_MAX_GRAPH_MIB` | — | cap on the compute arena; larger inputs are split across graphs |
 | `JEPA_KV_F16` / `JEPA_KV_F32` | `--kv-f16` / `--kv-f32` | override the automatic flash-attention K/V dtype (CPU; on CUDA F16 is forced and the request is logged once) |
 
-`jepa_context_set_mul_mat_prec_f32(ctx, false)` is the API form of `JEPA_GPU_PREC=f16`.
+`jepa_context_set_mul_mat_prec_f32(ctx, false)` is the API form of `JEPA_GPU_PREC=f16`, and
+`jepa_context_mul_mat_prec_f32()` reports what a context ended up with.
 
 ## The cached planning context
 

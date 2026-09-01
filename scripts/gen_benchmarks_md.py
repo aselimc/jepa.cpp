@@ -1388,8 +1388,9 @@ def render_gpu(A, blob: dict) -> None:
         ["ggml", f"`{box.get('ggml_commit', '?')}`, **`GGML_LLAMAFILE={box.get('ggml_llamafile', '?')}`** "
                  "(a host-side path, unused here)"],
         ["jepa.cpp", f"`{box.get('git_commit', '?')}`"],
-        ["Precision", "`GGML_PREC_F32` on every `mul_mat` unless a row says `--gpu-prec f16`; "
-                      "K/V F16 in flash attention for every file but f32"],
+        ["Precision", "the accumulation precision the model's family defaults to "
+                      "(`src/jepa.cpp`, `jepa_gpu_prec_f32_default`) unless the row's `prec` "
+                      "column says otherwise; K/V F16 in flash attention for every file but f32"],
     ]
     A(table(cardrows, ["setting", "value"], "ll"))
     A("")
@@ -1477,17 +1478,19 @@ def render_gpu(A, blob: dict) -> None:
                                ms_str(d["f32"]["ms_mean"]), ms_str(d["f16"]["ms_mean"]),
                                f"{d['f32']['ms_mean'] / d['f16']['ms_mean']:.2f}x"])
     if prec_pairs:
-        A("### What `GGML_PREC_F32` costs (`--gpu-prec f16`)")
+        A("### What `GGML_PREC_F32` costs (against f16 accumulation)")
         A("")
         A(table(prec_pairs, ["model", "ftype", "shape", "tokens", "`GGML_PREC_F32` ms",
-                             "`--gpu-prec f16` ms", "cost of F32 accumulation"], "lllrrrr"))
+                             "f16 accumulation ms", "cost of F32 accumulation"], "lllrrrr"))
         A("")
-        A("`--gpu-prec f16` hands the `mul_mat`s cuBLAS' own f16 compute type instead of forcing "
-          "F32 accumulation. It is **bench-only**: it is not exposed in the runtime tools and not "
-          "parity-gated (`docs/parity.md` measures a 177x wider f16 error with it), so these "
-          "milliseconds are a measured upper bound rather than a shipping configuration. The cost "
-          "is a strong function of the sequence — it is what holds the small image models back "
-          "against the long clips' twenties in the speed-up column above.")
+        A("f16 accumulation hands the `mul_mat`s cuBLAS' own f16 compute type instead of forcing "
+          "F32. Which of the two a family defaults to is decided per family by the parity sweep "
+          "`scripts/gpu_prec_sweep.sh` and by these milliseconds together "
+          "(`tests/results/gpu-prec.json`, and `docs/performance.md` "
+          "*Accumulation precision on a GPU*); `--gpu-prec` and `$JEPA_GPU_PREC` select either one "
+          "for any run. The cost is a strong function of the shape — it is what holds the small "
+          "image models back against the long clips' twenties in the speed-up column above — and "
+          "it is largest on I-JEPA, whose tier the faster setting does not clear.")
         A("")
 
     other = [r for r in rows if r["mode"] != "encoder"]

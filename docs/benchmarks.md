@@ -444,7 +444,7 @@ The configurations live in `scripts/bench_gpu.grid`, one line per (model, mode, 
 | Host compiler | c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 |
 | ggml | `36da5713`, **`GGML_LLAMAFILE=ON`** (a host-side path, unused here) |
 | jepa.cpp | `b98cfa1a` |
-| Precision | `GGML_PREC_F32` on every `mul_mat` unless a row says `--gpu-prec f16`; K/V F16 in flash attention for every file but f32 |
+| Precision | the accumulation precision the model's family defaults to (`src/jepa.cpp`, `jepa_gpu_prec_f32_default`) unless the row's `prec` column says otherwise; K/V F16 in flash attention for every file but f32 |
 
 Measurement sessions (one `bench_gpu.sh` invocation each):
 
@@ -557,9 +557,9 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 
 **The CPU ordering inverts here.** Every type jepa.cpp ships takes `mmq`, a real INT8 tensor-core kernel, so q8_0 and q4_k both beat f16 while being half and a quarter of the weight bytes — where on the CPU the k-quants fall off llamafile's accelerated sgemm and lose. The f32 column is not slower than f16 because ggml's CUDA F32 path is TF32, while the f16 path pays for `GGML_PREC_F32` accumulation. Accuracy per type does not invert with the backend: `docs/parity.md` *Results — encoders on CUDA0* has the cosines.
 
-### What `GGML_PREC_F32` costs (`--gpu-prec f16`)
+### What `GGML_PREC_F32` costs (against f16 accumulation)
 
-| model | ftype | shape | tokens | `GGML_PREC_F32` ms | `--gpu-prec f16` ms | cost of F32 accumulation |
+| model | ftype | shape | tokens | `GGML_PREC_F32` ms | f16 accumulation ms | cost of F32 accumulation |
 |---|---|---|---:|---:|---:|---:|
 | ijepa_vith14_1k | f16 | 224x224 | 256 | 16.1 | 8.9 | 1.80x |
 | lejepa-vits16-pretrain-in1k | f16 | 224x224 | 197 | 1.1 | 1.0 | 1.11x |
@@ -571,7 +571,7 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 | vjepa2_1-vitb-384 | f16 | 16f 384x384 | 4 608 | 43.4 | 44.4 | 0.98x |
 | vjepa2_1-vitb-384 | f16 | 64f 384x384 | 18 432 | 429 | 446 | 0.96x |
 
-`--gpu-prec f16` hands the `mul_mat`s cuBLAS' own f16 compute type instead of forcing F32 accumulation. It is **bench-only**: it is not exposed in the runtime tools and not parity-gated (`docs/parity.md` measures a 177x wider f16 error with it), so these milliseconds are a measured upper bound rather than a shipping configuration. The cost is a strong function of the sequence — it is what holds the small image models back against the long clips' twenties in the speed-up column above.
+f16 accumulation hands the `mul_mat`s cuBLAS' own f16 compute type instead of forcing F32. Which of the two a family defaults to is decided per family by the parity sweep `scripts/gpu_prec_sweep.sh` and by these milliseconds together (`tests/results/gpu-prec.json`, and `docs/performance.md` *Accumulation precision on a GPU*); `--gpu-prec` and `$JEPA_GPU_PREC` select either one for any run. The cost is a strong function of the shape — it is what holds the small image models back against the long clips' twenties in the speed-up column above — and it is largest on I-JEPA, whose tier the faster setting does not clear.
 
 ### Predictor, head and world model on a GPU
 

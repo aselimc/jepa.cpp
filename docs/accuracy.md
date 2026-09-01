@@ -114,7 +114,7 @@ A CUDA build runs the same graphs, and three backend differences are outside jep
 CUDA "F32" matmul is really TF32, CUDA flash attention always converts K/V to F16 and accumulates PV
 in `half2`, and `ggml_norm` uses a one-pass variance there. **There is no f32 tier on a GPU** — an f32
 GGUF is judged with its family's f16 bars, and `test-parity` says so in its header. f16 and quantized
-files keep their own bars; with `GGML_PREC_F32` (the GPU default) the f16 matmul term is 2.6e-05, i.e.
+files keep their own bars; with `GGML_PREC_F32` the f16 matmul term is 2.6e-05, i.e.
 better than the CPU's own 3.0e-04.
 
 Encoders on CUDA, worst sample per file, stored-input pass:

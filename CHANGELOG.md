@@ -8,7 +8,44 @@ across releases.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **The GPU accumulation precision is now a per-family default instead of `GGML_PREC_F32`
+  everywhere.** `hfvit` (LeJEPA) and `levjepa` accumulate f16 `mul_mat`s in f16, which is 1.11× and
+  1.06× faster and clears the same GPU parity tiers with room; `ijepa`, `vjepa2`, `vjepa2_1`, `lewm`
+  and `vjepa` keep `GGML_PREC_F32`. Both halves of every family's decision are measured:
+  `scripts/gpu_prec_sweep.sh` runs `test-parity` over every fixture sample of every dtype at both
+  settings into `tests/results/gpu-prec.json`, and `scripts/bench_gpu.grid` pairs each family's
+  default encoder row with the setting it does not default to. **The tiers are unchanged.** f16
+  accumulation is worth 1.78× on I-JEPA and 1.24× on V-JEPA 2 ViT-L and fails their tiers — I-JEPA's
+  worst token drops to 0.8938 against a 0.90 floor — so those two keep the slower, accurate setting.
+  `$JEPA_GPU_PREC=f16|f32` and `jepa_context_set_mul_mat_prec_f32()` override it for a process;
+  `jepa-bench` prints which one a row used and records it in its JSON.
+
+### Added
+
+- **Batched GPU throughput on the encoder's batch axis**, `--batch 1/8/32` for the four image shapes
+  and clips-per-batch for two video models, with a PyTorch counterpart at the same batch sizes in
+  eager and `torch.compile` form. LeWM gains 4.3× per item and LeJEPA 2.4×; V-JEPA 2.1 at 384² and
+  every clip shape are flat, because one item already fills the card. `scripts/torch_gpu_baseline.py`
+  gains `--batch`, `--compile` and `--max-batch-tokens` (and now calls `torch.cuda.set_device`,
+  without which a `--device 1` run synchronised device 0 and timed nothing).
+- **A CUDA profile of the encoder graph**, `scripts/profile_gpu.py` into
+  `tests/results/gpu-profile.json`: kernels grouped by (name, launch grid), attributed to graph ops
+  by launch count, with device-to-device memcpys counted as GPU time. 3-D RoPE and its `cont` are
+  10.4 % of the V-JEPA 2 ViT-L 16-frame encode, 13.9 % at 64 frames and 10.6 % of LeVJEPA's; an
+  off-stride token count costs nothing against a `FATTN_KQ_STRIDE`-aligned one (0.0646–0.0651 ns per
+  score element per layer across 1 792–2 304 tokens, with no step at the boundary); and four
+  concurrent encoders reach 1.39× of one on LeJEPA but 0.95× on I-JEPA, which `--batch` already beats
+  in a single process.
+- **A TensorRT fp16 baseline**, `scripts/tensorrt_baseline.py` into `tests/results/tensorrt.json`,
+  labelled throughout as not jepa.cpp: I-JEPA ViT-H at 4.98 ms fp16 and 11.71 ms fp32 on the same
+  card, with the engine's own cosine against the reference beside each. V-JEPA 2 ViT-L has an fp32
+  engine (100.0 ms) and no fp16 one, and the artifact records why.
+- `scripts/gen_benchmarks_md.py --merge-json-gpu` and `scripts/bench_gpu.sh --merge`, so a sweep of
+  part of the GPU grid adds its rows to `tests/results/benchmarks-gpu.json` instead of dropping every
+  configuration it did not measure. The grid gains a batch column, and `shape` now carries the item
+  count so two batch sizes cannot share a key.
 
 ## [0.2.0] — 2026-09-02
 

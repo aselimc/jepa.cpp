@@ -246,16 +246,33 @@ def gpu_from_artifact(bench_gpu: dict) -> dict:
     """The same key → {'cuda', 'torch_gpu'} structure parse_gpu_tables() builds, straight out of
     the GPU sweep's artifact — no join and no rounding-trip through the document.
 
-    Only the default-precision encoder rows become dtype series: a `--gpu-prec f16` row is the same
-    file measured with a different accumulation and is a separate column on the page, not a dtype.
+    Only the default-precision, single-item encoder rows become dtype series. A row measured with
+    the accumulation precision the family does *not* default to is the same file on a different
+    numeric path and is a column on the page rather than a dtype; a `--batch B` row is B items in
+    one graph and belongs to the batching table. `gpu_prec_explicit` says which is which, and for
+    rows written before that field existed the two questions had the same answer, because every
+    default was then F32.
+
+    The artifact spans two cards, and the choice is made per (model, shape) rather than per dtype:
+    the card is the one the PyTorch baseline beside this figure ran on, and a shape that card never
+    measured falls back to the other one whole. Per-dtype fallback would put two cards inside one
+    group, where the point of the group is that its bars differ only in the dtype.
     """
-    out: dict = {}
+    want_dev = (bench_gpu or {}).get("pytorch_gpu", {}).get("box", {}).get("device_index")
+    want_dev = f"CUDA{want_dev}" if want_dev is not None else None
+    by_key: dict = {}
     for row in (bench_gpu or {}).get("rows", []):
-        if row.get("mode") != "encoder" or row.get("gpu_prec") != "f32":
+        if row.get("mode") != "encoder" or (row.get("batch") or 1) != 1:
             continue
-        ms = float(row["ms_mean"])
-        out.setdefault((row["model"], int(row["tokens"])), {"cuda": {}, "torch_gpu": {}})
-        out[(row["model"], int(row["tokens"]))]["cuda"][row["ftype"]] = (ms, fmt_ms(ms))
+        if row.get("gpu_prec_explicit", row.get("gpu_prec", "f32") != "f32"):
+            continue
+        key = (row["model"], int(row["tokens"]))
+        by_key.setdefault(key, {}).setdefault(row["device"], {})[row["ftype"]] = float(row["ms_mean"])
+    out: dict = {}
+    for key, per_dev in by_key.items():
+        dev = want_dev if want_dev in per_dev else next(iter(per_dev))
+        out[key] = {"cuda": {ft: (ms, fmt_ms(ms)) for ft, ms in per_dev[dev].items()},
+                    "torch_gpu": {}}
     for row in (bench_gpu or {}).get("pytorch_gpu", {}).get("rows", []):
         key = (row["model"], int(row["tokens"]))
         if key not in out:

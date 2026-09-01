@@ -570,7 +570,8 @@ that moves the whole distribution is visible even when the gate passes.
 Everything above is the CPU backend. A CUDA build (`-DJEPA_CUDA=ON`, `docs/getting-started.md`) runs the
 same graphs on a GPU, and `test-parity` / `test-predictor` take `--gpu [N]` to judge them there.
 Box: one NVIDIA RTX 4500 Ada Generation (compute 8.9, 24 GB), CUDA 13.0.88, driver 580.173.02,
-ggml @ 36da5713, `GGML_PREC_F32` on every `mul_mat` (the default on a GPU).
+ggml @ 36da5713, `GGML_PREC_F32` on every `mul_mat` — which is what four of the six families
+default to, and what `$JEPA_GPU_PREC=f32` pins for the other two.
 
 ```bash
 cmake -S . -B build-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DJEPA_CUDA=ON && cmake --build build-cuda -j 16
@@ -586,7 +587,7 @@ Three backend differences, none of which jepa.cpp can turn off:
 | | CPU | GPU (ggml-CUDA) |
 |---|---|---|
 | `mul_mat`, f32 weights | strict FP32, 1.2e-07 | **TF32**, 3.2e-04 — ggml passes `CUBLAS_GEMM_DEFAULT_TENSOR_OP` to every `cublasGemmEx` and never calls `cublasSetMathMode`; `ggml_mul_mat_set_prec` only picks the *compute type*, so it cannot undo this |
-| `mul_mat`, f16 weights | 3.0e-04 | 2.6e-05 **with** `GGML_PREC_F32` (on by default), 4.6e-03 without |
+| `mul_mat`, f16 weights | 3.0e-04 | 2.6e-05 **with** `GGML_PREC_F32`, 4.6e-03 without |
 | `flash_attn_ext` | F32 K/V honoured, rel ≤ 6e-07 | K/V always converted to F16 and the PV accumulator is `half2`; rel 5.2e-03–1.5e-02, and `ggml_flash_attn_ext_set_prec` is a no-op there |
 | `ggml_norm` | centred two-pass variance | one-pass `E[x²] − mean²` |
 
@@ -692,6 +693,42 @@ against `k_VKQ_sup`, so an unpadded `[3137, 3137]` F16 buffer is read correctly.
 mandatory on a GPU — accepts every node, and the measured agreement with PyTorch settles it: a
 silently dropped mask would read 0.945 on the CLS, not 1.000000.
 
+### Accumulation precision, per family
+
+The table above is `GGML_PREC_F32` on every `mul_mat`. That is what four of the six families ask a
+GPU context for; `hfvit` and `levjepa` ask for f16 accumulation instead, because they clear the same
+tiers with it and are 1.11× and 1.06× faster
+([performance.md](performance.md#accumulation-precision-on-a-gpu) has the milliseconds).
+`scripts/gpu_prec_sweep.sh` runs every family at every dtype at **both** settings and writes
+`tests/results/gpu-prec.json`; the bars are the ones above and are untouched.
+
+Only f16 weights move. A quantized file takes `mmq` and never reaches cuBLAS, ggml's f32 path is
+TF32 either way, and the flash-attention accumulator is `GGML_PREC_F32` in both — the small
+movements in the quantized rows are the f16 and f32 tensors a quantized file still carries.
+
+Where the two settings diverge, worst sample per file, stored-input pass:
+
+| model | ftype | cos mean | cos med | cos min | rel_max | verdict at f16 accumulation |
+|---|---|---|---|---|---|---|
+| lejepa-vits16 | f16 | 0.999988 (0.999994) | 0.999991 (0.999996) | 0.9998 (0.9998) | 6.3e-03 (5.8e-03) | **passes** — the shipped default |
+| levjepa-vitl16 | f16 | 0.999964 (0.999996) | 0.999990 (0.999998) | 0.9933 (0.9999) | 1.6e-02 (4.1e-03) | **passes** — the shipped default |
+| ijepa-vith14-1k | f16 | 0.999240 (0.999788) | 0.999982 (0.999996) | **0.8938** (0.9613) | **2.0e-01** (9.1e-02) | **fails**: worst token under the 0.90 floor and `rel_max` over the 0.15 bar, both on `coco_000000039769` |
+| vjepa2-vitl-fpc64-256 | f16 | **0.9887** (0.9948) | 0.999170 (0.999696) | 0.3026 (0.3557) | **7.0e-01** (4.7e-01) | **fails**: token-map mean under 0.99 and `rel_max` over 0.5·√(N/2048), on *bowling* |
+| vjepa2-vitl-fpc16-256-ssv2 | f16 | 0.9887 | 0.999253 | 0.3383 | 7.0e-01 | **fails** the same two bars |
+| vjepa2_1-vitb-384 | f16 | 0.999718 (0.999951) | 0.999919 (0.999985) | 0.9599 (0.9769) | 7.6e-02 (5.1e-02) | passes, but its clips are 2–4 % slower, so it keeps `GGML_PREC_F32` |
+| lewm-pusht | f16 | 0.999999 (1.000000) | 0.999999 (1.000000) | 1.0000 (1.0000) | 1.9e-03 (7.1e-04) | passes, with no time to gain, so it keeps `GGML_PREC_F32` |
+
+Values in brackets are the same file at `GGML_PREC_F32`, i.e. the row of the table above.
+V-JEPA 2 ViT-g/16 fails its f16 tier at **both** settings and for the same reason it does in the
+[ViT-g section](#v-jepa-2-vit-g16-the-first-22-head-ffn-4811-encoder-here) — a bound fitted on ViT-L —
+so nothing about it turns on this choice; its quantized tiers pass at both.
+
+```bash
+scripts/gpu_prec_sweep.sh 1 --timing-repeat 4
+JEPA_GPU_PREC=f16 build-cuda/test-parity models/gguf/ijepa_vith14_1k-f16.gguf \
+    tests/fixtures/ref/ijepa-vith14-1k --gpu 1
+```
+
 ### Results — predictors on CUDA0
 
 `test-predictor --gpu 0`, against the same PyTorch dumps. The V-JEPA 2 predictor has head_dim 32,
@@ -743,7 +780,7 @@ rows):
   unscaled q·k of 201. The number that actually decides overflow is the running partial sum inside
   the GEMM: measured in float64 it peaks at **412**, and the unattainable all-same-sign ceiling
   `Σ|x_k w_k|` over *every* element of *every* linear is **600** — 109× below `half`'s 65504.
-  `GGML_PREC_F32` stays on by default for **mantissa**, not range.
+  `GGML_PREC_F32` is kept for **mantissa**, not range.
 * **CUDA's one-pass `ggml_norm` variance is not a risk for these models.** Its failure is governed
   by |row mean| / row σ (1e-7 at ratio 0, 8.9e-4 at 100, catastrophic at 2000). Over 1.66 M real
   pre-LN rows the maximum ratio is **2.72** (I-JEPA ViT-H, layer 0, one token), the 99.9th
