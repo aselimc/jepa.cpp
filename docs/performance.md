@@ -352,6 +352,25 @@ axis is what the file weighs, the y axis is its latency against the same backend
 point below 1× is faster than f16 and a point to the left is smaller.
 `scripts/gen_results_figure.py --split` redraws it.*
 
+### 8-bit inference
+
+The 8-bit format jepa.cpp ships is ggml's `q8_0`: int8 weights with one f16 scale per block of 32
+values. On the CPU the llamafile kernels multiply those int8 weights against f32 activations; on
+CUDA `mmq` quantizes the activations to 8 bits on the fly and runs the dot products on the INT8
+tensor cores, so on the GPU q8_0 is 8-bit compute rather than weight-only storage. There is no FP8
+path: ggml has no E4M3/E5M2 tensor type at the pinned commit, and no number on this site is an FP8
+measurement.
+
+| model | resident weights f16 → q8_0 | CPU ms f16 → q8_0 (32 threads) | CUDA ms f16 → q8_0 |
+|---|---:|---:|---:|
+| I-JEPA ViT-H/14, 224² | 1206 → 644 MiB (0.53×) | 147 → 129 (0.88×) | 15.5 → 8.0 (0.52×) |
+| V-JEPA 2 ViT-L fpc64, 16 f 256² | 622 → 333 MiB (0.54×) | 821 → 794 (0.97×) | 46.5 → 34.4 (0.74×) |
+
+The accuracy side of the same trade is on the [Accuracy](accuracy.md) page: at q8_0 the SSv2
+classifier scores 72.47 % top-1 against PyTorch's 72.39 % over the full validation split with
+97.97 % of argmaxes identical, the Imagenette k-NN results stay within 0.13 pp, and the UCF-101
+predictions are unchanged.
+
 ## Reproduce
 
 ```bash
