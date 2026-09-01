@@ -130,13 +130,13 @@ Then everything is C++:
 build/jepa-embed -m models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf \
     -i tests/fixtures/media/coco_000000000139.jpg --pool cls -t 32 --time
 
-# 16-frame clip -> pooled feature (frames from a .npy, or --as-video -i f0.jpg -i f1.jpg ...)
+# video file -> pooled feature (16 frames sampled over the clip; needs ffmpeg on the PATH)
 build/jepa-embed -m models/gguf/vjepa2_1-vitb-384-f16.gguf \
-    --frames-npy tests/fixtures/ref/vjepa2_1-vitb-384/archery_f16.frames_u8.npy --pool mean -t 32
+    --video tests/fixtures/media/archery.mp4 --frames 16 --pool mean -t 32
 
 # clip -> "what is happening?" (SSv2, 174 classes; model comes with download_models.sh all)
 build/jepa-classify -m models/gguf/vjepa2-vitl-fpc16-256-ssv2-f16.gguf \
-    --frames-npy tests/fixtures/ref/vjepa2-vitl-fpc16-256-ssv2/archery_f16.frames_u8.npy -k 5 -t 32
+    --video tests/fixtures/media/archery.mp4 -k 5 -t 32
 
 # image -> latent world model -> 8 action steps
 build/jepa-worldmodel -m models/gguf/lewm-pusht-f16.gguf \
@@ -146,6 +146,9 @@ build/jepa-worldmodel -m models/gguf/lewm-pusht-f16.gguf \
 build/jepa-quantize models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf \
                     models/gguf/lejepa-vits16-pretrain-in1k-q8_0.gguf q8_0 -t 32
 ```
+
+`--video` shells out to `ffmpeg` (a run-time dependency of the two tools, never of the build or the
+library) and samples the frames the way the PyTorch side does, so a clip needs no Python either.
 
 The C API is one header, [`include/jepa.h`](include/jepa.h) — opaque handles, plain structs, no C++
 types. Load a model, make a context, `jepa_encode`, then pool or predict. The full reference is on the
@@ -171,7 +174,7 @@ policy, parity thresholds — is on the [documentation site](https://aselimc.git
 ## Testing
 
 ```bash
-ctest --test-dir build        # 10 suites: parity, predictors, batching, RoPE vectors + the block-causal mask, attention, backend
+ctest --test-dir build        # 11 suites: parity, predictors, batching, RoPE vectors + the block-causal mask, attention, backend, video ingest
 ```
 
 `test-parity` replays PyTorch golden dumps through the engine and gates per-token cosine, pooled

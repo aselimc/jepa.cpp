@@ -15,7 +15,9 @@ The binaries are CPU only and built for **x86-64-v3** — SSE4.2, AVX, AVX2, FMA
 Haswell-or-newer CPU — against **glibc 2.35** (Ubuntu 22.04), with `libstdc++` and `libgcc` linked
 statically. The one external runtime dependency is `libgomp.so.1` (`apt install libgomp1`,
 `dnf install libgomp`). ggml is linked statically, so there is nothing else to place beside the
-binaries.
+binaries. `ffmpeg` and `ffprobe` on the `PATH` are optional: `jepa-embed` and `jepa-classify` run
+them to decode a `--video` clip, and without them that one flag reports how to install them while
+everything else — including the `--frames-npy` route into the same models — works unchanged.
 
 No GPU archive ships yet: `libggml-cuda.so` is 45 MB per GPU architecture and GitHub-hosted runners
 have no NVIDIA device to test it on. Build one from source with `-DJEPA_CUDA=ON`

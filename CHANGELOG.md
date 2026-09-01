@@ -19,6 +19,14 @@ across releases.
   manylinux x86-64 and macOS arm64.
 - **`jepa_error_reset()` / `jepa_error_text()`** — the text the library logs for a failed call,
   readable by a caller with no stderr to read. Append-only; nothing else changes.
+- **Native video ingest** — `jepa-embed --video clip.mp4` (repeatable, plus `--video-list`) and
+  `jepa-classify --video clip.mp4` decode a container by running `ffmpeg` and sample `--frames`
+  frames (default: the model's own `jepa.enc.n_frames`) uniformly over the whole clip, so a clip no
+  longer has to be turned into a `.npy` by `scripts/video_frames.py` first. The sampler and the
+  decode match that script's, and the frames are byte-identical to the ones PyAV hands it — checked
+  by the new `video` ctest suite. `ffmpeg` is a run-time dependency of those two tools only: nothing
+  links against it and the build never looks for it. Both tools also gained `--dump-frames`, which
+  writes the sampled frames as a THWC uint8 `.npy`.
 
 ## [0.1.0] — 2026-09-01
 

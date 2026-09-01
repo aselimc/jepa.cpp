@@ -1,8 +1,12 @@
 // jepa-classify: video clip -> top-k labels of an attentive-pool classifier (V-JEPA 2 SSv2 ...).
 //
+//   jepa-classify -m vjepa2-vitl-fpc16-256-ssv2-f16.gguf --video clip.mp4 [--frames 16] [-k 5]
 //   jepa-classify -m vjepa2-vitl-fpc16-256-ssv2-f16.gguf --frames-npy clip.npy [-k 5]
 //   jepa-classify -m ssv2.gguf -i f0.jpg -i f1.jpg ... [-k 5] [--json out.json]
 //
+// `--video` decodes the container with ffmpeg (tools/video-decode.cpp) and samples `--frames` frames
+// uniformly over the whole clip — the sampler of scripts/video_frames.py on the same decoded rgb24
+// frames, so it produces the tensor `--frames-npy` would have read from that script's output.
 // `--frames-npy` takes a THWC uint8 .npy (exactly what tests/fixtures/ref/<model>/<sample>.frames_u8.npy
 // holds); `-i` images are used as the frames of one clip, in the order given, and may have different
 // source sizes (each frame is preprocessed on its own; they all land on the model's crop x crop). The
@@ -12,6 +16,7 @@
 #include "jepa.h"
 #include "jepa-args.h"
 #include "npy.h"
+#include "video-decode.h"
 
 #include <chrono>
 #include <cmath>
@@ -23,7 +28,10 @@
 
 static void usage(const char * argv0) {
     fprintf(stderr,
-        "usage: %s -m model.gguf (--frames-npy clip.npy | -i frame.jpg [-i ...]) [options]\n"
+        "usage: %s -m model.gguf (--video clip.mp4 | --frames-npy clip.npy | -i frame.jpg [-i ...]) [options]\n"
+        "  --video F         a video file (mp4/webm/avi/mkv/mov ...), decoded with ffmpeg and sampled\n"
+        "                    to --frames frames uniformly over the whole clip\n"
+        "  --frames N        frames to sample from --video (default: the model's jepa.enc.n_frames)\n"
         "  -k N              show the top N classes (default 5)\n"
         "  -t N              threads (default: all)\n"
         JEPA_GPU_USAGE
@@ -32,7 +40,9 @@ static void usage(const char * argv0) {
         "  --no-flash        naive attention instead of flash attention\n"
         "  --kv-f32 / --kv-f16  K/V dtype for flash attention (default: F32 for f32 models, F16 otherwise)\n"
         "  --logits out.npy  save the raw logits as float32 .npy\n"
-        "  --dump-input F    save the preprocessed NCTHW clip as float32 .npy\n", argv0);
+        "  --dump-input F    save the preprocessed NCTHW clip as float32 .npy\n"
+        "  --dump-frames F   save the sampled frames as a THWC uint8 .npy (the layout\n"
+        "                    scripts/video_frames.py writes, for comparing the two routes)\n", argv0);
 }
 
 static double now_ms() {
@@ -75,11 +85,11 @@ static float * preprocess_frames_any_size(const jepa_model * model, const std::v
 }
 
 int main(int argc, char ** argv) {
-    std::string model_path, frames_npy, logits_out, dump_input;
+    std::string model_path, frames_npy, video, logits_out, dump_input, dump_frames;
     std::vector<std::string> images;
     jepa_context_params cp = jepa_context_default_params();
     jepa_model_params   mp = jepa_model_default_params();
-    int topk = 5, repeat = 1;
+    int topk = 5, repeat = 1, n_frames_arg = 0;   // --frames; 0 = the model's own jepa.enc.n_frames
     bool timing = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -89,6 +99,12 @@ int main(int argc, char ** argv) {
         };
         if (a == "-m") model_path = next("-m");
         else if (a == "--frames-npy") frames_npy = next("--frames-npy");
+        else if (a == "--video") video = next("--video");
+        else if (a == "--frames") {
+            const char * v = next("--frames");
+            n_frames_arg = atoi(v);
+            if (n_frames_arg < 1) { fprintf(stderr, "--frames %s: expected a frame count >= 1\n", v); return 1; }
+        }
         else if (a == "-i") images.push_back(next("-i"));
         else if (a == "-k") topk = atoi(next("-k"));
         else if (a == "-t") cp.n_threads = atoi(next("-t"));
@@ -100,10 +116,16 @@ int main(int argc, char ** argv) {
         else if (a == "--kv-f16") cp.flash_kv = JEPA_KV_F16;
         else if (a == "--logits") logits_out = next("--logits");
         else if (a == "--dump-input") dump_input = next("--dump-input");
+        else if (a == "--dump-frames") dump_frames = next("--dump-frames");
         else if (a == "-h" || a == "--help") { usage(argv[0]); return 0; }
         else { fprintf(stderr, "unknown argument %s\n", argv[i]); usage(argv[0]); return 1; }
     }
-    if (model_path.empty() || (frames_npy.empty() && images.empty())) { usage(argv[0]); return 1; }
+    if (model_path.empty() || (frames_npy.empty() && video.empty() && images.empty())) { usage(argv[0]); return 1; }
+    // fail before the model load (seconds, hundreds of MiB) rather than after it
+    if (!video.empty()) {
+        std::string why;
+        if (!jepa_video::have_ffmpeg(&why)) { fprintf(stderr, "error: %s\n", why.c_str()); return 1; }
+    }
     if (repeat < 1) repeat = 1;
 
     mp.verbose = timing;
@@ -135,7 +157,24 @@ int main(int argc, char ** argv) {
     };
     std::vector<std::vector<uint8_t>> frames;    // per frame HWC uint8
     std::vector<int> fh, fw;                     // per frame source size
-    if (!frames_npy.empty()) {
+    if (!video.empty()) {
+        // --frames defaults to what the file says it was trained on (jepa.enc.n_frames)
+        int want = n_frames_arg > 0 ? n_frames_arg : jepa_model_n_frames(model);
+        if (want <= 0) want = 16;
+        jepa_video::clip c;
+        std::string err;
+        if (!jepa_video::decode(video, want, c, err)) { fprintf(stderr, "error: %s\n", err.c_str()); return done(1); }
+        n_frames = c.n_frames;
+        for (int t = 0; t < n_frames; t++) {
+            frames.emplace_back(c.frame(t), c.frame(t) + (size_t) c.height * c.width * 3);
+            fh.push_back(c.height); fw.push_back(c.width);
+        }
+        if (timing) {
+            fprintf(stderr, "%s: %d frames %dx%d at %.2f fps decoded in %.3f s -> %d sampled (%d..%d)\n",
+                    video.c_str(), c.n_frames_total, c.width, c.height, c.fps, c.decode_s, c.n_frames,
+                    c.frame_indices.front(), c.frame_indices.back());
+        }
+    } else if (!frames_npy.empty()) {
         npy::Array a = npy::load(frames_npy);
         if (a.shape.size() != 4 || a.shape[3] != 3 || a.dtype != "|u1") {
             fprintf(stderr, "%s: expected a THWC uint8 array, got %zu dims dtype %s\n", frames_npy.c_str(), a.shape.size(), a.dtype.c_str());
@@ -160,6 +199,23 @@ int main(int argc, char ** argv) {
         }
         n_frames = (int) images.size();
     }
+    // The sampled frames as one THWC uint8 array — the layout scripts/video_frames.py writes, so the
+    // --video and --frames-npy routes can be diffed byte for byte. Written before the tubelet repeat
+    // below, which is jepa-classify's own padding and not part of that tensor.
+    if (!dump_frames.empty()) {
+        bool one_size = true;
+        for (int t = 1; t < n_frames; t++) one_size &= fh[t] == fh[0] && fw[t] == fw[0];
+        if (!one_size) {
+            fprintf(stderr, "--dump-frames: the frames have different sizes; a THWC array needs one\n");
+            return done(1);
+        }
+        const size_t plane = (size_t) fh[0] * fw[0] * 3;
+        std::vector<uint8_t> buf((size_t) n_frames * plane);
+        for (int t = 0; t < n_frames; t++) memcpy(buf.data() + (size_t) t * plane, frames[t].data(), plane);
+        npy::save(dump_frames, "|u1", {n_frames, fh[0], fw[0], 3}, buf.data());
+        fprintf(stderr, "saved frames %s [%d, %d, %d, 3]\n", dump_frames.c_str(), n_frames, fh[0], fw[0]);
+    }
+
     // Models with tubelet t need a multiple of t frames; the HF processor repeats frames for that.
     const int tub = jepa_model_tubelet_size(model);
     if (tub > 1 && n_frames % tub != 0) {

@@ -37,7 +37,8 @@ add_subdirectory(ggml EXCLUDE_FROM_ALL)
 # --- compiler flags ----------------------------------------------------------
 # MSVC does not speak the GCC/Clang warning spellings, needs /utf-8 for these UTF-8 sources and
 # /bigobj for the translation units that include third_party/json.hpp (tools/jepa-worldmodel.cpp,
-# tests/test-parity.cpp), which otherwise overflow the object file's section limit (C1128).
+# tests/test-parity.cpp, tests/test-video.cpp), which otherwise overflow the object file's section
+# limit (C1128).
 if(MSVC)
   add_compile_options(/utf-8 /bigobj)
   set(JEPA_WARN_FLAGS /W3)
@@ -66,7 +67,14 @@ target_compile_definitions(jepa PUBLIC JEPA_VERSION="${PROJECT_VERSION}")
 if(JEPA_BUILD_TOOLS)
   foreach(tool jepa-embed jepa-classify jepa-quantize jepa-bench jepa-info jepa-worldmodel)
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/${tool}.cpp)
-      add_executable(${tool} tools/${tool}.cpp)
+      set(_tool_src tools/${tool}.cpp)
+      # --video: ffmpeg is a *run-time* dependency of these two tools, never a build-time one, so
+      # the decoder is plain C++ compiled into them and a checkout without ffmpeg still builds
+      # (and still runs, minus that one flag).
+      if(tool STREQUAL "jepa-embed" OR tool STREQUAL "jepa-classify")
+        list(APPEND _tool_src tools/video-decode.cpp)
+      endif()
+      add_executable(${tool} ${_tool_src})
       target_link_libraries(${tool} PRIVATE jepa)
       target_include_directories(${tool} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party ${CMAKE_CURRENT_SOURCE_DIR}/src)
     endif()
@@ -187,6 +195,26 @@ if(JEPA_BUILD_TESTS)
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf)
       add_test(NAME backend COMMAND test-backend
                ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf --threads 8)
+    endif()
+  endif()
+  # The tools' ffmpeg ingest against the frame tensors PyAV produced for the reference dumps: same
+  # count, same indices, same pixels. Registered when the (git-ignored) reference dumps and their
+  # source clips are present; the binary itself exits 0 with a "skipped" line when ffmpeg is absent,
+  # so a checkout without it costs nothing. ~2 s.
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-video.cpp)
+    add_executable(test-video tests/test-video.cpp tools/video-decode.cpp)
+    target_include_directories(test-video PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/src
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+    set(_video_refs "")
+    foreach(_ref vjepa2_1-vitb-384 vjepa2-vitl-fpc64-256 vjepa2-vitl-fpc16-256-ssv2 levjepa-vitl16)
+      if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/${_ref}/manifest.json)
+        list(APPEND _video_refs --ref ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/${_ref})
+      endif()
+    endforeach()
+    if(_video_refs AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/media/archery.mp4)
+      add_test(NAME video COMMAND test-video --media ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/media
+                                  ${_video_refs})
     endif()
   endif()
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-attn.cpp)

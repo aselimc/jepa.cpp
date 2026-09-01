@@ -7,7 +7,7 @@ Two benchmarks live here: a frozen-feature k-NN over a UCF-101 subset, which eve
 Frozen-feature evaluation, 2026-09-01. **Inference only** — nothing is trained: the encoders are frozen and both metrics are look-ups over their pooled clip features.
 
 - **Dataset** `data/ucf101-subset/UCF101_subset` — 10 classes, gallery = train (300 clips), queries = test (75) / val (30) / val+test (105).
-- **Clip** 16 frames, `idx = round(linspace(0, T_total-1, 16)) over all PyAV rgb24 frames`, decoded once with PyAV to a THWC uint8 `.npy` that *both* backends read, so the two see identical pixels.
+- **Clip** 16 frames, `idx = round(linspace(0, T_total-1, 16)) over all PyAV rgb24 frames`, decoded once with PyAV to a THWC uint8 `.npy` that *both* backends read, so the two see identical pixels. (`jepa-embed --video clip.mp4` reaches the same tensor without Python — same sampler, same libswscale conversion, byte for byte; see [architecture → preprocessing](architecture.md#preprocessing). The sweeps keep the `.npy` route because one shared, cached decode is what makes both backends provably see the same pixels.)
 - **Feature** mean over encoder tokens (pooled_mean), L2-normalized — except levjepa-vitl16, which is read through its CLS token (pooler_output), also L2-normalized.
 - **k-NN** k = 20, cosine similarity, DINO-style weighted vote (`exp(sim / 0.07)`). **Centroid** = nearest L2-normalized class mean of the gallery (no hyper-parameters).
 - **Agreement** = fraction of query clips where the jepa.cpp prediction equals the PyTorch one (k-NN and centroid separately); **feat cos** = mean per-clip cosine between the two backends' feature vectors.
@@ -109,7 +109,7 @@ The same checkpoint scored on the task it was trained for: the **full 24 777-cli
 
 - **Dataset** `data/ssv2` — 24 777 clips decoded, 0 decode failures, 0 clips skipped.
 - **Views** single view, no test-time augmentation: 1 temporal clip x 1 spatial crop.
-- **Clip** 16 frames, idx = round(linspace(0, T_total-1, n)) over all PyAV-decoded rgb24 frames, decoded once into a THWC uint8 `.npy` every backend reads.
+- **Clip** 16 frames, idx = round(linspace(0, T_total-1, n)) over all PyAV-decoded rgb24 frames, decoded once into a THWC uint8 `.npy` every backend reads. `jepa-classify --video <id>.webm` decodes the same frames itself: on 30 of these clips, 10 of them shorter than 16 frames, it reproduces the committed `cpp-cpu-f16-sub10` top-1 for all 30.
 - **Preprocessing** shortest edge -> 292 (bilinear), centre crop 256, /255, mean (0.485,0.456,0.406) / std (0.229,0.224,0.225) — the checkpoint's own video_preprocessor_config.json, applied by each backend to the same THWC uint8 frames.
 - **Labels** the class index is `id2label` of the checkpoint; validation.json `template` is a verbatim id2label value, and labels.json id == id2label index for all 174 classes after removing the '[' ']' placeholder brackets. The GGUFs' own `jepa.head.labels` are f16: identical to id2label order, f32: identical to id2label order, q4_k: identical to id2label order, q8_0: identical to id2label order.
 - **Reference** transformers VJEPA2ForVideoClassification, torch.no_grad, float32, TF32 disabled on both matmul and cuDNN, 4 clips per forward (the processor is batch-invariant, the model forward moves a logit by ~2e-04 and no argmax with it).

@@ -2,10 +2,16 @@
 //   jepa-embed -m model.gguf -i img.jpg [-i img2.jpg ...] [-o out.npy] [--pool mean|cls|lewm|none]
 //              [--batch B | --no-batch] [-t threads] [--time] [--no-flash] [--kv-f32] [--repeat N]
 //              [--print-n N]
+//   jepa-embed -m vjepa2.gguf --video clip.mp4 [--video clip2.mp4] [--frames 16]
 //   jepa-embed -m vjepa2.gguf --frames-npy clip.npy            # THWC uint8 frames = one clip
 //   jepa-embed -m vjepa2.gguf --frames-list clips.txt -o feats.npy [--logits l.npy] [--json s.json]
 //   jepa-embed -m vjepa2.gguf --as-video -i f0.jpg -i f1.jpg   # the images are frames of one clip
 //   jepa-embed -m levjepa-vitl16.gguf -i cat.jpg --pool cls    # a still image -> repeated to 16 frames
+//
+// --video decodes the container with ffmpeg (tools/video-decode.cpp) and samples --frames frames
+// uniformly over the whole clip — the sampler of scripts/video_frames.py, on the same decoded rgb24
+// frames — so `--video clip.mp4` and `--frames-npy` on that script's output of the same clip give
+// the same feature, bit for bit. --frames defaults to the model's own jepa.enc.n_frames.
 //
 // Images are encoded --batch at a time: the items go through ONE ggml graph on the batch dimension,
 // which is bit-identical to encoding them one by one (tests/test-batch.cpp) and 1.5-2.6x faster on
@@ -22,6 +28,7 @@
 #include "jepa.h"
 #include "jepa-args.h"
 #include "npy.h"
+#include "video-decode.h"
 
 #include <chrono>
 #include <cmath>
@@ -34,7 +41,12 @@
 
 static void usage(const char * argv0) {
     fprintf(stderr,
-        "usage: %s -m model.gguf (-i image.jpg [-i image2.jpg ...] | --frames-npy clip.npy | --frames-list list.txt) [options]\n"
+        "usage: %s -m model.gguf (-i image.jpg [-i image2.jpg ...] | --video clip.mp4 | --frames-npy clip.npy\n"
+        "                         | --video-list list.txt | --frames-list list.txt) [options]\n"
+        "  --video F         a video file (mp4/webm/avi/mkv/mov ...) = one clip; repeatable. Decoded with\n"
+        "                    ffmpeg and sampled to --frames frames, uniformly over the whole clip\n"
+        "  --video-list F    text file with one video path per line; each line is one clip\n"
+        "  --frames N        frames to sample from each --video (default: the model's jepa.enc.n_frames)\n"
         "  --frames-npy F    THWC uint8 .npy of frames (e.g. tests/fixtures/ref/<m>/<sample>.frames_u8.npy) = one clip\n"
         "  --frames-list F   text file with one such .npy path per line; each line is one clip\n"
         "  --as-video        treat the -i images as the frames of one clip (default for video models with >1 image)\n"
@@ -47,8 +59,8 @@ static void usage(const char * argv0) {
         "  --no-batch        same as --batch 1: one graph per item, the pre-batching path\n"
         "  --logits F        also run the attentive-pool head and save [n_items, n_classes] raw logits\n"
         "  --json F          write a stats JSON (timings, throughput) for benchmark drivers\n"
-        "  --progress N      print progress every N items to stderr (0 = off; default 0, 25 with --frames-list,\n"
-        "                    which also replaces the per-item stdout line)\n"
+        "  --progress N      print progress every N items to stderr (0 = off; default 0, 25 with a\n"
+        "                    --frames-list / --video-list, which also replaces the per-item stdout line)\n"
         "  -t N              threads (default: all)\n"
         JEPA_GPU_USAGE
         "  --time            print preprocessing / encode timings\n"
@@ -56,7 +68,9 @@ static void usage(const char * argv0) {
         "  --no-flash        naive attention (mul_mat + soft_max) instead of flash attention\n"
         "  --kv-f32 / --kv-f16  K/V dtype for flash attention (default: F32 for f32 models, F16 otherwise)\n"
         "  --print-n N       print the first N values of each vector (default 8; 0 = none)\n"
-        "  --dump-input F    save the preprocessed NCTHW input of the last batch as float32 .npy\n", argv0);
+        "  --dump-input F    save the preprocessed NCTHW input of the last batch as float32 .npy\n"
+        "  --dump-frames F   save the last item's sampled frames as a THWC uint8 .npy — the tensor\n"
+        "                    scripts/video_frames.py writes, for comparing the two routes\n", argv0);
 }
 
 static double now_ms() {
@@ -64,11 +78,14 @@ static double now_ms() {
 }
 
 // One item to encode: n RGB8 HWC frames, each with its own size (an image is n = 1). Items that came
-// from a .npy keep only the path — the frames are read when the item is preprocessed and dropped
-// again, so a 400-clip --frames-list holds one clip in memory, not four hundred.
+// from a .npy or a video file keep only the path — the frames are read (or decoded) when the item is
+// preprocessed and dropped again, so a 400-clip --frames-list or --video-list holds one clip in
+// memory, not four hundred.
 struct item {
     std::string name;
     std::string npy;                            // THWC uint8 .npy, read on demand
+    std::string video;                          // or: a container, decoded on demand
+    int video_frames = 0;                       // frames to sample out of `video`
     std::vector<std::vector<uint8_t>> frames;   // or: per frame, HWC RGB8
     std::vector<int> h, w;                      // per frame source size
     int n() const { return (int) frames.size(); }
@@ -79,11 +96,56 @@ struct item {
     }
 };
 
-// The item's frames as (pointer, h, w). For a .npy item `hold` owns the bytes the pointers refer to.
-static bool item_frames(const item & it, npy::Array & hold, std::vector<const uint8_t *> & fp,
+// --dump-frames: where to write the uint8 frames an item is built from, "" = nowhere. A file-scope
+// string rather than a parameter because every item kind (image, .npy, video) funnels through
+// item_frames() and the flag is a debugging aid, not part of the encode path.
+static std::string g_dump_frames;
+static bool g_video_verbose = false;    // --time: say what the decoder found in each clip
+
+// Save the frames as one THWC uint8 .npy — the layout scripts/video_frames.py writes, so a
+// `--video` run and that script can be diffed byte for byte.
+static void dump_frames(const std::vector<const uint8_t *> & fp, const std::vector<int> & fh,
+                        const std::vector<int> & fw) {
+    if (g_dump_frames.empty() || fp.empty()) return;
+    for (size_t t = 1; t < fp.size(); t++) {
+        if (fh[t] != fh[0] || fw[t] != fw[0]) {
+            fprintf(stderr, "--dump-frames: frame %zu is %dx%d but frame 0 is %dx%d; a THWC array "
+                            "needs one size (mixed sizes come from -i images, not from --video)\n",
+                    t, fw[t], fh[t], fw[0], fh[0]);
+            return;
+        }
+    }
+    const size_t plane = (size_t) fh[0] * fw[0] * 3;
+    std::vector<uint8_t> buf(fp.size() * plane);
+    for (size_t t = 0; t < fp.size(); t++) memcpy(buf.data() + t * plane, fp[t], plane);
+    npy::save(g_dump_frames, "|u1", {(int64_t) fp.size(), fh[0], fw[0], 3}, buf.data());
+    fprintf(stderr, "saved frames %s [%zu, %d, %d, 3]\n", g_dump_frames.c_str(), fp.size(), fh[0], fw[0]);
+}
+
+// The item's frames as (pointer, h, w). For a .npy item `hold` owns the bytes the pointers refer to;
+// for a video item `vhold` does.
+static bool item_frames(const item & it, npy::Array & hold, jepa_video::clip & vhold,
+                        std::vector<const uint8_t *> & fp,
                         std::vector<int> & fh, std::vector<int> & fw) {
     fp.clear(); fh.clear(); fw.clear();
-    if (!it.npy.empty()) {
+    if (!it.video.empty()) {
+        std::string err;
+        if (!jepa_video::decode(it.video, it.video_frames, vhold, err)) {
+            fprintf(stderr, "error: %s\n", err.c_str());
+            return false;
+        }
+        for (int t = 0; t < vhold.n_frames; t++) {
+            fp.push_back(vhold.frame(t));
+            fh.push_back(vhold.height);
+            fw.push_back(vhold.width);
+        }
+        if (g_video_verbose) {
+            fprintf(stderr, "  %s: %d frames %dx%d at %.2f fps decoded in %.3f s -> %d sampled "
+                            "(%d..%d)\n", it.video.c_str(), vhold.n_frames_total, vhold.width,
+                    vhold.height, vhold.fps, vhold.decode_s, vhold.n_frames,
+                    vhold.frame_indices.front(), vhold.frame_indices.back());
+        }
+    } else if (!it.npy.empty()) {
         try {
             hold = npy::load(it.npy);
         } catch (const std::exception & e) {
@@ -108,6 +170,7 @@ static bool item_frames(const item & it, npy::Array & hold, std::vector<const ui
             fw.push_back(it.w[t]);
         }
     }
+    dump_frames(fp, fh, fw);
     return !fp.empty();
 }
 
@@ -131,9 +194,10 @@ static bool repeats_still_image(const std::string & family) { return family == "
 static float * preprocess_item(const jepa_model * model, const item & it, int tubelet, bool video_model,
                                int * out_T, int * out_h, int * out_w, bool warn_pad) {
     npy::Array hold;
+    jepa_video::clip vhold;
     std::vector<const uint8_t *> fp;
     std::vector<int> fh, fw;
-    if (!item_frames(it, hold, fp, fh, fw)) return nullptr;
+    if (!item_frames(it, hold, vhold, fp, fh, fw)) return nullptr;
     int T = (int) fp.size();
     const int want = jepa_model_n_frames(model);
     const bool fixed_len = video_model && want > 1 && repeats_still_image(jepa_model_family(model));
@@ -201,7 +265,9 @@ static float * preprocess_item(const jepa_model * model, const item & it, int tu
 
 int main(int argc, char ** argv) {
     std::string model_path, out_path, pool, dump_input, frames_npy, frames_list, logits_path, json_path;
-    std::vector<std::string> images;
+    std::string video_list;
+    std::vector<std::string> images, videos;
+    int n_frames_arg = 0;               // --frames; 0 = the model's own jepa.enc.n_frames
     jepa_context_params cp = jepa_context_default_params();
     jepa_model_params   mp = jepa_model_default_params();
     mp.verbose = true;
@@ -215,6 +281,13 @@ int main(int argc, char ** argv) {
         };
         if (a == "-m") model_path = next("-m");
         else if (a == "-i") images.push_back(next("-i"));
+        else if (a == "--video") videos.push_back(next("--video"));
+        else if (a == "--video-list") video_list = next("--video-list");
+        else if (a == "--frames") {
+            const char * v = next("--frames");
+            n_frames_arg = atoi(v);
+            if (n_frames_arg < 1) { fprintf(stderr, "--frames %s: expected a frame count >= 1\n", v); return 1; }
+        }
         else if (a == "--frames-npy") frames_npy = next("--frames-npy");
         else if (a == "--frames-list" || a == "-l") frames_list = next("--frames-list");
         else if (a == "--as-video") as_video = true;
@@ -227,7 +300,7 @@ int main(int argc, char ** argv) {
         else if (a == "--json") json_path = next("--json");
         else if (a == "--progress") progress = atoi(next("--progress"));
         else if (a == "-t") cp.n_threads = atoi(next("-t"));
-        else if (a == "--time") timing = true;
+        else if (a == "--time") timing = g_video_verbose = true;
         else if (a == "--repeat") repeat = atoi(next("--repeat"));
         else if (jepa_arg_gpu(argc, argv, i, mp.device)) {}
         else if (a == "--no-flash") cp.use_flash_attn = false;
@@ -235,12 +308,31 @@ int main(int argc, char ** argv) {
         else if (a == "--kv-f16") cp.flash_kv = JEPA_KV_F16;
         else if (a == "--print-n") print_n = atoi(next("--print-n"));
         else if (a == "--dump-input") dump_input = next("--dump-input");
+        else if (a == "--dump-frames") g_dump_frames = next("--dump-frames");
         else if (a == "-h" || a == "--help") { usage(argv[0]); return 0; }
         else { fprintf(stderr, "unknown argument %s\n", argv[i]); usage(argv[0]); return 1; }
     }
-    if (model_path.empty() || (images.empty() && frames_npy.empty() && frames_list.empty())) { usage(argv[0]); return 1; }
+    if (!video_list.empty()) {
+        std::ifstream f(video_list);
+        if (!f) { fprintf(stderr, "cannot open %s\n", video_list.c_str()); return 1; }
+        std::string line;
+        while (std::getline(f, line)) {
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+            if (!line.empty()) videos.push_back(line);
+        }
+        if (videos.empty()) { fprintf(stderr, "%s is empty\n", video_list.c_str()); return 1; }
+    }
+    if (model_path.empty() || (images.empty() && videos.empty() && frames_npy.empty() && frames_list.empty())) {
+        usage(argv[0]);
+        return 1;
+    }
+    // fail before the model load (seconds, hundreds of MiB) rather than after it
+    if (!videos.empty()) {
+        std::string why;
+        if (!jepa_video::have_ffmpeg(&why)) { fprintf(stderr, "error: %s\n", why.c_str()); return 1; }
+    }
     if (repeat < 1) repeat = 1;
-    if (progress < 0) progress = frames_list.empty() ? 0 : 25;
+    if (progress < 0) progress = (frames_list.empty() && video_list.empty()) ? 0 : 25;
 
     const double t_load = now_ms();
     jepa_model * model = jepa_model_load_ex(model_path.c_str(), &mp);
@@ -278,14 +370,18 @@ int main(int argc, char ** argv) {
         return done(1);
     }
 
-    // a --frames-list sweep prints progress instead of one line per clip (what the old
-    // scripts/jepa_embed_clips driver did); -i / --frames-npy keep the per-item line
-    const bool quiet_items = !frames_list.empty();
+    // a --frames-list / --video-list sweep prints progress instead of one line per clip (what the
+    // old scripts/jepa_embed_clips driver did); -i / --frames-npy / --video keep the per-item line
+    const bool quiet_items = !frames_list.empty() || !video_list.empty();
 
     const std::string family = jepa_model_family(model);
     const bool video_model = family == "vjepa" || family == "vjepa2" || family == "vjepa2_1" || family == "levjepa";
     const int tubelet = jepa_model_tubelet_size(model);
     const bool clip_mode = !frames_npy.empty() || as_video || (video_model && images.size() > 1 && !as_images);
+    // --frames defaults to what the file says it was trained on (jepa.enc.n_frames); an image family
+    // reports 1, so `--video` through one embeds the clip's first frame.
+    int n_video_frames = n_frames_arg;
+    if (n_video_frames <= 0) n_video_frames = jepa_model_n_frames(model) > 0 ? jepa_model_n_frames(model) : 16;
     // The library never batches video clips (one clip per graph), so grouping clip items only
     // inflates the tool's working set — measured 3.9x peak RSS for +16 % wall on 16-frame clips.
     // Default to one clip per group unless the user explicitly asked for a batch.
@@ -293,6 +389,13 @@ int main(int argc, char ** argv) {
 
     // ---- collect the items (an image is a 1-frame clip)
     std::vector<item> items;
+    for (const std::string & v : videos) {
+        item it;
+        it.name = v;
+        it.video = v;
+        it.video_frames = n_video_frames;
+        items.push_back(std::move(it));
+    }
     if (!frames_npy.empty()) {
         item it;
         it.name = frames_npy;
@@ -435,7 +538,7 @@ int main(int argc, char ** argv) {
             for (size_t t = 1; t < it.h.size(); t++) same &= it.h[t] == it.h[0] && it.w[t] == it.w[0];
             if (!it.h.empty() && same) snprintf(src, sizeof(src), "%dx%d", it.w[0], it.h[0]);
             else if (!it.h.empty())    snprintf(src, sizeof(src), "%dx%d..(mixed)", it.w[0], it.h[0]);
-            else                       snprintf(src, sizeof(src), "npy");
+            else                       snprintf(src, sizeof(src), "%s", it.video.empty() ? "npy" : "video");
             if (nb == 1) {
                 fprintf(stderr, "  %d frame(s) %s -> %dx%d, %lld tokens | preprocess %.1f ms | encode %.1f ms "
                                 "(graph compute %.1f ms, %.0f tokens/s, %d threads%s)\n",
