@@ -22,13 +22,13 @@ their PyTorch reference to cosine 1.000000 per token, preprocessing is bit-exact
 and quantized files are scored on real datasets — Imagenette k-NN within **0.13 pp** of PyTorch at
 f16 and q8_0 (0.16 pp on the parameter-free centroid metric), UCF-101 k-NN within one clip of it.
 
-![Three panels: encoder latency per item for PyTorch and jepa.cpp on the CPU and on one GPU, k-NN
-top-1 against PyTorch on Imagenette and UCF-101, and what each dtype costs in weights and in
-time](assets/results.svg)
+![jepa.cpp in four numbers: the same SSv2 validation top-1 as PyTorch, faster on a CPU,
+much faster on one GPU, and half the weights at q8_0, over a bar chart of one image
+through V-JEPA 2.1 ViT-B on PyTorch, on jepa.cpp's CPU engine and on its CUDA engine](assets/hero.svg)
 
-*Every number on it is read from `tests/results/{benchmarks,accuracy-image,accuracy-video}.json` and
-the GPU tables of [performance.md](performance.md), measured on a 96-core Threadripper 7995WX and one
-RTX 4500 Ada; `scripts/gen_results_figure.py` redraws it.*
+*Every number on it is read from `tests/results/*.json` and the GPU tables of
+[performance.md](performance.md), measured on a 96-core Threadripper 7995WX and one RTX 4500 Ada;
+`scripts/gen_hero_figure.py` redraws it.*
 
 ## Where to go
 
@@ -42,6 +42,18 @@ RTX 4500 Ada; `scripts/gen_results_figure.py` redraws it.*
 | [C API](api.md) | the complete `include/jepa.h` reference, generated from the header |
 | Internals | the [converter](converter.md), the [V-JEPA tensor and RoPE notes](vjepa-notes.md), the [ggml-level notes](ggml-notes.md) behind the video graph, and the [fixtures](fixtures.md) the parity tests replay |
 | Appendix | the raw measurement reports the curated pages draw from — [parity](parity.md), [benchmarks](benchmarks.md), [quantization](quantization.md), [image accuracy](accuracy-image.md), [video accuracy](accuracy-video.md) |
+
+## The full results figure
+
+![Three panels: encoder latency per item for PyTorch and jepa.cpp on the CPU and on one
+GPU, k-NN top-1 against PyTorch on Imagenette and UCF-101, and what each dtype costs in
+weights and in time](assets/results.svg)
+
+*The same measurements at model resolution: latency per item across the four backends, every k-NN row
+against its PyTorch baseline, and what each dtype costs in weights and in time. The three panels also
+stand alone, beside the tables they draw — latency and quantization on
+[performance.md](performance.md), accuracy on [accuracy.md](accuracy.md);
+`scripts/gen_results_figure.py --split` redraws all four.*
 
 Machine-readable twins of the measured tables live in
 [`tests/results/*.json`](https://github.com/aselimc/jepa.cpp/tree/main/tests/results): `benchmarks.json`,

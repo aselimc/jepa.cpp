@@ -238,6 +238,13 @@ reaches 0.9999946 at f16 and 0.9998754 at q8_0. LeVJEPA reaches 1.0000000 at f32
 *Source: [accuracy-video.md](accuracy-video.md), 32 threads, PyTorch and jepa.cpp stages alternated in
 one sweep on an idle box. Machine-readable twin: `tests/results/accuracy-video.json`.*
 
+![One row per model and dtype: a dot at the jepa.cpp top-1 minus PyTorch's, in percentage points,
+against a vertical line at the PyTorch baseline, for Imagenette images and UCF-101
+clips](assets/results-accuracy.svg)
+
+*Both benchmarks above on one scale: the line is PyTorch's own top-1 and each dot is a jepa.cpp file
+against it, labelled with its absolute top-1. `scripts/gen_results_figure.py --split` redraws it.*
+
 ## SSv2 head agreement
 
 The same 105 clips through encoder + attentive pooler + 174-way classifier, scored as *agreement with

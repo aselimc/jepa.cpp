@@ -99,6 +99,14 @@ twenties.
 *Source: `tools/jepa-bench --gpu 0` on the box above, `GGML_PREC_F32` on. No committed
 machine-readable twin exists for these rows — see the reproduce block at the foot of the page.*
 
+![Milliseconds per image or clip, one row per model and shape, four bars each: PyTorch on 32 CPU
+threads, jepa.cpp on 32 CPU threads, PyTorch on one GPU and jepa.cpp on one GPU, on a log
+scale](assets/results-latency.svg)
+
+*Both tables above in one picture: the bar is the millisecond, the white mark inside a jepa.cpp CPU
+bar is the same run at 96 threads, and a hatched PyTorch bar is a forward that does more work than
+ours, i.e. an upper bound. `scripts/gen_results_figure.py --split` redraws it.*
+
 ### Predictor, head and world model on a GPU
 
 These graphs are not encoder rows and do not share the encoder table's harness, so they are reported
@@ -317,6 +325,15 @@ for `GGML_PREC_F32` accumulation. Accuracy per type does *not* invert with the b
 
 *Source: CPU rows from [benchmarks.md](benchmarks.md#sub-8-bit-weights-what-q4-costs-and-what-it-buys-encoder-t32)
 and its dtype table; GPU rows from the same `jepa-bench --gpu 0` sweep as the GPU encoder table.*
+
+![Two small charts, one per model: latency against the same backend's f16 file, on the CPU and on
+CUDA, over the resident weights of each dtype, with the PyTorch CPU and PyTorch CUDA
+levels](assets/results-quantization.svg)
+
+*The trade-off per dtype, for the two models measured over the full sweep on both backends: the x
+axis is what the file weighs, the y axis is its latency against the same backend's own f16, so a
+point below 1× is faster than f16 and a point to the left is smaller.
+`scripts/gen_results_figure.py --split` redraws it.*
 
 ## Reproduce
 

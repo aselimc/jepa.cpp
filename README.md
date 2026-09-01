@@ -31,13 +31,14 @@ The full evidence lives in **[docs/accuracy.md](docs/accuracy.md)** and
 **[docs/performance.md](docs/performance.md)**, and on the
 **[documentation site](https://aselimc.github.io/jepa.cpp/)**.
 
-![Three panels: encoder latency per item for PyTorch and jepa.cpp on the CPU and on one GPU, k-NN
-top-1 against PyTorch on Imagenette and UCF-101, and what each dtype costs in weights and in
-time](docs/assets/results.svg)
+![jepa.cpp in four numbers: the same SSv2 validation top-1 as PyTorch, faster on a CPU,
+much faster on one GPU, and half the weights at q8_0, over a bar chart of one image
+through V-JEPA 2.1 ViT-B on PyTorch, on jepa.cpp's CPU engine and on its CUDA engine](docs/assets/hero.svg)
 
-*Every number on it is read from `tests/results/{benchmarks,accuracy-image,accuracy-video}.json` and
-the GPU tables of [docs/performance.md](docs/performance.md), measured on a 96-core Threadripper
-7995WX and one RTX 4500 Ada; `scripts/gen_results_figure.py` redraws it.*
+*Every number on it is read from `tests/results/*.json` and the GPU tables of
+[docs/performance.md](docs/performance.md), measured on a 96-core Threadripper 7995WX and one RTX
+4500 Ada; the [full results figure](https://aselimc.github.io/jepa.cpp/#the-full-results-figure)
+carries the per-model detail.*
 
 ## Supported models
 
