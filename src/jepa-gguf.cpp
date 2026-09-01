@@ -651,6 +651,12 @@ jepa_model * jepa_model_load(const char * gguf_path, bool verbose) {
 }
 
 jepa_model * jepa_model_load_ex(const char * gguf_path, const jepa_model_params * params) {
+    if (!gguf_path || !*gguf_path) {
+        // Otherwise this reaches fopen(nullptr) and a "%s" of a null pointer, both undefined even
+        // though glibc happens to print "(null)".
+        jepa_log("jepa: jepa_model_load: no path given\n");
+        return nullptr;
+    }
     jepa_model_params defaults = jepa_model_default_params();
     const jepa_model_params & mp = params ? *params : defaults;
     const bool verbose = mp.verbose;
