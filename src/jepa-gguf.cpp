@@ -345,6 +345,8 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
     e.proj_act     = jepa_act_from_string(r.gets("jepa.enc.proj_act", "gelu_erf"), &act_ok);
     if (!act_ok) return false;
     if (!kv_range("jepa.enc.n_registers", e.n_registers, 0, JEPA_LIMIT_N_TOKENS)) return false;
+    // array-valued keys are bounded by the file's own length, which is not a bound worth having
+    if (!kv_range("jepa.enc.hier_layers length", (int64_t) e.hier_layers.size(), 0, JEPA_LIMIT_N_LAYER)) return false;
     if (!kv_finite("jepa.enc.rope_theta", e.rope_theta, 1e-6f, 1e12f)) return false;
     if (!kv_range("jepa.enc.rope_ref_grid", e.rope_ref_grid, 0, JEPA_LIMIT_IMG_SIZE)) return false;
     // n_head is >= 1 by the range check above, so this modulo cannot divide by zero
@@ -428,7 +430,8 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
         h.n_pool_layers = r.geti("jepa.head.n_pool_layers", 0);
         h.labels        = r.get_sarr("jepa.head.labels");
         if (!kv_range("jepa.head.n_classes",     h.n_classes,     0, JEPA_LIMIT_N_TOKENS) ||
-            !kv_range("jepa.head.n_pool_layers", h.n_pool_layers, 0, JEPA_LIMIT_N_LAYER)) {
+            !kv_range("jepa.head.n_pool_layers", h.n_pool_layers, 0, JEPA_LIMIT_N_LAYER) ||
+            !kv_range("jepa.head.labels length", (int64_t) h.labels.size(), 0, JEPA_LIMIT_N_TOKENS)) {
             return false;
         }
     }
