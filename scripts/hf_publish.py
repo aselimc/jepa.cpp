@@ -927,8 +927,15 @@ def build_context(org: str, need_fixtures: bool = False) -> dict:
                  f"-- run scripts/download_models.sh --ftype all")
     if need_fixtures and not (FIXTURES / "ref").is_dir():
         sys.exit(f"missing {FIXTURES / 'ref'} -- run scripts/download_fixtures.sh")
-    commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short=7", "HEAD"],
-                            capture_output=True, text=True, check=True).stdout.strip()
+    # the provenance of the numbers is the last commit that touched the artifacts a card quotes, not HEAD:
+    # tying it to HEAD would make `check` report drift after every unrelated commit
+    commit = subprocess.run(
+        ["git", "-C", str(ROOT), "log", "-1", "--abbrev=7", "--format=%h", "--",
+         "docs/parity.md", "docs/quantization.md", "docs/accuracy.md", "tests/results", "scripts/convert.py"],
+        capture_output=True, text=True, check=True).stdout.strip()
+    if not commit:
+        commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short=7", "HEAD"],
+                                capture_output=True, text=True, check=True).stdout.strip()
     paths = [GGUF_DIR / f"{m['base']}-{d}.gguf" for m in MODELS for d in DTYPES]
     digests = sha256_many(paths)
     ctx = dict(
