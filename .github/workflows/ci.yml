@@ -101,13 +101,16 @@ jobs:
           submodules: recursive
 
       - name: configure
-        run: cmake -S . -B build -A x64 -DGGML_LLAMAFILE=ON
+        run: cmake -S . -B build -A x64 -DGGML_LLAMAFILE=ON -DBUILD_SHARED_LIBS=OFF
 
       - name: build
         run: cmake --build build --config Release -j 4
 
       - name: version
-        run: build\Release\jepa-info.exe --version
+        run: |
+          & build\Release\jepa-info.exe --version
+          Write-Host "exit code: $LASTEXITCODE"
+          exit $LASTEXITCODE
 
   # ASAN + UBSAN over the model-free suites. On a checkout with no GGUFs that is now four: `ops` and
   # `attn` as before, plus `errors` (forged and truncated GGUFs through every loader check, and the
