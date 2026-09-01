@@ -187,14 +187,6 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       HUB: https://huggingface.co
-      DATASET: jepacpp/jepa.cpp-fixtures
-      # f32 for the two parity suites, the LeWM predictor and the batch bit-exactness check (all
-      # keyed on the -f32 filenames in CMakeLists.txt), f16 for the backend suite. ~205 MB total.
-      GGUFS: >-
-        jepacpp/lejepa-vits16-pretrain-in1k-GGUF/lejepa-vits16-pretrain-in1k-f32.gguf
-        jepacpp/lejepa-vits16-pretrain-in1k-GGUF/lejepa-vits16-pretrain-in1k-f16.gguf
-        jepacpp/lewm-pusht-GGUF/lewm-pusht-f32.gguf
-      REFS: lejepa-vits16 lewm-pusht
     steps:
       - uses: actions/checkout@v4
         with:
@@ -214,6 +206,11 @@ jobs:
             *) echo "unexpected HTTP $code for $url" >&2; exit 1 ;;
           esac
 
+      - uses: actions/setup-python@v5
+        if: steps.hub.outputs.ready == 'true'
+        with:
+          python-version: "3.12"
+
       - name: cache the models and reference dumps
         if: steps.hub.outputs.ready == 'true'
         id: cache
@@ -224,31 +221,34 @@ jobs:
             tests/fixtures/ref
           key: hub-lejepa-vits16-f32-f16--lewm-pusht-f32--ref-lejepa-vits16-lewm-pusht-v1
 
+      # ~205 MB: 194 MB of GGUF and 11 MB of reference dumps. huggingface_hub rather than curl
+      # because the dump directories are listed, not enumerated here, and it handles the listing
+      # pagination and the retries.
       - name: download
         if: steps.hub.outputs.ready == 'true' && steps.cache.outputs.cache-hit != 'true'
         run: |
-          set -euo pipefail
-          mkdir -p models/gguf tests/fixtures/ref
-          for spec in $GGUFS; do
-            repo=${spec%/*}; file=${spec##*/}
-            curl -sSL --retry 5 --retry-delay 3 --fail \
-                 -o "models/gguf/$file" "$HUB/$repo/resolve/main/$file"
-          done
-          # The reference dumps are a directory per model; the listing API names the files, so the
-          # set stays whatever the dataset holds instead of a list that goes stale here.
-          for ref in $REFS; do
-            mkdir -p "tests/fixtures/ref/$ref"
-            curl -sSL --fail "$HUB/api/datasets/$DATASET/tree/main/ref/$ref" \
-              | python3 -c 'import json,sys; [print(e["path"]) for e in json.load(sys.stdin) if e["type"]=="file"]' \
-              | while read -r path; do
-                  curl -sSL --retry 5 --retry-delay 3 --fail \
-                       -o "tests/fixtures/ref/${path#ref/}" "$HUB/datasets/$DATASET/resolve/main/$path"
-                done
-          done
+          pip install --quiet huggingface_hub
+          python3 - <<'PY'
+          from huggingface_hub import hf_hub_download, snapshot_download
+
+          # f32 for the two parity suites, predictor-lewm and the batch bit-exactness check — the
+          # ctest registrations in CMakeLists.txt key on the -f32 filenames — and f16 for `backend`.
+          for repo, name in [
+              ("jepacpp/lejepa-vits16-pretrain-in1k-GGUF", "lejepa-vits16-pretrain-in1k-f32.gguf"),
+              ("jepacpp/lejepa-vits16-pretrain-in1k-GGUF", "lejepa-vits16-pretrain-in1k-f16.gguf"),
+              ("jepacpp/lewm-pusht-GGUF",                  "lewm-pusht-f32.gguf"),
+          ]:
+              hf_hub_download(repo_id=repo, filename=name, local_dir="models/gguf")
+
+          snapshot_download(repo_id="jepacpp/jepa.cpp-fixtures", repo_type="dataset",
+                            allow_patterns=["ref/lejepa-vits16/*", "ref/lewm-pusht/*"],
+                            local_dir="tests/fixtures")
+          PY
           du -sh models/gguf tests/fixtures/ref
 
       # Configure after the download: the parity, predictor, batch and backend suites are registered
-      # at configure time from the files that exist (CMakeLists.txt).
+      # at configure time from the files that exist (CMakeLists.txt). With this set that is seven
+      # suites — parity-lejepa-vits16, parity-lewm-pusht, predictor-lewm, batch, ops, backend, attn.
       - name: configure
         if: steps.hub.outputs.ready == 'true'
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_LLAMAFILE=ON
@@ -260,6 +260,5 @@ jobs:
       - name: ctest
         if: steps.hub.outputs.ready == 'true'
         run: |
+          ctest --test-dir build -N
           ctest --test-dir build --output-on-failure
-          ctest --test-dir build --show-only=json-v1 \
-            | python3 -c 'import json,sys; print("suites run:", ", ".join(t["name"] for t in json.load(sys.stdin)["tests"]))'

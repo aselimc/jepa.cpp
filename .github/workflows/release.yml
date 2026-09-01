@@ -69,6 +69,7 @@ jobs:
           awk -v v="$VERSION" '
             $0 ~ "^## \\[" v "\\]" { p = 1; next }
             p && /^## \[/ { exit }
+            p && /^\[[^]]+\]: / { exit }
             p { print }
           ' CHANGELOG.md > notes.md
           grep -q '[^[:space:]]' notes.md || {
