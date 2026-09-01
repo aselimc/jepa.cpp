@@ -4,7 +4,7 @@
 
 The whole public surface is this one header: C linkage, opaque handles (`jepa_model`, `jepa_context`), plain structs, `malloc`-returned buffers freed with `jepa_free`. Typical flow: `jepa_model_load` → `jepa_context_new` → `jepa_preprocess_*` → `jepa_encode` → `jepa_pool_*` / `jepa_head` / `jepa_predict*` / `jepa_lewm_*`.
 
-**Functions (71):** `jepa_context_default_params` · `jepa_context_free` · `jepa_context_last_batch` · `jepa_context_last_compute_ms` · `jepa_context_max_batch` · `jepa_context_mul_mat_prec_f32` · `jepa_context_n_threads` · `jepa_context_new` · `jepa_context_set_max_batch` · `jepa_context_set_mul_mat_prec_f32` · `jepa_device_count` · `jepa_device_description` · `jepa_device_memory` · `jepa_device_name` · `jepa_encode` · `jepa_error_reset` · `jepa_error_text` · `jepa_free` · `jepa_head` · `jepa_head_ex` · `jepa_lewm_action_dim` · `jepa_lewm_n_frames` · `jepa_lewm_predict` · `jepa_lewm_project` · `jepa_lewm_project_rows` · `jepa_lewm_rollout` · `jepa_load_image_rgb` · `jepa_model_default_params` · `jepa_model_device` · `jepa_model_device_name` · `jepa_model_embed_dim` · `jepa_model_family` · `jepa_model_file_type` · `jepa_model_file_type_name` · `jepa_model_free` · `jepa_model_has_cls` · `jepa_model_has_head` · `jepa_model_has_predictor` · `jepa_model_has_projector` · `jepa_model_img_size` · `jepa_model_is_gpu` · `jepa_model_label` · `jepa_model_load` · `jepa_model_load_ex` · `jepa_model_n_bytes` · `jepa_model_n_classes` · `jepa_model_n_frames` · `jepa_model_n_head` · `jepa_model_n_layer` · `jepa_model_n_prefix_tokens` · `jepa_model_n_registers` · `jepa_model_name` · `jepa_model_patch_size` · `jepa_model_tubelet_size` · `jepa_pool_cls` · `jepa_pool_mean` · `jepa_predict` · `jepa_predict_ex` · `jepa_predict_mod` · `jepa_preprocess_default_params` · `jepa_preprocess_frames_rgb` · `jepa_preprocess_frames_rgb_ex` · `jepa_preprocess_image_file` · `jepa_preprocess_image_rgb` · `jepa_preprocess_image_rgb_ex` · `jepa_print_system_info` · `jepa_resize_antialias_u8` · `jepa_softmax` · `jepa_token_grid` · `jepa_top_k` · `jepa_version`
+**Functions (82):** `jepa_ac_action_dim` · `jepa_ac_energy` · `jepa_ac_max_frames` · `jepa_ac_next_state` · `jepa_ac_normalize` · `jepa_ac_normalize_reps` · `jepa_ac_predict` · `jepa_ac_predict_all` · `jepa_ac_rollout` · `jepa_ac_state_dim` · `jepa_ac_tokens_per_frame` · `jepa_context_default_params` · `jepa_context_free` · `jepa_context_last_batch` · `jepa_context_last_compute_ms` · `jepa_context_max_batch` · `jepa_context_mul_mat_prec_f32` · `jepa_context_n_threads` · `jepa_context_new` · `jepa_context_set_max_batch` · `jepa_context_set_mul_mat_prec_f32` · `jepa_device_count` · `jepa_device_description` · `jepa_device_memory` · `jepa_device_name` · `jepa_encode` · `jepa_error_reset` · `jepa_error_text` · `jepa_free` · `jepa_head` · `jepa_head_ex` · `jepa_lewm_action_dim` · `jepa_lewm_n_frames` · `jepa_lewm_predict` · `jepa_lewm_project` · `jepa_lewm_project_rows` · `jepa_lewm_rollout` · `jepa_load_image_rgb` · `jepa_model_default_params` · `jepa_model_device` · `jepa_model_device_name` · `jepa_model_embed_dim` · `jepa_model_family` · `jepa_model_file_type` · `jepa_model_file_type_name` · `jepa_model_free` · `jepa_model_has_cls` · `jepa_model_has_head` · `jepa_model_has_predictor` · `jepa_model_has_projector` · `jepa_model_img_size` · `jepa_model_is_gpu` · `jepa_model_label` · `jepa_model_load` · `jepa_model_load_ex` · `jepa_model_n_bytes` · `jepa_model_n_classes` · `jepa_model_n_frames` · `jepa_model_n_head` · `jepa_model_n_layer` · `jepa_model_n_prefix_tokens` · `jepa_model_n_registers` · `jepa_model_name` · `jepa_model_patch_size` · `jepa_model_tubelet_size` · `jepa_pool_cls` · `jepa_pool_mean` · `jepa_predict` · `jepa_predict_ex` · `jepa_predict_mod` · `jepa_preprocess_default_params` · `jepa_preprocess_frames_rgb` · `jepa_preprocess_frames_rgb_ex` · `jepa_preprocess_image_file` · `jepa_preprocess_image_rgb` · `jepa_preprocess_image_rgb_ex` · `jepa_print_system_info` · `jepa_resize_antialias_u8` · `jepa_softmax` · `jepa_token_grid` · `jepa_top_k` · `jepa_version`
 
 ## Types and handles
 
@@ -234,6 +234,76 @@ int jepa_lewm_predict(jepa_context * ctx, const float * embs, const float * acti
 //   out     : [n_steps, embed_dim], caller-allocated.
 int jepa_lewm_rollout(jepa_context * ctx, const float * embs, int n_seed,
                       const float * actions, int n_steps, float * out);
+```
+
+## V-JEPA 2-AC action-conditioned world model (jepa.pred.kind == "ac")
+
+```c
+// The predictor of facebookresearch/vjepa2's `vjepa2_ac_vit_giant`: it takes the encoder latents
+// of T context frames plus a 7-d end-effector action and a 7-d state (pose) per frame, and
+// predicts the encoder latents of the NEXT frame. Attention is block-causal over frames, so one
+// call with T frames also yields the prediction after every shorter prefix.
+//
+// Layout, everywhere below: latents are row-major [n_frames * tokens_per_frame, enc_dim] per item
+// with the frames in order and, inside a frame, the encoder's token order (h-major then w);
+// actions and states are [n_frames, action_dim] / [n_frames, state_dim]. `n_batch` items are
+// concatenated in that order. Row block t of a context carries the action that drives the step
+// from frame t to frame t+1 and the state (pose) AT frame t.
+int  jepa_ac_tokens_per_frame(const jepa_model * model);  // grid_size^2 (256 for the released ViT-g)
+int  jepa_ac_action_dim(const jepa_model * model);        // 7
+int  jepa_ac_state_dim(const jepa_model * model);         // 7
+int  jepa_ac_max_frames(const jepa_model * model);        // jepa.pred.n_frames: the frame-slot cap
+// True when the released world-model loop normalises latents between steps (jepa.pred.normalize_reps).
+bool jepa_ac_normalize_reps(const jepa_model * model);
+
+// Non-affine LayerNorm over each row, in place -- Meta's `F.layer_norm(h, (D,))`
+// (notebooks/utils/world_model_wrapper.py). Apply it to the encoder latents BEFORE the first
+// jepa_ac_predict and to any predicted frame you feed back by hand; jepa_ac_rollout does it for you
+// when jepa_ac_normalize_reps() is true. eps comes from jepa.pred.norm_reps_eps (1e-5).
+void jepa_ac_normalize(const jepa_model * model, float * rows, int64_t n_rows, int64_t dim);
+
+// One predictor call over `n_frames` context frames for `n_batch` independent items (the K action
+// candidates of a planning step live on the graph's batch axis; on the CPU at f32 a batched call is
+// bit-identical to n_batch sequential ones -- tests/test-predictor.cpp gates that).
+//   context : [n_batch * n_frames * tokens_per_frame, enc_dim]
+//   actions : [n_batch * n_frames, action_dim]
+//   states  : [n_batch * n_frames, state_dim]
+//   out     : [n_batch * tokens_per_frame, enc_dim] -- the next frame of each item.
+//             Caller frees out->data.
+int jepa_ac_predict(jepa_context * ctx, const float * context, int n_frames, int n_batch,
+                    const float * actions, const float * states, jepa_output * out);
+// Same call, returning every frame's prediction: [n_batch * n_frames * tokens_per_frame, enc_dim].
+// Row block t is the prediction of frame t+1 given frames 0..t -- this is what Meta's
+// `predictor(x, actions, states)` returns, and what the parity fixtures hold.
+int jepa_ac_predict_all(jepa_context * ctx, const float * context, int n_frames, int n_batch,
+                        const float * actions, const float * states, jepa_output * out);
+
+// Autoregressive rollout of `n_cand` candidate action sequences over `horizon` steps, all batched
+// on the batch axis of ONE graph per step. The encoded context is shared by every candidate.
+//   context     : [n_seed * tokens_per_frame, enc_dim] -- already normalised if
+//                 jepa_ac_normalize_reps(); one encode, reused by every candidate (step 7.2 turns
+//                 this argument into a cached handle without changing the rest of the signature)
+//   seed_states : [n_seed, state_dim]
+//   actions     : [n_cand * horizon, action_dim] -- candidate c, step h at row c*horizon + h
+//   states      : [n_cand * horizon, state_dim] poses of the frames the steps produce, or NULL to
+//                 have jepa_ac_next_state() generate them from `actions` (what the reference does)
+//   out         : [n_cand * horizon * tokens_per_frame, enc_dim], caller-allocated: candidate c's
+//                 step h at row (c*horizon + h) * tokens_per_frame
+int jepa_ac_rollout(jepa_context * ctx, const float * context, int n_seed, const float * seed_states,
+                    const float * actions, const float * states, int n_cand, int horizon, float * out);
+
+// Meta's pose update (notebooks/utils/mpc_utils.py::compute_new_pose): translation added, rotation
+// composed as extrinsic-xyz Euler angles, gripper added and clipped to [0, 1]. `state`, `action`
+// and `out` are state_dim/action_dim long; `out` may not alias `state`.
+void jepa_ac_next_state(const jepa_model * model, const float * state, const float * action, float * out);
+
+// The planning energy the reference scores candidates with (notebooks/utils/mpc_utils.py::l1 and
+// the energy-landscape notebook's loss_fn): mean |pred - goal| over ALL rows and dims of one item.
+//   pred : [n_batch * n_rows, dim] (e.g. the last frame of each candidate's rollout)
+//   goal : [n_rows, dim] -- the goal latents, shared by every item
+//   out  : [n_batch] energies; lower is closer to the goal
+void jepa_ac_energy(const float * pred, const float * goal, int n_batch, int64_t n_rows, int64_t dim,
+                    float * out);
 
 // ======================================================================================
 // APPEND-ONLY: encoder batching (src/jepa.cpp).

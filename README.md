@@ -54,6 +54,8 @@ carries the per-model detail.*
 | [V-JEPA 2 ViT-L SSv2](https://huggingface.co/facebook/vjepa2-vitl-fpc16-256-ssv2) | 375 M | video action classification, 174 classes | MIT |
 | [V-JEPA 2.1 ViT-B/16 @384](https://dl.fbaipublicfiles.com/vjepa2/vjepa2_1_vitb_dist_vitG_384.pt) | 110 M | image *and* video features + predictor (both modalities) | MIT |
 | [LeVJEPA ViT-L/16](https://huggingface.co/galilai-group/LeVJEPA-VideoMix-Large) (community) | 303 M | video features, block-causal attention; a still image is a repeated frame | CC-BY-NC-4.0 (non-commercial) |
+| [V-JEPA 2 ViT-g/16](https://huggingface.co/facebook/vjepa2-vitg-fpc64-256) | 1.03 B | video features (16–64 frames) + masked predictor | Apache-2.0 |
+| [V-JEPA 2-AC ViT-g](https://dl.fbaipublicfiles.com/vjepa2/vjepa2-ac-vitg.pt) | 1.35 B | **action-conditioned world model**: encode a frame, roll out candidate action sequences, score them by the planning energy | MIT |
 
 A new checkpoint of a known family needs **no C++ change** — the converter writes the metadata and the
 loader builds the graph from it.

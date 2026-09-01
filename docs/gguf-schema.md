@@ -79,7 +79,7 @@ Sincos tables are **precomputed at conversion** for the training grid (`enc.pos_
 
 | key | notes |
 |---|---|
-| `jepa.pred.kind` | `masked` (I-JEPA / V-JEPA / V-JEPA 2 / 2.1) · `ac` (V-JEPA 2-AC) · `lewm` |
+| `jepa.pred.kind` | `masked` (I-JEPA / V-JEPA / V-JEPA 2 / 2.1) · `ac` (V-JEPA 2-AC, see the family note) · `lewm` |
 | `jepa.pred.embed_dim`, `n_layer`, `n_head`, `ffn_dim` | |
 | `jepa.pred.n_mask_tokens` | 10 (V-JEPA 2), 8 (2.1) |
 | `jepa.pred.out_dim` | width of `pred.proj` output (enc_dim for V-JEPA 2; teacher_dim / n_hier_in = 1664 for 2.1 ViT-B) |
@@ -87,8 +87,12 @@ Sincos tables are **precomputed at conversion** for the training grid (`enc.pos_
 | `jepa.pred.n_hier_in` | 2.1: number of hierarchical encoder outputs concatenated into `pred.embed` (1 for ViT-B/L, 4 for g/G) |
 | `jepa.pred.modality_embed`, `jepa.pred.context_proj` | 2.1: `pred.mod_embed_*` / `pred.proj_context.*` present |
 | `jepa.pred.action_dim`, `jepa.pred.state_dim` | 7 / 7 for V-JEPA 2-AC; 10 / 0 for LeWM |
-| `jepa.pred.frame_causal` | bool (AC) |
-| `jepa.pred.n_frames` | LeWM: 3 |
+| `jepa.pred.n_cond_tokens` | u32, AC only: conditioning rows prepended to **each frame's** patch tokens (2 = action, state; Meta's `use_extrinsics` would make it 3). It multiplies the sequence length, so the loader bounds it |
+| `jepa.pred.cond_order` | str, AC only: the order of those rows, `"action,state"` |
+| `jepa.pred.normalize_reps` | bool, AC only: the released world-model loop passes every latent through a **non-affine** LayerNorm before and after the predictor (`F.layer_norm(h, (D,))`). `jepa_ac_rollout` applies it between steps; `jepa_ac_normalize` is the same thing for a caller feeding latents in by hand |
+| `jepa.pred.norm_reps_eps` | f32, AC only: eps of that LayerNorm (1e-5, torch's default) |
+| `jepa.pred.frame_causal` | bool (AC, LeWM) |
+| `jepa.pred.n_frames` | LeWM: 3. AC: the frame slots the block-causal mask was built for (32 = `num_frames / tubelet_size`); it caps a context and a rollout |
 | `jepa.pred.head_dim` | u32, only when `n_head * head_dim != embed_dim` (LeWM: 16 × 64 in a 192-d model) |
 | `jepa.pred.ln_eps` | f32, eps of the affine LayerNorms in the predictor (LeWM: 1e-5) |
 | `jepa.pred.adaln_eps` | f32, eps of the non-affine adaLN norms (LeWM: 1e-6) |
@@ -108,8 +112,8 @@ pred.action_embed.weight/bias [pred_dim, action_dim]        (AC: single linear)
 pred.action_embed.0 / .2      [4*pred_dim, action_dim] / [pred_dim, 4*pred_dim]   (lewm: 2-layer MLP, act = jepa.pred.action_act)
 pred.proj_context.weight/bias [teacher_dim, pred_dim]     (2.1 return_all_tokens: projection of the *context* tokens)
 pred.mod_embed_img / pred.mod_embed_video  [pred_dim]      (2.1: added to every predictor token)
-pred.action_embed.weight/bias [pred_dim, action_dim]
-pred.state_embed.weight/bias  [pred_dim, state_dim]
+pred.action_embed.weight/bias [pred_dim, action_dim]                (ac: single Linear, 7 -> 1024)
+pred.state_embed.weight/bias  [pred_dim, state_dim]                (ac: single Linear, 7 -> 1024)
 pred.blk.{i}.adaln.weight/bias [6*pred_dim, pred_dim]      (lewm: adaLN-zero modulation, see the lewm section)
 pred.proj.0 / .2              [proj_hidden, pred_dim] / [out_dim, proj_hidden]    (lewm: 2-layer MLP, BatchNorm folded, act = jepa.pred.proj_act)
 ```
@@ -152,7 +156,7 @@ Video tokens are **T-major, then H, then W** (`i = t*gh*gw + h*gw + w`). Image t
 
 ## Quantization rules
 
-Quantize only 2-D weight matrices of `*.attn_qkv` / `attn_q` / `attn_k` / `attn_v` / `attn_out`, `*.ffn_up` / `ffn_down`, `pred.proj*` (incl. `pred.proj_context`), `pred.embed*`, `enc.proj.*`, `head.blk.*`, `head.xattn.{q,k,v}`, `head.cls`. K-quants need `ne[0] % 256 == 0`; fall back per tensor to q8_0 (or the q4_0/q5_0 sibling) otherwise.
+Quantize only 2-D weight matrices of `*.attn_qkv` / `attn_q` / `attn_k` / `attn_v` / `attn_out`, `*.ffn_up` / `ffn_down`, `pred.proj*` (incl. `pred.proj_context`), `pred.embed*`, `enc.proj.*`, `head.blk.*`, `head.xattn.{q,k,v}`, `head.cls`. `pred.action_embed` / `pred.state_embed` are matmul weights too, but their 7-wide rows are not a multiple of 32, so every quantizer falls back to F16 for them. K-quants need `ne[0] % 256 == 0`; fall back per tensor to q8_0 (or the q4_0/q5_0 sibling) otherwise.
 
 Everything else stays **F32**, and this is a requirement rather than a convention: norms, biases, layer scales, position tables, CLS / register / mask / modality tokens and `pred.blk.*.adaln` biases reach ggml as the right-hand side of an `add`, a `mul` or a `concat`, and those ops take an f32 operand and assert on anything else. The loader checks it and refuses a file that gets it wrong (docs/architecture.md ["Robustness"](architecture.md#robustness)). Patch embeddings and `pred.action_embed.*` are matmul weights and so *may* be F16, but the converter writes them F32 today.
 
@@ -198,6 +202,69 @@ The checkpoint is the EMA encoder only: no predictor, no head, no projector. `je
 model card (there is no `preprocessor_config.json`): ImageNet mean/std, short side → 224, centre crop 224,
 **bicubic**, rescale 1/255. A still image is fed as a 16-frame clip by repeating the frame, which is what
 the model card's ImageNet probe does. `general.license = cc-by-nc-4.0`.
+
+### vjepa2_ac (V-JEPA 2-AC, `jepa.pred.kind = "ac"`)
+
+`jepa.family` stays `vjepa2` — the encoder is an ordinary V-JEPA 2 ViT-g/16 and the whole delta is in
+the predictor. One bundle carries both. `scripts/jepa_convert/vjepa2_ac.py` writes it from Meta's
+single `vjepa2-ac-vitg.pt`; `src/vjepa2_ac.cpp` builds the graph and
+`scripts/jepa_convert/selftest.py::ac_predictor_forward` is the executable spec.
+
+**The encoder in that checkpoint is not the HF `facebook/vjepa2-vitg-fpc64-256` release.** Measured
+per tensor, the two agree only to cosine ≈ 0.998 (e.g. `blocks.0.attn.proj.weight` 0.998273,
+`mlp.fc1.weight` 0.998545, max |Δ| 2.1e-2 on values up to 1.35), while `encoder` and
+`target_encoder` inside the AC checkpoint are **bit-identical** — the encoder was frozen during AC
+training. `src/hub/backbones.py::_make_vjepa2_ac_model` loads `state_dict["encoder"]`, so that is
+what the bundle ships, and it gets its own parity fixtures.
+
+Predictor (`src/models/ac_predictor.py::VisionTransformerPredictorAC`, 24 blocks × 1024 dims,
+16 heads × 64, ffn 4096, GELU(erf), LN eps 1e-6, fused qkv with bias, no mask tokens and no
+position table):
+
+```
+x   = pred.embed(context_latents)                 # [T*HW, 1024]   HW = grid_size^2 = 256
+a_t = pred.action_embed(action_t)                 # [T, 1024]      action_dim 7
+s_t = pred.state_embed(state_t)                   # [T, 1024]      state_dim 7
+seq = per frame t: [a_t, s_t, x_{t,0} .. x_{t,HW-1}]                # T * (2 + HW) rows
+24 pre-LN blocks, full-width attention under the block-causal mask, 3-D RoPE (tiled) on q and k
+seq = seq minus the 2 conditioning rows of every frame                # [T*HW, 1024]
+out = pred.proj(pred.norm(seq))                                       # [T*HW, 1408]
+```
+
+Two details decide whether an implementation is right:
+
+* **The mask is block-causal over whole frames**, not over tokens: every row of frame *t* attends
+  every row of frames 0..*t*, conditioning rows included
+  (`build_action_block_causal_attention_mask` fills whole `N_T × N_T` blocks, `N_T = 2 + HW`). It is
+  built on the host and passed through `jepa_attn_opts::mask`, as `src/lewm.cpp` does. Row block *t*
+  of the output is therefore the prediction of frame *t+1* given frames 0..*t*: one call with *T*
+  frames also answers every shorter prefix.
+* **The action and state tokens are rotated on the depth axis only**, with `pos = t`, and their
+  height/width lanes are left alone (`ACRoPEAttention` rotates `q[..., :d_dim]` with
+  `arange(T)` and passes `q[..., d_dim:]` through). A grid id of `t·grid²` has `h = w = 0`, whose
+  cos/sin rows are exactly 1 and 0 — the identity — so **one id list** feeds the ordinary
+  `jepa_rope3d_tables_ids` for every row:
+
+  | row | grid id |
+  |---|---|
+  | action / state of frame *t* | `t·grid²` |
+  | patch (*t*, *h*, *w*) | `t·grid² + h·grid + w` |
+
+  head_dim is 64 here, so `d = 2·⌊⌊64/3⌋/2⌋ = 20` per axis: lanes 0–59 rotate, 60–63 are untouched.
+  `ACRoPEAttention` also rescales `h`/`w` by `grid_size / H`; the released checkpoint runs at its own
+  16×16 grid, where that factor is 1, and `jepa_ac_predict` decodes the ids on `jepa.pred.grid_size`.
+
+`extrinsics_encoder.*` is instantiated unconditionally by the reference module but only read when
+`use_extrinsics=True`, which the released hub entry never sets; the converter skips it and says so.
+
+Preprocessing is **not** the V-JEPA 2 video-processor pipeline. The demo builds
+`app/vjepa_droid/transforms.py::make_transforms` with `random_resize_scale=(1,1)` and
+`random_resize_aspect_ratio=(1,1)`, which degenerates `random_resized_crop` to a centre crop of the
+largest square followed by `torch.nn.functional.interpolate(bilinear, align_corners=False, no
+antialias)` to 256×256, then `(x − 255·mean) / (255·std)`. On the square DROID/Franka renders the
+model consumes, both the crop and the resize are the identity, which is what `resize_short = crop =
+256` reproduces; the file records that, and `docs/parity.md` measures the residual (2.4e-07, one
+float32 ulp). `general.license = mit` (the facebookresearch/vjepa2 LICENSE).
 
 ### hfvit (OK-AI/lejepa-vits16-pretrain-in1k)
 

@@ -172,6 +172,94 @@ MODELS = [
         ),
     ),
     dict(
+        base="vjepa2-vitg-fpc64-256",
+        short="vjepa2-vitg",
+        title="V-JEPA 2 ViT-g/16 (fpc64, 256)",
+        parity_name="vjepa2-vitg-fpc64-256",
+        ref_dir="vjepa2-vitg-fpc64-256",
+        quant_section="V-JEPA 2 ViT-g/16 fpc64",
+        image_model=None,
+        video_model=None,
+        base_model="facebook/vjepa2-vitg-fpc64-256",
+        pipeline=None,
+        tags=["v-jepa", "v-jepa-2", "video", "video-feature-extraction"],
+        blurb=(
+            "Meta's **V-JEPA 2 ViT-g/16** — the 1.03 B-parameter video encoder, with its masked latent predictor —\n"
+            "converted to GGUF for [jepa.cpp]({repo}), a ggml C/C++ engine that runs it on a plain CPU with no\n"
+            "Python and no PyTorch. 40 layers of 1408 dims, 22 heads, ffn 1408x48/11 = 6144; tubelets of two frames\n"
+            "and 3-D RoPE in Meta's *tiled* layout, a whole clip through one graph."
+        ),
+        licence=(
+            "**Apache-2.0**, as the source model card `facebook/vjepa2-vitg-fpc64-256` states. These GGUF files are\n"
+            "the same weights re-serialised into the GGUF container, quantized where the file name says so. Cite the\n"
+            "[V-JEPA 2 paper](https://arxiv.org/abs/2506.09985)."
+        ),
+        convert="python scripts/convert.py --family vjepa2 --src models/facebook/vjepa2-vitg-fpc64-256 --ftype f16",
+        run=[
+            "# a clip (THWC uint8 .npy, written by scripts/video_frames.py) -> a pooled feature",
+            "build/jepa-embed -m {base}-f16.gguf --frames-npy clip.npy --pool mean -t 32 -o feat.npy",
+        ],
+        below_bar={},
+        note=(
+            "The widest and deepest encoder in the set, and the one whose per-token tail is longest: at f16 the worst\n"
+            "token of a 2048-token clip reads cosine 0.30 while the median reads 0.99986 and the pooled feature is\n"
+            "exact to six digits. **Pool it, or use f32 if you consume individual tokens.** Its f32 CPU `rel_max` also\n"
+            "sits above a bound calibrated on ViT-L on one of six calibration clips (2.3e-03 against 1e-03) at cosine\n"
+            "0.999975 — accumulated float32 round-off over 40 blocks, measured and explained in\n"
+            "[parity]({site}/parity/)."
+        ),
+    ),
+    dict(
+        base="vjepa2-ac-vitg",
+        short="vjepa2-ac",
+        title="V-JEPA 2-AC ViT-g (action-conditioned world model)",
+        parity_name="vjepa2-ac-vitg",
+        ref_dir="vjepa2-ac-vitg",
+        quant_section="V-JEPA 2-AC ViT-g",
+        image_model=None,
+        video_model=None,
+        base_model=None,
+        pipeline=None,
+        tags=["v-jepa", "v-jepa-2", "world-model", "robotics", "video", "planning"],
+        blurb=(
+            "Meta's **V-JEPA 2-AC** — the action-conditioned world model behind the paper's zero-shot robot\n"
+            "planning — converted to GGUF for [jepa.cpp]({repo}), a ggml C/C++ engine that runs it on a plain CPU\n"
+            "with no Python and no PyTorch. One bundle: the frozen ViT-g/16 encoder from `vjepa2-ac-vitg.pt` plus\n"
+            "the 24-layer, 1024-dim predictor that takes a 7-d end-effector action and a 7-d pose per frame and\n"
+            "predicts the next frame's latents, block-causally over frames. `jepa_ac_rollout` scores K candidate\n"
+            "action sequences in one graph per step, and `jepa_ac_energy` is the L1 planning energy a CEM planner\n"
+            "minimises.\n\n"
+            "**Note on the encoder:** it is *not* `facebook/vjepa2-vitg-fpc64-256`. Meta's AC checkpoint carries its\n"
+            "own frozen ViT-g, which agrees with the HF release only to cosine ~0.998 per tensor; `encoder` and\n"
+            "`target_encoder` inside it are bit-identical. This bundle ships the checkpoint's own, which is what\n"
+            "`vjepa2_ac_vit_giant` loads."
+        ),
+        licence=(
+            "**MIT.** The checkpoint is published by **Meta AI (FAIR)** at\n"
+            "`https://dl.fbaipublicfiles.com/vjepa2/vjepa2-ac-vitg.pt`; the licence is the\n"
+            "[LICENSE](https://github.com/facebookresearch/vjepa2/blob/main/LICENSE) of `facebookresearch/vjepa2`\n"
+            "(Copyright (c) Meta Platforms, Inc. and affiliates). No gating, no acceptable-use policy. These GGUF\n"
+            "files are the same weights re-serialised, quantized where the file name says so. Cite the\n"
+            "[V-JEPA 2 paper](https://arxiv.org/abs/2506.09985)."
+        ),
+        convert=("python scripts/convert.py --family vjepa2_ac --src models/vjepa2_ac/vjepa2-ac-vitg.pt "
+                 "--out models/gguf/vjepa2-ac-vitg-f16.gguf --ftype f16"),
+        run=[
+            "# encode a frame, roll 4 candidate action sequences out 2 steps, score them against a goal",
+            "build/jepa-worldmodel --ac -m {base}-f16.gguf --image ctx.png --goal goal.png \\",
+            "    --actions-npy actions.npy   # float32 [K, H, 7]",
+        ],
+        below_bar={"q8_0": "multi-step rollouts", "q4_0": "multi-step rollouts", "q4_k": "multi-step rollouts"},
+        note=(
+            "**Plan with f16.** A rollout compounds — step h's input is step h-1's output — so the worst predicted\n"
+            "token of a 2-step rollout falls from 0.9925 at f16 to 0.9368 at q8_0 to 0.5429 at q4_k, and at q4_k on\n"
+            "a GPU the planning energy misranks the candidates and the model picks a different action. The encoder\n"
+            "half of the bundle passes at every tier on both backends. At f32 on the CPU the predictor is exact to\n"
+            "cosine 1.0000000 against Meta's own world-model dump, and K candidates batched on the graph's batch\n"
+            "axis are bit-identical to K sequential rollouts. Full tables in [parity]({site}/parity/)."
+        ),
+    ),
+    dict(
         base="vjepa2-vitl-fpc64-256",
         short="vjepa2",
         title="V-JEPA 2 ViT-L/16 (fpc64, 256)",

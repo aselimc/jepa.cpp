@@ -30,8 +30,8 @@
 //                (batch x frames x tokens_per_frame) and `units` is the candidate count, so
 //                `ms/item` is the cost of one scored candidate.
 //   ac-rollout   jepa_ac_rollout: --steps (default 2, the reference planner's horizon) autoregressive
-//                steps for --batch candidates. ms is reported per step; `units` is
-//                batch x steps, so `ms/item` is the cost of one candidate-step.
+//                steps for --batch candidates. ms is reported PER STEP and `units` is the candidate
+//                count, so `ms/item` is the cost of one candidate in one rollout step.
 //
 // The reported ms is the wall time of ggml_backend_graph_compute (jepa_context_last_compute_ms), i.e.
 // graph build/alloc and the host-side patchify are excluded; `wall_ms` in the JSON is the full API
@@ -584,9 +584,10 @@ int main(int argc, char ** argv) {
             const int D  = jepa_model_embed_dim(model);
             r.steps  = steps;
             r.frames = 1;
-            // jepa_ac_rollout sums the compute time of its `steps` graphs, and the ms below is
-            // divided by that, so one unit is one candidate-step and `tokens` is that step's rows.
-            r.units  = (int64_t) batch * steps;
+            // jepa_ac_rollout sums the compute time of its `steps` graphs and the ms below is
+            // already divided by `steps`, so one unit is one CANDIDATE and `ms/item` reads as the
+            // cost of carrying one candidate through one rollout step. `tokens` is that step's rows.
+            r.units  = batch;
             r.tokens = HW;
             r.shape  = "rollout H=" + std::to_string(steps) + ", K=" + std::to_string(batch);
             std::vector<float> out((size_t) batch * steps * HW * D);

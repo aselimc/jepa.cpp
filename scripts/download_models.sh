@@ -6,7 +6,7 @@
 #              (git-ignored either way; --convert is what scripts/convert.py reads)
 #
 # Usage: scripts/download_models.sh [--convert] [--ftype TYPE[,TYPE...]] [all|small|NAME...]
-#   NAME    ijepa | lejepa | lewm | vjepa2 | vjepa2-ssv2 | vjepa21 | levjepa
+#   NAME    ijepa | lejepa | lewm | vjepa2 | vjepa2-ssv2 | vjepa21 | levjepa | vjepa2-vitg | vjepa2-ac
 #   small   lejepa, lewm, vjepa21 ("all" adds the other four)
 #   TYPE    f16 (default) | f32 | q8_0 | q4_0 | q4_k | all
 # Resumable (hf download's cache, or curl -C -).
@@ -69,6 +69,8 @@ if [ "$mode" = gguf ]; then
   has vjepa2-ssv2 big   && { echo "== V-JEPA 2 ViT-L SSv2 classifier"; gguf vjepa2-vitl-fpc16-256-ssv2; }
   has ijepa       big   && { echo "== I-JEPA ViT-H/14 IN1k";          gguf ijepa_vith14_1k; }
   has levjepa     big   && { echo "== LeVJEPA ViT-L/16 VideoMix";     gguf levjepa-vitl16; }
+  has vjepa2-vitg big   && { echo "== V-JEPA 2 ViT-g/16 256";         gguf vjepa2-vitg-fpc64-256; }
+  has vjepa2-ac   big   && { echo "== V-JEPA 2-AC ViT-g world model"; gguf vjepa2-ac-vitg; }
   echo "done. (re-run cmake once models/gguf is populated: the parity tests register at configure time)"
   exit 0
 fi
@@ -90,4 +92,8 @@ has ijepa big && { echo "== I-JEPA ViT-H/14 IN1k (2.5 GB)"
   hfget facebook/ijepa_vith14_1k config.json preprocessor_config.json model.safetensors; }
 has levjepa big && { echo "== LeVJEPA ViT-L/16 VideoMix (1.2 GB; modeling_*.py is the PyTorch reference, trust_remote_code)"
   hfget galilai-group/LeVJEPA-VideoMix-Large config.json modeling_levjepa.py configuration_levjepa.py model.safetensors README.md; }
+has vjepa2-vitg big && { echo "== V-JEPA 2 ViT-g/16 256 (4.1 GB)"
+  hfget facebook/vjepa2-vitg-fpc64-256 config.json video_preprocessor_config.json model.safetensors README.md; }
+has vjepa2-ac big && { echo "== V-JEPA 2-AC ViT-g (11.8 GB torch.hub checkpoint: encoder + AC predictor + optimizer state)"
+  get "$FB/vjepa2/vjepa2-ac-vitg.pt" "$M/vjepa2_ac/vjepa2-ac-vitg.pt"; }
 echo "done."

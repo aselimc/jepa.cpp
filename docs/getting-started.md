@@ -94,6 +94,8 @@ scripts/download_fixtures.sh                    # golden dumps + media for the p
 | V-JEPA 2 ViT-L/16 (fpc64) | `vjepa2` | [`vjepa2-vitl-fpc64-256-GGUF`](https://huggingface.co/jepacpp/vjepa2-vitl-fpc64-256-GGUF) | 622.5 MiB | 332.8 | 178.3 |
 | V-JEPA 2 ViT-L SSv2 | `vjepa2-ssv2` | [`vjepa2-vitl-fpc16-256-ssv2-GGUF`](https://huggingface.co/jepacpp/vjepa2-vitl-fpc16-256-ssv2-GGUF) | 717.1 MiB | 383.2 | 205.1 |
 | I-JEPA ViT-H/14 | `ijepa` | [`ijepa_vith14_1k-GGUF`](https://huggingface.co/jepacpp/ijepa_vith14_1k-GGUF) | 1206.2 MiB | 643.7 | 343.7 |
+| V-JEPA 2 ViT-g/16 (fpc64) | `vjepa2-vitg` | [`vjepa2-vitg-fpc64-256-GGUF`](https://huggingface.co/jepacpp/vjepa2-vitg-fpc64-256-GGUF) | 1974.9 MiB | 1056.7 | 564.8 |
+| V-JEPA 2-AC ViT-g (world model) | `vjepa2-ac` | [`vjepa2-ac-vitg-GGUF`](https://huggingface.co/jepacpp/vjepa2-ac-vitg-GGUF) | 2519.0 MiB | 1344.1 | 717.4 |
 
 A single file without the script, either way round:
 
@@ -166,6 +168,8 @@ position tables, tokens) as F32; `--ftype f32` stores everything as F32. Quantiz
 | V-JEPA 2 ViT-L/16 (fpc64) | `vjepa2` | `python scripts/convert.py --family vjepa2 --src models/facebook/vjepa2-vitl-fpc64-256 --ftype f16` |
 | V-JEPA 2 ViT-L SSv2 | `vjepa2-ssv2` | `python scripts/convert.py --family vjepa2 --src models/facebook/vjepa2-vitl-fpc16-256-ssv2 --ftype f16` |
 | LeVJEPA ViT-L/16 | `levjepa` | `python scripts/convert.py --family levjepa --src models/galilai-group/LeVJEPA-VideoMix-Large --out models/gguf/levjepa-vitl16-f16.gguf --ftype f16` |
+| V-JEPA 2 ViT-g/16 (fpc64) | `vjepa2-vitg` | `python scripts/convert.py --family vjepa2 --src models/facebook/vjepa2-vitg-fpc64-256 --ftype f16` |
+| V-JEPA 2-AC ViT-g | `vjepa2-ac` | `python scripts/convert.py --family vjepa2_ac --src models/vjepa2_ac/vjepa2-ac-vitg.pt --out models/gguf/vjepa2-ac-vitg-f16.gguf --ftype f16` |
 
 The published files come from exactly these commands plus `jepa-quantize`; every model card records the
 one that produced it and the jepa.cpp commit it ran at, so a local conversion is reproducible against

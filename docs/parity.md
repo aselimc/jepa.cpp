@@ -277,6 +277,118 @@ exact to 4e-6. **Correction to an earlier draft of this table:** the bowling f16
 measurement above; the 0.9999999 / 6.2e-04 that circulated for it was a `--kv-f32` run, not the default
 K/V policy.
 
+### V-JEPA 2-AC (`jepa.pred.kind = "ac"`) — the action-conditioned world model
+
+The fixture is Meta's own: `tests/fixtures/ref/vjepa2-ac-vitg` is produced by running the
+`vjepa2_ac_vit_giant` hub entry (encoder + `VisionTransformerPredictorAC`), its
+`notebooks/utils/{mpc_utils,world_model_wrapper}.py` world-model loop and its
+`notebooks/franka_example_traj.npz` demo trajectory, all in float32 on the CPU
+(`scripts/dump_reference.py --model vjepa2-ac-vitg`). Five samples: the encoder latents of the first
+and last trajectory frames, a one-step prediction, a two-frame prediction, and a 4-candidate × 2-step
+rollout with its L1 planning energies.
+
+```bash
+build/test-predictor --ac models/gguf/vjepa2-ac-vitg-{f32,f16,q8_0,q4_0,q4_k}.gguf \
+    --ref tests/fixtures/ref/vjepa2-ac-vitg --threads 16
+build-cuda/test-predictor --ac models/gguf/vjepa2-ac-vitg-f16.gguf \
+    --ref tests/fixtures/ref/vjepa2-ac-vitg --gpu 1
+```
+
+`step1` is one predictor call over a single context frame (256 rows out); `step2` is two frames
+(512 rows, every row block); the rollout rows are 4 candidates × 256 rows at that step.
+
+| ftype | backend | step1 cos mean / min | step2 cos mean / min | rollout step 0 mean / min | rollout step 1 mean / min | energy rel | argmin |
+|---|---|---|---|---|---|---|---|
+| **f32** | CPU | **1.0000000** / **1.0000000** | **1.0000000** / **1.0000000** | **1.0000000** / **1.0000000** | **1.0000000** / **1.0000000** | **7.5e-07** | same |
+| f16 | CPU | 0.9999997 / 0.9999879 | 0.9999998 / 0.9999879 | 0.9999997 / 0.9999792 | 0.9999852 / 0.9925298 | 4.3e-04 | same |
+| q8_0 | CPU | 0.9997186 / 0.9941231 | 0.9996091 / 0.9941229 | 0.9997422 / 0.9847434 | 0.9989531 / 0.9368142 | 1.9e-03 | same |
+| q4_0 | CPU | 0.9887799 / 0.8211261 | 0.9872608 / 0.8211251 | 0.9894599 / 0.8120557 | 0.9667215 / 0.5763850 | 6.0e-02 | same |
+| q4_k | CPU | 0.9919827 / 0.8529575 | 0.9890511 / 0.8529583 | 0.9927472 / 0.8529011 | 0.9735382 / 0.5428584 | 5.6e-02 | same |
+| f32 | CUDA | 0.9999997 / 0.9999956 | 0.9999998 / 0.9999892 | 0.9999996 / 0.9999819 | 0.9999938 / 0.9972536 | 3.5e-04 | same |
+| f16 | CUDA | 0.9999997 / 0.9999937 | 0.9999997 / 0.9999646 | 0.9999996 / 0.9999761 | 0.9999834 / 0.9973585 | 7.0e-04 | same |
+| q8_0 | CUDA | 0.9997900 / 0.9958302 | 0.9996120 / 0.9920831 | 0.9997561 / 0.9828506 | 0.9986458 / 0.9586072 | 6.4e-03 | same |
+| q4_0 | CUDA | 0.9888310 / 0.8204811 | 0.9872460 / 0.8203875 | 0.9895106 / 0.8099474 | 0.9667593 / 0.5926768 | 6.1e-02 | same |
+| q4_k | CUDA | 0.9914772 / 0.8281933 | 0.9890609 / 0.8299207 | 0.9925835 / 0.8192582 | 0.9738240 / 0.6924390 | 5.3e-02 | **FLIPS** |
+
+`energy rel` is the relative error of `jepa_ac_energy` — Meta's `l1(pred, goal)` — against the
+reference's own energies, and `argmin` is whether the planner would pick the same candidate. **The
+last row is the finding that matters for planning: at q4_k on CUDA the ranking flips** (our argmin is
+candidate 1, the reference's is 2), i.e. the model chooses a different action. q4_0/q4_k keep the
+ranking on the CPU, but their worst rollout row is already at cosine 0.54–0.58. **f16 is the dtype to
+plan with**; q8_0 is usable for a single step and marginal over a horizon; q4_* is encoder-grade only.
+
+Four invariants beyond the reference comparison, all gated by `test-predictor --ac`:
+
+| invariant | CPU (every dtype) | CUDA (f32 / f16) |
+|---|---|---|
+| `jepa_ac_predict(T)` == the last row block of `jepa_ac_predict_all(T)` | max\|Δ\| **0** | max\|Δ\| **0** |
+| block-causality: `predict(T=1)` == row block 0 of `predict(T=2)` | max\|Δ\| **0** | cos 0.9999999 / 0.9999939, rel 3.0e-03 |
+| block-causality: perturbing frame 1's context | max\|Δ\| **0** on block 0, 3.56 on block 1 | same |
+| **batched K == K sequential rollouts** | max\|Δ\| **0** (bit-identical, f32 → q4_k) | rel 3.2e-03 (step 0) / 8.0e-02 (step 1) |
+| `jepa_ac_next_state` vs scipy's `compute_new_pose` | max\|Δ\| **0** | max\|Δ\| **0** |
+
+Putting the K candidates of a planning step on the graph's batch axis therefore changes nothing on
+the CPU: the items share a graph but never a reduction. On a GPU the GEMM tiling does depend on the
+batch shape, and step 1 of a rollout inherits step 0's deviation, so that row is bounded by 4× the
+batched-vs-reference deviation of the same step rather than by a fixed number (`test-predictor` also
+checks the sequential run against the reference at the same tier, so a self-scaled bar cannot hide a
+batching bug).
+
+The numpy spec reproduces the same reference from the GGUF alone
+(`selftest.py::ac_predictor_forward` on `vjepa2-ac-vitg-f32.gguf`): `pred_next` cos 1.0000000 /
+1.0000000, rel 5.3e-06; `pred_seq` (T = 2) cos 1.0000000 / 1.0000000, rel 7.0e-06. That is what pins
+the token layout, the RoPE id trick and the block-causal mask independently of the C++.
+
+The AC bundle's **encoder** (its own frozen ViT-g, see docs/gguf-schema.md) is checked separately on
+the two Franka frames, 256 tokens each: **PASS on every dtype and both backends**, f32 CPU cos
+mean/median/worst all 1.000000 with rel 2.0e-04. Its own-preprocessing pass agrees with Meta's
+transform to `max|Δ| = 2.38e-07` — one float32 ulp, the fused-versus-sequential normalisation
+difference.
+
+### V-JEPA 2 ViT-g/16 (the first 22-head, ffn-48/11 encoder here)
+
+`facebook/vjepa2-vitg-fpc64-256`: 40 layers × 1408 dims, 22 heads (head_dim 64), ffn 6144 = 1408·48/11.
+Nothing in the converter or the graph is model-specific — both are metadata-driven — but this is the
+first file to exercise those numbers, so it gets its own fixtures and its own row here.
+
+**The conversion is exact.** The numpy spec run on the GGUF's own weights against the HF model
+(`vjepa2_numpy_ref.py --gguf models/gguf/vjepa2-vitg-fpc64-256-f32.gguf --hf models/facebook/vjepa2-vitg-fpc64-256
+--frames 4`) gives encoder `last_hidden_state` cos **1.0000000**, rel **2.8e-05**, and the masked
+predictor cos **1.0000000**, rel **1.8e-06**.
+
+| ftype | backend | sample set | tokens | cos mean | cos med | cos min | rel_max | pooled | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| f32 | CPU | archery × 16 f | 2048 | 1.000000 | 1.000000 | 1.000000 | 4.3e-04 | 1.000000 | pass |
+| f32 | CPU | bowling × 16 f | 2048 | 1.000000 | 1.000000 | 0.999975 | **2.3e-03** | 1.000000 | over the bound |
+| f32 | CPU | archery × 64 f | 8192 | 1.000000 | 1.000000 | 0.999999 | 3.0e-04 | 1.000000 | pass |
+| f32 | CPU | bowling × 64 f | 8192 | 1.000000 | 1.000000 | 0.999976 | 1.7e-03 | 1.000000 | pass |
+| f16 | CPU | bowling × 16 f | 2048 | 0.995983 | 0.999858 | 0.3005 | 5.6e-01 | 0.999993 | **PASS** |
+| q8_0 | CPU | bowling × 16 f | 2048 | 0.961773 | 0.997127 | 0.1746 | 7.6e-01 | 0.999925 | **PASS** |
+| q8_0 | CPU | bowling × 64 f | 8192 | 0.954860 | 0.995389 | 0.0870 | 6.9e-01 | 0.999956 | **PASS** |
+| q4_k | CPU | bowling × 16 f | 2048 | 0.909267 | 0.976313 | 0.0752 | 9.5e-01 | 0.996920 | **PASS** |
+| q4_k | CPU | bowling × 64 f | 8192 | 0.911208 | 0.972787 | 0.0181 | 7.8e-01 | 0.996801 | **PASS** |
+| f32 | CUDA | bowling × 16 f | 2048 | 0.995088 | 0.999814 | 0.3698 | **5.0e-01** | 0.999991 | over the bound (0.5) |
+| f16 | CUDA | bowling × 64 f | 8192 | 0.989901 | 0.999481 | 0.3291 | 7.3e-01 | 0.999991 | mean under 0.99 |
+| q8_0 / q4_0 / q4_k | CUDA | 2 clips × 16/64 f | 2048/8192 | — | — | — | — | — | **PASS** |
+
+Two honest non-passes, both of a bar fitted on ViT-L, neither a conversion or graph error:
+
+1. **CPU f32, `rel_max` 2.30e-03 on one clip against a 1e-03 bound.** `REL(N) = 1e-3 · max(1, √(N/2048))`
+   was calibrated on the 24-layer / 1024-dim ViT-L, where the same clip measures 7.51e-04. Six
+   calibration clips at 2048 tokens on ViT-g measure 2.59e-04, 3.82e-04, 4.33e-04, 4.94e-04, 5.49e-04
+   and **2.30e-03** — five well inside the bound and one outlier, the same single ill-conditioned
+   token that still reads cosine 0.999975 while the mean and median are 1.000000 and the pooled
+   feature is exact. `--no-flash` gives 2.11e-03, so it is not the attention kernel; the numpy
+   cross-check above puts the file itself at 2.8e-05. It is ggml's float32 accumulation over 40
+   blocks of 1408 dims. A √-in-depth term predicts 1.5e-03 and a linear one 2.0e-03 — neither covers
+   the outlier, so **the shared bound is left as it is** rather than widened to fit one measurement;
+   this table is the record instead, and the registered ctest entry is the f16 one.
+2. **CUDA f32/f16 sit on the GPU video tier's bars** (`rel ≤ 0.5·√(N/2048)`, mean ≥ 0.99): 5.03e-01
+   against 5.0e-01 at 2048 tokens, and mean 0.989901 against 0.99 on the 64-frame bowling clip. The
+   worst-token tail of a ViT-g at f16 is genuinely longer than a ViT-L's (0.33 against 0.51 at the
+   same tier) — depth and width, not a defect. Every quantized tier passes on both backends, because
+   their bars are the wider ones.
+
 ### V-JEPA 2.1 ViT-B predictor — image vs video modality (vs the numpy spec)
 
 The 2.1 predictor adds a modality vector to *every* row, and it has two: `pred.mod_embed_video` and

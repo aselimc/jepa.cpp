@@ -61,6 +61,9 @@ FRAMES_OVERRIDE=""
 REPEAT=3
 WARMUP=1
 STEPS=20
+# V-JEPA 2-AC planning sweep: candidates on the batch axis, and the horizon of one CEM step.
+AC_CANDIDATES="${AC_CANDIDATES:-1 16 64}"
+AC_HORIZON="${AC_HORIZON:-2}"
 KEEP=0
 NOTE=""
 GEN_DOC=1
@@ -230,6 +233,14 @@ for gguf in "$GGUF_DIR"/*.gguf; do
     if [ "$pred_kind" = "lewm" ]; then
         want_mode lewm-step    && run_bench "$gguf" "$label" "$ftype" lewm-step    "F$(echo "$info" | sed -n 's/.*n_frames=\([0-9]*\).*/\1/p' | tail -1)"
         want_mode lewm-rollout && run_bench "$gguf" "$label" "$ftype" lewm-rollout "K$STEPS"
+    fi
+    # V-JEPA 2-AC: the planning shapes. K is the candidate count on the graph's batch axis, which is
+    # what a CEM step scales with; the horizon is the reference planner's 2.
+    if [ "$pred_kind" = "ac" ]; then
+        for K in $AC_CANDIDATES; do
+            want_mode ac         && run_bench "$gguf" "$label" "$ftype" ac         "K$K" --batch "$K"
+            want_mode ac-rollout && run_bench "$gguf" "$label" "$ftype" ac-rollout "K$K" --batch "$K" --steps "$AC_HORIZON"
+        done
     fi
 done
 shopt -u nullglob

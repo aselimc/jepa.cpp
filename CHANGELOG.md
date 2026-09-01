@@ -8,7 +8,39 @@ across releases.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **V-JEPA 2-AC, the action-conditioned world model** (`jepa.pred.kind = "ac"`). One GGUF bundle
+  carries the frozen ViT-g/16 encoder of Meta's `vjepa2-ac-vitg.pt` and its 24-layer, 1024-dim
+  predictor, which takes a 7-d end-effector action and a 7-d pose per frame and predicts the next
+  frame's encoder latents. Attention is block-causal over whole frames, so one call with *T* frames
+  also answers every shorter prefix. New entry points, all append-only:
+  `jepa_ac_predict` / `jepa_ac_predict_all`, `jepa_ac_rollout` (K candidate action sequences over H
+  steps, batched on the graph's batch axis — one graph per step, not per candidate),
+  `jepa_ac_next_state` (Meta's `compute_new_pose`), `jepa_ac_energy` (the L1 planning energy a CEM
+  planner minimises), `jepa_ac_normalize` and the `jepa_ac_*` accessors. `jepa-worldmodel --ac`
+  encodes a frame, rolls candidates out and prints their per-step energy against a `--goal` frame;
+  `jepa-bench` gains `--mode ac` and `--mode ac-rollout`.
+  Against Meta's own modules on their Franka demo trajectory, f32 on the CPU: every prediction and
+  every rollout step at cosine **1.0000000**, the energy to 7.5e-07, the same candidate ranking, and
+  **K batched == K sequential, bit-identical**. On CUDA at f32/f16 the worst rollout row is 0.997.
+  `docs/parity.md` "V-JEPA 2-AC" has the full dtype × backend matrix — including the finding that a
+  q4_k rollout on a GPU **misranks the candidates**, so plan with f16.
+- **V-JEPA 2 ViT-g/16** (`facebook/vjepa2-vitg-fpc64-256`), the first 1.03 B-parameter, 22-head,
+  ffn-48/11 encoder here. The converter and the graph were already metadata-driven and needed no
+  change; what is new is the golden dumps, the parity fixtures and the honest record of where a
+  40-layer model sits against bars fitted on ViT-L (`docs/parity.md` "V-JEPA 2 ViT-g/16"). The numpy
+  spec run on the GGUF's own weights matches HF at cosine **1.0000000**, rel 2.8e-05.
+- `scripts/jepa_convert/vjepa2_ac.py`, `scripts/jepa_convert/selftest.py::ac_predictor_forward` (the
+  executable spec), `scripts/torch_ac_baseline.py` (the PyTorch-on-the-same-card timing baseline) and
+  `dump_reference.py --model vjepa2-ac-vitg | vjepa2-vitg-fpc64-256`.
+
+### Changed
+
+- `jepa_rope3d_apply` accepts a batched input (`ne[3] > 1`); the cos/sin tables broadcast over it.
+  Nothing changes for the existing single-sequence callers.
+- Eight new loader checks for the AC keys and nine new `jepa_ac_*` argument guards in `test-errors`
+  (118 cases, up from 101), forged from a complete tiny AC model.
 
 ## [0.1.1] — 2026-09-01
 

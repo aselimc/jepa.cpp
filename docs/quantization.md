@@ -86,6 +86,8 @@ ever buy accuracy, never bytes.
 | vjepa2-vitl-fpc64-256 (ViT-L/16 + predictor) | f16 623 MiB | — | 333 (0.53x) | — | — | — | — | — | 178 | 178 (0.29x) |
 | vjepa2-vitl-fpc16-256-ssv2 (ViT-L/16 + attentive head) | f16 717 MiB | — | 383 (0.53x) | — | — | — | — | — | 205 | 205 (0.29x) |
 | levjepa-vitl16 (ViT-L/16, encoder only) | f32 1156 MiB | 578.7 | 310.3 (0.27x) | — | — | — | — | — | 166.3 | 166.3 (0.14x) |
+| vjepa2-vitg-fpc64-256 (ViT-g/16 + predictor) | f32 3946.6 MiB | 1974.9 | 1056.7 (0.27x) | — | — | — | — | — | 564.8 | 564.8 (0.14x) |
+| vjepa2-ac-vitg (ViT-g/16 + AC predictor) | f32 5025.5 MiB | 2519.0 | 1344.1 (0.27x) | — | — | — | — | — | 717.4 | 717.4 (0.14x) |
 
 The non-quantized remainder (patch embeddings, norms, biases, position tables) is 1.6 MiB for ViT-S, 6 MiB for ViT-H,
 0.8-1.7 MiB for the V-JEPA 2 files and 4.2 MiB for LeVJEPA, i.e. q8_0 is 0.53x of f16 and q4 is 0.29x, as expected from
@@ -271,6 +273,48 @@ where V-JEPA 2 ViT-L reaches 0.22 and I-JEPA 0.04. Its rows are all multiples of
 never fall back (`Q4_K:96`, no `Q4_0` companions), and `pooled_mean` tracks `cls` to the fourth digit
 throughout. The f16 row is exact to six digits — this checkpoint has no low-variance token cluster for
 the final LayerNorm to amplify, which is what separates it from every other video encoder here.
+
+### V-JEPA 2 ViT-g/16 fpc64 (`vjepa2-vitg`, source f32)
+
+The 40-layer / 1408-dim encoder is the least quantization-tolerant model in the set on a per-token
+basis, and the most tolerant on a pooled one. Measured by `test-parity` against the golden dumps
+(2 clips × 16 f = 2048 tokens, and × 64 f = 8192; the worst clip of each pair, `docs/parity.md`,
+"V-JEPA 2 ViT-g/16"):
+
+| type | file size | tokens | cos mean | cos med | cos min (worst token) | rel_max | pooled_mean |
+|---|---|---|---|---|---|---|---|
+| **f16** | 1974.9 MiB | 2048 | 0.995983 | 0.999858 | 0.3005 | 5.6e-01 | 0.999993 |
+| **q8_0** | 1056.7 MiB | 2048 | 0.961773 | 0.997127 | 0.1746 | 7.6e-01 | 0.999925 |
+| **q8_0** | 1056.7 MiB | 8192 | 0.954860 | 0.995389 | 0.0870 | 6.9e-01 | 0.999956 |
+| **q4_k** | 564.8 MiB | 2048 | 0.909267 | 0.976313 | 0.0752 | 9.5e-01 | 0.996920 |
+| **q4_k** | 564.8 MiB | 8192 | 0.911208 | 0.972787 | 0.0181 | 7.8e-01 | 0.996801 |
+
+Every tier **passes** the video-family bars (which gate the *median* token, not the worst) on both the
+CPU and CUDA, and `pooled_mean` never drops below 0.9968 — so pooled use is safe down to q4_k while
+per-token use is not, the same shape as the ViT-L row below, one step more extreme.
+
+### V-JEPA 2-AC ViT-g (`vjepa2-ac`, source f32, encoder + action-conditioned predictor)
+
+Two different answers, because the file carries two graphs.
+
+**Encoder** (256 tokens, one 2-frame clip): **PASS at every tier on both backends**, f32 exact to
+cosine 1.000000 with rel 2.0e-04. A single-tubelet clip is a much easier target than a 64-frame one.
+
+**Predictor**, against Meta's own world-model dump — the full table with both backends is in
+[parity](parity.md), "V-JEPA 2-AC". The short version, worst rollout row of a 2-step rollout:
+
+| type | file size | 1-step cos mean / worst | 2-step rollout cos mean / worst | energy rel | picks the same action? |
+|---|---|---|---|---|---|
+| **f32** | 5025.5 MiB | 1.0000000 / 1.0000000 | 1.0000000 / 1.0000000 | 7.5e-07 | yes |
+| **f16** | 2519.0 MiB | 0.9999997 / 0.9999879 | 0.9999852 / 0.9925298 | 4.3e-04 | yes |
+| **q8_0** | 1344.1 MiB | 0.9997186 / 0.9941231 | 0.9989531 / 0.9368142 | 1.9e-03 | yes |
+| **q4_k** | 717.4 MiB | 0.9919827 / 0.8529575 | 0.9735382 / 0.5428584 | 5.6e-02 | yes on the CPU, **no on CUDA** |
+
+**Plan with f16.** A rollout compounds: whatever a step gets wrong is the next step's input, so the
+worst row falls from 0.9925 (f16) to 0.9368 (q8_0) to 0.5429 (q4_k) over just two steps. At q4_k on
+CUDA the L1 planning energy misranks the candidates and the model picks a different action — the one
+failure mode that matters for a planner, and the reason the quantized files of this bundle are
+labelled encoder-grade.
 
 ### V-JEPA 2 ViT-L/16 fpc64 (`vjepa2`, source f16, 2 clips x 16 frames, encoder + predictor)
 

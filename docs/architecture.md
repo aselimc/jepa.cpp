@@ -46,7 +46,8 @@ SSv2, the masked predictor for V-JEPA 2 / 2.1, and the action-conditioned predic
 |---|---|---|---|
 | `ijepa` | 2-D patch 14/16 | `sincos2d` table, baked by the converter | no CLS; the feature is the mean of the patch tokens |
 | `vjepa` | 2×16×16 tubelet | `sincos3d` table | — |
-| `vjepa2` | 2×16×16 tubelet | `rope3d`, tiled layout | predictor 384-d / 12 L / 10 mask tokens; attentive-pool head |
+| `vjepa2` | 2×16×16 tubelet | `rope3d`, tiled layout | predictor 384-d / 12 L / 10 mask tokens; attentive-pool head. ViT-g/16 (1408 d, 40 L, **22 heads**, ffn 1408·48/11 = 6144) is the widest member |
+| `vjepa2` + `jepa.pred.kind = ac` | 2×16×16 tubelet | `rope3d`, tiled layout | V-JEPA 2-AC: the same encoder plus an **action-conditioned** predictor (1024-d / 24 L / 16 heads) that takes a 7-d action and a 7-d pose per frame and predicts the next frame's latents. Block-causal over frames; no mask tokens, no position table |
 | `vjepa2_1` | 2×16×16 tubelet **and** 1×16×16 image embed | `rope3d`, interleaved layout, plus `interpolate_rope` | modality vectors; per-hierarchy-layer norms (inference uses the last); 8 mask tokens |
 | `hfvit` | 2-D patch | `learned`, with CLS and optional registers | DINOv2-style; optional layer-scale; the LeJEPA community checkpoint and the LeWM encoder |
 | `lewm` | `hfvit` encoder (ViT-Ti/14) | inherited from `hfvit` | predictor 192-d / 6 L over 3 frames plus an action embedding (10 → 192); BatchNorm MLPs folded at conversion |

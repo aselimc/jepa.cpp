@@ -115,6 +115,27 @@ if(JEPA_BUILD_TESTS)
                        ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2_1-vitb-384 --threads 8 --quiet
                        --samples coco_000000000139,coco_000000000285)
     endif()
+    # V-JEPA 2-AC: the bundle's own ViT-g encoder on the two Franka frames (256 tokens each, one
+    # tubelet, ~0.5 s per pass). It is a DIFFERENT ViT-g from facebook/vjepa2-vitg-fpc64-256 (the
+    # AC checkpoint carries its own frozen copy), so it needs its own encoder gate.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/vjepa2-ac-vitg-f16.gguf AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2-ac-vitg/manifest.json)
+      add_test(NAME parity-vjepa2-ac-vitg-encoder
+               COMMAND test-parity ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/vjepa2-ac-vitg-f16.gguf
+                       ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2-ac-vitg --threads 8 --quiet
+                       --samples frame0,goalframe)
+    endif()
+    # V-JEPA 2 ViT-g/16 (the first 22-head, ffn-48/11 model here): the two 16-frame clips, 2048
+    # tokens each. The 64-frame samples (8192 tokens, ~18 s each at 8 threads) are run by hand, and
+    # so is the f32 tier, whose rel_max sits above a bound calibrated on ViT-L — docs/parity.md,
+    # "V-JEPA 2 ViT-g/16".
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/vjepa2-vitg-fpc64-256-f16.gguf AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2-vitg-fpc64-256/manifest.json)
+      add_test(NAME parity-vjepa2-vitg-fpc64-256-clips
+               COMMAND test-parity ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/vjepa2-vitg-fpc64-256-f16.gguf
+                       ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2-vitg-fpc64-256 --threads 8 --quiet
+                       --samples archery_f16,bowling_f16)
+    endif()
     # LeVJEPA: one 3137-token clip covers everything this family adds — the CLS row, its identity
     # RoPE entry and the block-causal mask on the flash path. ~26 s at 8 threads for the two passes,
     # the rest of the fixture set (the second clip and the two still-image samples) is run by hand,
@@ -145,6 +166,17 @@ if(JEPA_BUILD_TESTS)
                COMMAND test-predictor --vjepa2 ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/vjepa2-vitl-fpc64-256-f16.gguf
                        --ref ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2-vitl-fpc64-256
                        --samples archery_f16 --threads 8)
+    endif()
+    # V-JEPA 2-AC predictor parity (f16) against the Meta world-model dump: the single-step and
+    # two-frame predictions, block-causality, the K x H rollout, jepa_ac_next_state, the planning
+    # energy and its ranking, and batched-K == sequential-K. f32 passes the same suite (bit-exact
+    # everywhere); q8_0 and below do not clear the rollout bars and are run by hand — see
+    # docs/parity.md, "V-JEPA 2-AC".
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/vjepa2-ac-vitg-f16.gguf AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2-ac-vitg/manifest.json)
+      add_test(NAME predictor-vjepa2-ac
+               COMMAND test-predictor --ac ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/vjepa2-ac-vitg-f16.gguf
+                       --ref ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2-ac-vitg --threads 8)
     endif()
   endif()
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-batch.cpp)
