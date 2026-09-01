@@ -349,6 +349,13 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
     if (!kv_range("jepa.enc.hier_layers length", (int64_t) e.hier_layers.size(), 0, JEPA_LIMIT_N_LAYER)) return false;
     if (!kv_finite("jepa.enc.rope_theta", e.rope_theta, 1e-6f, 1e12f)) return false;
     if (!kv_range("jepa.enc.rope_ref_grid", e.rope_ref_grid, 0, JEPA_LIMIT_IMG_SIZE)) return false;
+    // Interpolated RoPE rescales the grid by train_grid / grid, so it needs a training grid to
+    // divide by; rope3d_build asserts on its absence rather than dividing by zero.
+    if (e.rope_interpolate && e.rope_ref_grid < 1) {
+        jepa_log("jepa: jepa.enc.rope_interpolate is set but jepa.enc.rope_ref_grid is %d — "
+                 "interpolation has no training grid to rescale from\n", e.rope_ref_grid);
+        return false;
+    }
     // n_head is >= 1 by the range check above, so this modulo cannot divide by zero
     if (e.embed_dim % e.n_head != 0) {
         jepa_log("jepa: embed_dim %d not divisible by n_head %d\n", e.embed_dim, e.n_head);
@@ -415,6 +422,11 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
         if (p.head_dim == 0 && p.embed_dim % p.n_head != 0) {
             jepa_log("jepa: jepa.pred.embed_dim %d is not divisible by jepa.pred.n_head %d and there is "
                      "no jepa.pred.head_dim to say what the head width should be\n", p.embed_dim, p.n_head);
+            return false;
+        }
+        if (p.rope_interpolate && p.rope_ref_grid < 1) {
+            jepa_log("jepa: jepa.pred.rope_interpolate is set but jepa.pred.rope_ref_grid is %d\n",
+                     p.rope_ref_grid);
             return false;
         }
         if (p.kind == "masked" && p.head_dim_eff() % 2 != 0) {
@@ -895,10 +907,34 @@ jepa_model * jepa_model_load_ex(const char * gguf_path, const jepa_model_params 
         ok &= check_vec(*m, "pred.norm.bias", Dp);
         ok &= check_shape(*m, "pred.mask_tokens", Dp);
         ok &= check_f32(*m, "pred.mask_tokens");
+        // jepa_build_predictor_masked views row `mask_index % n_mask_tokens` out of this tensor, so
+        // a declared count larger than the tensor has is a view past its end.
+        if (ggml_tensor * mt = m->get("pred.mask_tokens")) {
+            if (p.n_mask_tokens > mt->ne[1]) {
+                jepa_log("jepa: jepa.pred.n_mask_tokens is %d but pred.mask_tokens holds %" PRId64 " rows\n",
+                         p.n_mask_tokens, mt->ne[1]);
+                ok = false;
+            }
+        }
         ok &= check_vec(*m, "pred.mod_embed_img", Dp);
         ok &= check_vec(*m, "pred.mod_embed_video", Dp);
         ok &= check_shape(*m, "pred.pos_embed", Dp);
         ok &= check_f32(*m, "pred.pos_embed");
+        // jepa_build_lewm takes the first T rows of this table, T <= jepa.pred.n_frames
+        if (ggml_tensor * pe = m->get("pred.pos_embed")) {
+            if (p.n_frames > pe->ne[1]) {
+                jepa_log("jepa: jepa.pred.n_frames is %d but pred.pos_embed holds %" PRId64 " rows\n",
+                         p.n_frames, pe->ne[1]);
+                ok = false;
+            }
+        }
+        // The action MLP has to land on the predictor width: action_dim -> hidden -> embed_dim,
+        // and its second layer feeds the adaLN matmul, which asserts on a mismatch.
+        if (ggml_tensor * a0 = m->get("pred.action_embed.0.weight")) {
+            ok &= check_vec(*m, "pred.action_embed.0.bias", a0->ne[1]);
+            ok &= check_shape(*m, "pred.action_embed.2.weight", a0->ne[1], Dp);
+            ok &= check_vec(*m, "pred.action_embed.2.bias", Dp);
+        }
         ok &= check_shape(*m, "pred.embed.weight", D, Dp);
         ok &= check_vec(*m, "pred.embed.bias", Dp);
         ok &= check_shape(*m, "pred.proj.weight", Dp, p.out_dim);
