@@ -56,7 +56,8 @@ are a prerequisite to install rather than a code change.
 
 ## Python, once
 
-Python is needed only to download and convert checkpoints. Nothing in the inference path uses it.
+Python is needed only to convert checkpoints yourself. Downloading the already-converted GGUFs needs
+nothing but `curl`, and nothing in the inference path uses Python at all.
 
 ```bash
 uv venv .venv && source .venv/bin/activate
@@ -67,15 +68,81 @@ uv pip install transformers safetensors numpy gguf pillow huggingface_hub av
 `torch` and `transformers` are needed only by the converters that read Hugging Face checkpoints and
 by the reference-dump scripts; `gguf` and `numpy` are the minimum for conversion itself.
 
-## Download and convert
+## Get the models
 
-`scripts/download_models.sh` fetches the reference checkpoints into `models/` (git-ignored).
-`small` takes LeJEPA, LeWorldModel and V-JEPA 2.1 (~1.8 GB); `all` adds I-JEPA, both V-JEPA 2 files and
-LeVJEPA (~8 GB); a single name fetches one.
+The converted files are published on Hugging Face under **[jepacpp](https://huggingface.co/jepacpp)** —
+one repository per model, five types each (`f32`, `f16`, `q8_0`, `q4_0`, `q4_k`), named exactly as the
+converter and `jepa-quantize` write them. `scripts/download_models.sh` fetches them into `models/gguf/`
+(git-ignored) with `hf download`, or plain `curl` if the `hf` CLI is neither on `PATH` nor in `.venv`:
 
 ```bash
-scripts/download_models.sh small     # or: all | ijepa | vjepa2 | vjepa2-ssv2 | vjepa21 | levjepa | lewm | lejepa
-scripts/download_fixtures.sh         # a few test images and clips, for the parity tests
+scripts/download_models.sh small                # LeJEPA + LeWorldModel + V-JEPA 2.1 at f16 (290 MiB)
+scripts/download_models.sh all                  # all seven at f16 (3.3 GiB)
+scripts/download_models.sh --ftype q8_0 ijepa   # one model, one type
+scripts/download_models.sh --ftype all levjepa  # f32, f16, q8_0, q4_0 and q4_k of one model
+scripts/download_fixtures.sh                    # golden dumps + media for the parity tests (665 MB)
+```
+
+| model | name | repository | f16 | q8_0 | q4_k |
+|---|---|---|---:|---:|---:|
+| LeJEPA ViT-S/16 | `lejepa` | [`lejepa-vits16-pretrain-in1k-GGUF`](https://huggingface.co/jepacpp/lejepa-vits16-pretrain-in1k-GGUF) | 42.2 MiB | 23.2 | 13.0 |
+| LeWorldModel Push-T | `lewm` | [`lewm-pusht-GGUF`](https://huggingface.co/jepacpp/lewm-pusht-GGUF) | 37.7 MiB | 23.1 | 15.3 |
+| V-JEPA 2.1 ViT-B/16 @384 | `vjepa21` | [`vjepa2_1-vitb-384-GGUF`](https://huggingface.co/jepacpp/vjepa2_1-vitb-384-GGUF) | 209.7 MiB | 113.3 | 61.9 |
+| LeVJEPA ViT-L/16 | `levjepa` | [`levjepa-vitl16-GGUF`](https://huggingface.co/jepacpp/levjepa-vitl16-GGUF) | 578.7 MiB | 310.3 | 166.3 |
+| V-JEPA 2 ViT-L/16 (fpc64) | `vjepa2` | [`vjepa2-vitl-fpc64-256-GGUF`](https://huggingface.co/jepacpp/vjepa2-vitl-fpc64-256-GGUF) | 622.5 MiB | 332.8 | 178.3 |
+| V-JEPA 2 ViT-L SSv2 | `vjepa2-ssv2` | [`vjepa2-vitl-fpc16-256-ssv2-GGUF`](https://huggingface.co/jepacpp/vjepa2-vitl-fpc16-256-ssv2-GGUF) | 717.1 MiB | 383.2 | 205.1 |
+| I-JEPA ViT-H/14 | `ijepa` | [`ijepa_vith14_1k-GGUF`](https://huggingface.co/jepacpp/ijepa_vith14_1k-GGUF) | 1206.2 MiB | 643.7 | 343.7 |
+
+A single file without the script, either way round:
+
+```bash
+hf download jepacpp/lewm-pusht-GGUF lewm-pusht-f16.gguf --local-dir models/gguf
+curl -L -o models/gguf/lewm-pusht-f16.gguf \
+     https://huggingface.co/jepacpp/lewm-pusht-GGUF/resolve/main/lewm-pusht-f16.gguf
+```
+
+Every model card lists the sha256 of all five files, so `sha256sum -c` verifies a download. Re-run
+`cmake` once `models/gguf/` and `tests/fixtures/ref/` are populated — the parity tests register at
+configure time. Which type to use: [Accuracy → which dtype](accuracy.md#which-dtype-to-ship); `f16` is
+the default, `q8_0` halves it again for pooled work, `f32` is the bit-exact tier, and the two 4-bit
+files sit below the parity bars. The other types `jepa-quantize` can produce (`q4_1`, `q5_0`, `q5_1`,
+`q5_k`, `q6_k`, measured in [quantization](quantization.md)) are not published; make them locally.
+
+The golden reference dumps live in the companion dataset
+[`jepacpp/jepa.cpp-fixtures`](https://huggingface.co/datasets/jepacpp/jepa.cpp-fixtures), which
+`scripts/download_fixtures.sh` pulls into `tests/fixtures/ref/`. The COCO images and Kinetics clips the
+dumps were computed on are not redistributed there; the same script fetches those from their own
+sources into `tests/fixtures/media/`.
+
+### Licences
+
+Each GGUF carries its source checkpoint's licence verbatim in `general.license` and the origin in
+`general.source_url` (`jepa-info --kv` prints both). **I-JEPA and LeVJEPA are non-commercial.**
+jepa.cpp's own code is MIT.
+
+| model | licence | source of that statement | redistribution of the converted weights |
+|---|---|---|---|
+| I-JEPA ViT-H/14 | **CC BY-NC 4.0** | [model card](https://huggingface.co/facebook/ijepa_vith14_1k) + the full CC text as [LICENSE](https://github.com/facebookresearch/ijepa/blob/main/LICENSE) | permitted for **non-commercial** use, with attribution to Meta and a note that the file is modified |
+| LeJEPA ViT-S/16 | Apache-2.0 | [model card](https://huggingface.co/OK-AI/lejepa-vits16-pretrain-in1k) metadata (the repo ships no `LICENSE` file) | permitted, with attribution |
+| LeWorldModel Push-T | MIT | [model card](https://huggingface.co/quentinll/lewm-pusht) + [le-wm](https://github.com/lucas-maes/le-wm) | permitted, keep the notice |
+| V-JEPA 2 ViT-L/16 (fpc64) | MIT | [model card](https://huggingface.co/facebook/vjepa2-vitl-fpc64-256) + [LICENSE](https://github.com/facebookresearch/vjepa2/blob/main/LICENSE) | permitted, keep the notice |
+| V-JEPA 2 ViT-L SSv2 | MIT | [model card](https://huggingface.co/facebook/vjepa2-vitl-fpc16-256-ssv2) + the same LICENSE | permitted, keep the notice |
+| V-JEPA 2.1 ViT-B/16 @384 | MIT | the [checkpoint table](https://github.com/facebookresearch/vjepa2#v-jepa-21-pretrained-checkpoints) of `facebookresearch/vjepa2`; the `.pt` on `dl.fbaipublicfiles.com` carries no metadata of its own, so this is the repository-level grant | permitted, keep the notice |
+| LeVJEPA ViT-L/16 | **CC BY-NC 4.0** | [model card](https://huggingface.co/galilai-group/LeVJEPA-VideoMix-Large) metadata (the repo ships no `LICENSE` file); the weights are trained from scratch, so the restriction is the publisher's own | permitted for **non-commercial** use, with attribution to galilai-group and a note that the file is modified |
+
+None of the seven is gated and none carries an acceptable-use policy. The `jepacpp` repositories mirror
+these terms one for one; the fixtures dataset is CC BY-NC 4.0, because it stores outputs of the two
+non-commercial models.
+
+### Converting instead of downloading
+
+`scripts/download_models.sh --convert` fetches the *source* checkpoints into `models/` (git-ignored)
+instead of the GGUFs. `small` takes LeJEPA, LeWorldModel and V-JEPA 2.1 (~1.8 GB); `all` adds I-JEPA,
+both V-JEPA 2 files and LeVJEPA (~8 GB); a single name fetches one. This is the path that needs the
+Python environment above.
+
+```bash
+scripts/download_models.sh --convert small   # or: all | ijepa | vjepa2 | vjepa2-ssv2 | vjepa21 | levjepa | lewm | lejepa
 ```
 
 Conversion writes `models/gguf/<name>-<ftype>.gguf`. `--ftype f16` stores the attention, FFN,
@@ -93,8 +160,9 @@ position tables, tokens) as F32; `--ftype f32` stores everything as F32. Quantiz
 | V-JEPA 2 ViT-L SSv2 | `vjepa2-ssv2` | `python scripts/convert.py --family vjepa2 --src models/facebook/vjepa2-vitl-fpc16-256-ssv2 --ftype f16` |
 | LeVJEPA ViT-L/16 | `levjepa` | `python scripts/convert.py --family levjepa --src models/galilai-group/LeVJEPA-VideoMix-Large --out models/gguf/levjepa-vitl16-f16.gguf --ftype f16` |
 
-I-JEPA and LeVJEPA are CC-BY-NC-4.0 (non-commercial); the other five are MIT or Apache-2.0. The licence
-travels inside the GGUF as `general.license`.
+The published files come from exactly these commands plus `jepa-quantize`; every model card records the
+one that produced it and the jepa.cpp commit it ran at, so a local conversion is reproducible against
+the published sha256.
 
 ## Running the tools
 

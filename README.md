@@ -103,21 +103,20 @@ git clone --recursive https://github.com/aselimc/jepa.cpp && cd jepa.cpp
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 ```
 
-Python is needed **only once**, to download and convert checkpoints:
+The converted files are on Hugging Face under [**jepacpp**](https://huggingface.co/jepacpp) — one
+repository per model, five types each (`f32`, `f16`, `q8_0`, `q4_0`, `q4_k`), every model card carrying
+the sha256 of its files and the measured parity of each one:
 
 ```bash
-uv venv .venv && source .venv/bin/activate
-uv pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
-uv pip install transformers safetensors numpy gguf pillow huggingface_hub av
-
-scripts/download_models.sh small     # LeJEPA, LeWorldModel, V-JEPA 2.1  ("all" adds I-JEPA, V-JEPA 2, LeVJEPA, ~8 GB)
-scripts/download_fixtures.sh         # a few test images and clips
-
-python scripts/convert.py --family hfvit    --src models/OK-AI/lejepa-vits16-pretrain-in1k --ftype f16
-python scripts/convert.py --family lewm     --src models/quentinll/lewm-pusht              --ftype f16
-python scripts/convert.py --family vjepa2_1 --src models/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt \
-                          --out models/gguf/vjepa2_1-vitb-384-f16.gguf
+scripts/download_models.sh small     # LeJEPA, LeWorldModel, V-JEPA 2.1 at f16, 290 MiB ("all" adds the other four, 3.3 GiB)
+scripts/download_fixtures.sh         # test media + the PyTorch golden dumps, for ctest
 ```
+
+That path is `hf download`, or plain `curl` where the CLI is absent — **no Python at all**. Python is
+needed only if you would rather convert the checkpoints yourself
+(`scripts/download_models.sh --convert` fetches the sources, then `scripts/convert.py`); the
+environment and the per-model recipe are in
+[docs/getting-started.md](https://aselimc.github.io/jepa.cpp/getting-started/).
 
 Then everything is C++:
 
@@ -215,5 +214,9 @@ machine-readable twins: `tests/results/*.json`.
 Built on [ggml](https://github.com/ggml-org/ggml). Models by **Meta FAIR** (I-JEPA, V-JEPA 2 / 2.1),
 **OK-AI** (LeJEPA ViT-S/16) and **quentinll / le-wm** (LeWorldModel Push-T).
 
+Converted weights and the parity fixtures: **<https://huggingface.co/jepacpp>**.
+
 Code: **MIT** ([`LICENSE`](LICENSE)). Converted GGUFs keep their checkpoint's licence (carried in
-`general.license` inside the file); note **I-JEPA is CC-BY-NC-4.0 — non-commercial only**.
+`general.license` inside the file); note **I-JEPA and LeVJEPA are CC-BY-NC-4.0 — non-commercial
+only**. Per-model licences, sources and redistribution terms:
+[docs/getting-started.md](https://aselimc.github.io/jepa.cpp/getting-started/#licences).

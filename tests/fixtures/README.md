@@ -1,16 +1,26 @@
 # Parity fixtures
 
 Everything the parity tests need: small media inputs (`media/`) and PyTorch golden outputs (`ref/`).
-Only the eight COCO images are tracked in git; clips and reference dumps are git-ignored and (re)generated with:
+Only the eight COCO images are tracked in git; the clips and the dumps are git-ignored, and the dumps are
+either downloaded — they are published as the dataset
+[`jepacpp/jepa.cpp-fixtures`](https://huggingface.co/datasets/jepacpp/jepa.cpp-fixtures), 156 files, 660 MB —
+or regenerated locally:
 
 ```bash
-scripts/download_fixtures.sh                     # 8 COCO val2017 jpgs + 6 Kinetics-mini clips -> tests/fixtures/media
-scripts/dump_reference.py --model all            # golden outputs -> tests/fixtures/ref/<model>/   (~1 min on 32 cores)
+scripts/download_fixtures.sh                     # media (8 COCO jpgs + 6 Kinetics-mini clips) + all of ref/
+scripts/download_fixtures.sh ref lewm-pusht      # or: media | ref | ref <model>...
+scripts/dump_reference.py --model all            # regenerate ref/ instead (~1 min on 32 cores; needs the torch venv)
 scripts/compare.py OUT_DIR tests/fixtures/ref/<model>   # jepa.cpp output vs reference, non-zero exit on regression
 ```
 
+The dataset carries `ref/` only. The COCO images and the Kinetics clips stay at their own sources
+(cocodataset.org and [`nateraw/kinetics-mini`](https://huggingface.co/datasets/nateraw/kinetics-mini)) and
+are not redistributed there; `download_fixtures.sh` fetches them from those. The dumps themselves are
+CC BY-NC 4.0 — the most restrictive licence among the checkpoints whose outputs they store, I-JEPA's and
+LeVJEPA's.
+
 `dump_reference.py` needs the project venv (`.venv`, torch CPU + transformers + av + pillow + timm + einops), the
-checkpoints from `scripts/download_models.sh` under `models/`, and for `vjepa2_1-vitb-384` a clone of
+checkpoints from `scripts/download_models.sh --convert` under `models/`, and for `vjepa2_1-vitb-384` a clone of
 `facebookresearch/vjepa2` at `tmp/vjepa2-src` (cloned automatically if absent). For `lejepa-vits16` the model directory
 must also contain the `hf_src/` package of the HF repo (its `modelling_vitv2.py` imports it); `levjepa-vitl16` loads
 the `modeling_levjepa.py` / `configuration_levjepa.py` that ship next to its weights (`trust_remote_code=True`). Use `--root` to point at another checkout; caches go to `<root>/tmp/hf-home` and `<root>/tmp/torch-home`.
