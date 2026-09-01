@@ -31,8 +31,10 @@
 // --gpu [N] runs everything on the N-th GPU device instead (docs/architecture.md "GPU backend");
 // --threads is then
 // unused, the table's "threads / device" column carries the device name, and the JSON gains
-// "device"/"gpu"/"mul_mat_prec_f32". GPU rows do not belong in docs/benchmarks.md (which is keyed by
-// thread count) — scripts/gen_benchmarks_md.py skips them; they live in docs/performance.md "GPU encoder".
+// "device"/"gpu"/"mul_mat_prec_f32". GPU rows are keyed by device and accumulation precision rather
+// than by thread count, so they are swept separately (scripts/bench_gpu.sh), aggregated into
+// tests/results/benchmarks-gpu.json and tabulated in docs/benchmarks.md "GPU (CUDA)"; a stray --gpu
+// JSON in the CPU sweep directory is skipped rather than mixed into the thread-count tables.
 //
 // In --mode head/predictor the encoder is run three times (one warmup + two measured) and the
 // *minimum* of the measured passes is reported as `encoder_ms`, so a burst of load on the box during
@@ -126,7 +128,7 @@ static std::vector<float> make_input(const jepa_model * model, int n_batch, int 
 
 static const char * kv_name(int kv) { return kv == JEPA_KV_F16 ? "f16" : kv == JEPA_KV_F32 ? "f32" : "auto"; }
 
-struct stats { double mean = 0, min = 0, max = 0; };
+struct stats { double mean = 0, min = 0, max = 0, stddev = 0; };
 
 static stats summarize(std::vector<double> v) {
     stats s;
@@ -136,6 +138,14 @@ static stats summarize(std::vector<double> v) {
     s.max = v.back();
     for (double d : v) s.mean += d;
     s.mean /= (double) v.size();
+    // Population standard deviation of the measured runs. The tables quote the minimum, but the
+    // spread is what says whether a run-to-run difference of a few per cent is a real one: on a GPU
+    // a row with a 0.3 ms sigma at 6 ms cannot be read to better than ~5 %.
+    if (v.size() > 1) {
+        double acc = 0;
+        for (double d : v) acc += (d - s.mean) * (d - s.mean);
+        s.stddev = std::sqrt(acc / (double) v.size());
+    }
     return s;
 }
 
@@ -228,7 +238,8 @@ static bool write_json(const std::string & path, const std::vector<run> & runs) 
                 r.threads, r.batch, r.frames, r.height, r.width);
         fprintf(f, "\"repeat\": %d, \"warmup\": %d, \"steps\": %d, ", r.repeat, r.warmup, r.steps);
         fprintf(f, "\"tokens\": %lld, \"units\": %lld, ", (long long) r.tokens, (long long) r.units);
-        fprintf(f, "\"ms_mean\": %.4f, \"ms_min\": %.4f, \"ms_max\": %.4f, ", r.ms.mean, r.ms.min, r.ms.max);
+        fprintf(f, "\"ms_mean\": %.4f, \"ms_min\": %.4f, \"ms_max\": %.4f, \"ms_std\": %.4f, ",
+                r.ms.mean, r.ms.min, r.ms.max, r.ms.stddev);
         fprintf(f, "\"wall_ms_mean\": %.4f, \"wall_ms_min\": %.4f, ", r.wall.mean, r.wall.min);
         fprintf(f, "\"ms_per_unit\": %.4f, ", ms_per_unit(r));
         fprintf(f, "\"encoder_ms\": %.4f, \"tokens_per_s\": %.2f, ", r.enc_ms, tokens_per_s(r));
