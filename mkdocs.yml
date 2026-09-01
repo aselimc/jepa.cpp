@@ -61,4 +61,4 @@ nav:
       - Benchmarks (raw): benchmarks.md
       - Quantization: quantization.md
       - Image accuracy (Imagenette): accuracy-image.md
-      - Video accuracy (UCF-101): accuracy-video.md
+      - Video accuracy (UCF-101, SSv2): accuracy-video.md

@@ -355,10 +355,18 @@ def stage_ssv2_cpp(a) -> None:
 # stage: report
 # --------------------------------------------------------------------------------------------
 def _decode_s(work: Path) -> float:
-    """Wall time scripts/video_frames.py spent decoding, from its index (0.0 if not available)."""
+    """Wall time scripts/video_frames.py spent decoding, from its index.
+
+    The frame cache is deleted once a sweep is done, and with it the index that holds the number.
+    Rather than silently regress a measured figure to 0.0 on every later `report`, the previously
+    written artifact is the last fallback; a fresh `video_frames.py` run overwrites it again.
+    """
     for cand in (ROOT / "tmp" / "frames" / "index.json", work.parent / "frames" / "index.json"):
         if cand.exists():
             return float(json.loads(cand.read_text()).get("wall_s", 0.0))
+    prev = ROOT / "tests" / "results" / "accuracy-video.json"
+    if prev.exists():
+        return float(json.loads(prev.read_text()).get("dataset", {}).get("decode_s", 0.0))
     return 0.0
 
 
@@ -380,8 +388,11 @@ def _env() -> dict:
         out["transformers"] = transformers.__version__
     except Exception:
         pass
+    # A git worktree of this repo carries no `ggml/` submodule of its own, and `git -C` would then
+    # walk up and answer with *this* repo's HEAD; the shared checkout is the one that was built.
+    ggml = ROOT / "ggml" if (ROOT / "ggml" / ".git").exists() else SHARED / "ggml"
     try:
-        out["ggml"] = subprocess.run(["git", "-C", str(ROOT / "ggml"), "rev-parse", "--short", "HEAD"],
+        out["ggml"] = subprocess.run(["git", "-C", str(ggml), "rev-parse", "--short", "HEAD"],
                                      capture_output=True, text=True, check=True).stdout.strip()
     except Exception:
         pass
@@ -596,7 +607,13 @@ def stage_report(a) -> None:
     Path(a.out_json).write_text(json.dumps(payload, indent=1))
     print(f"wrote {a.out_json}")
     if a.out_md:
-        Path(a.out_md).write_text(render_md(payload, cj))
+        # docs/accuracy-video.md carries the SSv2 *validation* tables too; their artifact is written
+        # by scripts/bench_accuracy_ssv2.py, but this stays the document's only generator.
+        s2v = Path(a.ssv2_json)
+        ssv2_val = json.loads(s2v.read_text()) if s2v.exists() else None
+        if ssv2_val is None:
+            print(f"note: {s2v} absent — the SSv2 validation section is left out")
+        Path(a.out_md).write_text(render_md(payload, cj, ssv2_val))
         print(f"wrote {a.out_md}")
 
 
@@ -659,11 +676,157 @@ def _fastest(p: dict) -> str:
             "by ~2x.") if out else "."
 
 
-def render_md(p: dict, cj: dict) -> str:
+SSV2_VAL_JSON = ROOT / "tests" / "results" / "accuracy-ssv2.json"
+
+
+def _ssv2_rows(p2: dict, backend: str, scope: str) -> list[dict]:
+    return [r for r in p2["runs"] if r["backend"] == backend and r["scope"] == scope]
+
+
+def _ssv2_ref(p2: dict, scope: str, device: str | None = None) -> dict | None:
+    return next((r for r in p2["runs"] if r["backend"] == "pytorch" and r["scope"] == scope
+                 and (device is None or r.get("device") == device)), None)
+
+
+def render_ssv2_val(p2: dict | None) -> list[str]:
+    """The SSv2 *validation* section: real top-1 / top-5, from tests/results/accuracy-ssv2.json.
+
+    Written by `scripts/bench_accuracy_ssv2.py report`; this function is the only thing that turns
+    it into prose, so `docs/accuracy-video.md` keeps one generator.  Returns an empty list when the
+    artifact is absent, which is what a checkout without the (licence-gated) dataset looks like.
+    """
+    if not p2 or not p2.get("runs"):
+        return []
+    L: list[str] = []
+    A = L.append
+    ds, pr, pub = p2["dataset"], p2["protocol"], p2["published"]
+    ref = _ssv2_ref(p2, "full")
+    A("## SSv2 validation accuracy — the real task\n")
+    A(f"The same checkpoint scored on the task it was trained for: the **full "
+      f"{_th(ds['n_entries'])}-clip Something-Something-v2 validation split**, "
+      f"{ds['n_classes']} classes, measured {p2['date']}. This is a task accuracy, not an agreement "
+      "measure — the table above runs the same head on UCF clips, where an SSv2 label means "
+      "nothing.\n")
+    A(f"- **Dataset** `{ds['root']}` — {_th(ds['n_clips_decoded'])} clips decoded, "
+      f"{ds['n_decode_failures']} decode failures, {_th(ds['n_skipped'])} clips skipped.")
+    A(f"- **Views** {pr['views']}.")
+    A(f"- **Clip** {pr['frames']}, decoded once into a THWC uint8 `.npy` every backend reads.")
+    A(f"- **Preprocessing** {pr['preprocess']}.")
+    A(f"- **Labels** the class index is `id2label` of the checkpoint; {ds['label_mapping']['clip_to_class']}, "
+      f"and {ds['label_mapping']['dataset_agreement']}. The GGUFs' own `jepa.head.labels` are "
+      + ", ".join(f"{dt}: {v}" for dt, v in
+                  (ds["label_mapping"].get("gguf_head_labels") or {}).items()) + ".")
+    A(f"- **Reference** {pr['reference']}.")
+    A(f"- **Scopes** " + "; ".join(f"`{n}` = {v}" for n, v in pr["scopes"].items()) + ".\n")
+
+    A(f"### Full validation split ({_th(ref['n_clips'])} clips)\n")
+    A("| backend | device | dtype | top-1 % | top-5 % | top-1 agreement % | logit cos mean "
+      "| logit cos min | max abs logit diff | clips/s |")
+    A("|---|---|---|--:|--:|--:|--:|--:|--:|--:|")
+    for r in [ref] + sorted(_ssv2_rows(p2, "cuda", "full"), key=_dtkey):
+        A(_ssv2_row(r))
+    A("")
+    A("PyTorch and jepa.cpp read the same `.npy` frames and each applies the checkpoint's own "
+      "preprocessing to them, so the only difference between the rows is the engine and the "
+      "weight dtype. In clips rather than percentage points the jepa.cpp rows differ from the "
+      "reference by " + ", ".join(
+          f"{r['dtype']} {round((r['top1'] - ref['top1']) * ref['n_clips']):+d}"
+          for r in sorted(_ssv2_rows(p2, "cuda", "full"), key=_dtkey))
+      + f" of {_th(ref['n_clips'])}.\n")
+    A(f"The published figure for this architecture is **{pub['top1']} %** top-1 ({pub['source']}, "
+      f"{pub['model']}), measured with {pub['views']} against the single view taken here; the model "
+      "card of the released checkpoint publishes no number of its own.\n")
+
+    sub = sorted(_ssv2_rows(p2, "cpu", "sub10"), key=_dtkey)
+    if sub:
+        n = sub[0]["n_clips"]
+        gpu_sub = sorted(_ssv2_rows(p2, "cuda", "sub10"), key=_dtkey)
+        ref_sub = _ssv2_ref(p2, "sub10")
+        A(f"### CPU against CUDA on the `sub10` subset ({_th(n)} clips)\n")
+        A("| backend | device | dtype | top-1 % | top-5 % | top-1 agreement % | logit cos mean "
+          "| logit cos min | max abs logit diff | clips/s |")
+        A("|---|---|---|--:|--:|--:|--:|--:|--:|--:|")
+        for r in ([ref_sub] if ref_sub else []) + sub + gpu_sub:
+            A(_ssv2_row(r))
+        A("")
+        A("Every row is scored against the same PyTorch reference logits sliced to the same clips, "
+          "so a CPU row and a CUDA row of the same dtype are directly comparable. The CUDA and "
+          "PyTorch rows here are the full-split runs scored on this subset rather than separate "
+          "passes — identical inputs produce identical logits, so re-running them would only cost "
+          "GPU time. That is why they carry no `clips/s`.\n")
+
+    cvc = p2.get("cpu_vs_cuda") or {}
+    if cvc:
+        A("The same rows read against each other rather than against PyTorch, which is the "
+          "comparison that isolates the backend with the engine and the GGUF held fixed:\n")
+        A("| dtype | clips | argmax agreement % | logit cos mean | logit cos min "
+          "| max abs logit diff |")
+        A("|---|--:|--:|--:|--:|--:|")
+        for tag, v in sorted(cvc.items(), key=lambda kv: _dtkey({"dtype": kv[0].split("-")[2]})):
+            A(f"| {tag.split('-')[2]} | {v['n_clips']} | {100*v['top1_agreement']:.2f} | "
+              f"{v['logit_cos_mean']:.6f} | {v['logit_cos_min']:.6f} | "
+              f"{v['logit_max_abs_diff']:.3f} |")
+        A("")
+        A("A CUDA build has no f32 tier — its \"F32\" matmul is TF32 and its flash kernel converts "
+          "K/V to F16 — and the two rows measure exactly that: the f32 GGUF agrees with itself "
+          "across the two backends *less* often than the f16 GGUF does, because on the CPU the f32 "
+          "file is exact and on the GPU it is not.\n")
+
+    anc = p2.get("cpu_f32_anchor") or {}
+    cpu_ref = _ssv2_ref(p2, "sub100", device="cpu")
+    if anc and cpu_ref:
+        A(f"### The f32 anchor — both engines on the CPU ({cpu_ref['n_clips']} clips)\n")
+        A("| run | clips | top-1 agreement % | mean 1 − cos | worst clip 1 − cos "
+          "| max abs logit diff |")
+        A("|---|--:|--:|--:|--:|--:|")
+        for tag, v in sorted(anc.items()):
+            A(f"| `{tag}` | {v['n_clips']} | {100*v['top1_agreement']:.2f} | "
+              f"{1 - v['logit_cos_mean']:.2e} | {1 - v['logit_cos_min']:.2e} | "
+              f"{v['logit_max_abs_diff']:.2e} |")
+        A("")
+        A(f"The reference here is `transformers` on the **CPU** at f32 "
+          f"(torch {cpu_ref['stats'].get('torch', '?')}), not the GPU rows above: it is the one "
+          "comparison in which both sides run the same arithmetic on the same hardware, so it is "
+          "the one that can be read as an exactness claim rather than a fidelity one. The last row "
+          "is the control that gives the others a scale — PyTorch's *own* fp32 CUDA logits against "
+          "its fp32 CPU logits on the same clips, which is what changing backend costs before "
+          "changing engine is considered at all.\n")
+    return L
+
+
+def _th(n: int) -> str:
+    """24777 -> '24 777' (a thin-space thousands separator, the spelling these docs use)."""
+    return f"{n:,}".replace(",", " ")
+
+
+def _dtkey(r: dict):
+    order = ["f32", "f16", "q8_0", "q4_0", "q4_k"]
+    dt = r.get("dtype") or ""
+    return (order.index(dt) if dt in order else len(order), dt)
+
+
+def _ssv2_row(r: dict) -> str:
+    v = r.get("vs_pytorch") or {}
+    cps = (r.get("stats") or {}).get("clips_per_s")
+    ref = r["backend"] == "pytorch"
+    return (f"| {'pytorch' if ref else 'jepa.cpp'} | {r.get('device') or '?'} | "
+            f"{r.get('dtype') or '?'} | **{100*r['top1']:.2f}** | {100*r['top5']:.2f} | "
+            + ("ref | ref | ref | ref" if ref else
+               f"{100*v['top1_agreement']:.2f} | {v['logit_cos_mean']:.6f} | "
+               f"{v['logit_cos_min']:.6f} | {v['logit_max_abs_diff']:.3f}")
+            + f" | {'—' if cps is None else f'{cps:.2f}'} |")
+
+
+def render_md(p: dict, cj: dict, ssv2_val: dict | None = None) -> str:
     L = []
     A = L.append
-    A("# Accuracy — video k-NN on the UCF101 subset (PyTorch vs jepa.cpp)\n")
+    A("# Accuracy — video: UCF-101 k-NN and SSv2 classification (PyTorch vs jepa.cpp)\n")
     A("*Raw measurement report — the curated view is [Benchmarks → Accuracy](accuracy.md).*\n")
+    if ssv2_val and ssv2_val.get("runs"):
+        A("Two benchmarks live here: a frozen-feature k-NN over a UCF-101 subset, which every video "
+          "encoder is scored on, and the real "
+          "[Something-Something-v2 validation accuracy](#ssv2-validation-accuracy-the-real-task) of "
+          "the SSv2 classifier, which is a trained head on the task it was trained for.\n")
     A(f"Frozen-feature evaluation, {p['date']}. **Inference only** — nothing is trained: the encoders "
       "are frozen and both metrics are look-ups over their pooled clip features.\n")
     A(f"- **Dataset** `{p['dataset']['root']}` — {len(p['dataset']['classes'])} classes, "
@@ -738,6 +901,8 @@ def render_md(p: dict, cj: dict) -> str:
               f"{b['logit_cos']:.6f} | {'' if cps is None else f'{cps:.2f}'} |")
         A("")
         A("`top-5 overlap` is the mean size of the intersection of the two top-5 label sets divided by 5.\n")
+
+    L += render_ssv2_val(ssv2_val)
 
     A("## What the numbers say\n")
 
@@ -815,11 +980,22 @@ def render_md(p: dict, cj: dict) -> str:
               f"cosine {q8['logit_cos']:.6f} and a largest logit error of {q8['logit_max_abs_diff']:.2f}. "
               "The PyTorch top-1 stays inside the jepa.cpp top-5 on "
               f"{_pct(q8['pytorch_top1_in_cpp_top5'])} % of clips at both dtypes, so the ranking is "
-              "intact and only near-ties at the top move. This is the sharpest measurement in the "
-              "document: an argmax over 174 classes has no averaging to hide behind, unlike a pooled "
-              "1024-vector whose cosine stays at 0.9999 — which is exactly why `docs/parity.md`'s "
-              "advice to prefer f16 over q8_0 for head/classifier work, and q8_0 only for pooled "
-              "retrieval features, holds up on 105 real clips.\n")
+              "intact and only near-ties at the top move. An argmax over 174 classes has no averaging "
+              "to hide behind, unlike a pooled 1024-vector whose cosine stays at 0.9999 — which is "
+              "exactly why `docs/parity.md`'s advice to prefer f16 over q8_0 for head/classifier "
+              "work, and q8_0 only for pooled retrieval features, holds up on 105 real clips.\n")
+            if ssv2_val and ssv2_val.get("runs"):
+                v = {r["dtype"]: r for r in _ssv2_rows(ssv2_val, "cuda", "full")}
+                vr = _ssv2_ref(ssv2_val, "full")
+                if vr and "q8_0" in v and "f16" in v:
+                    A("What 105 clips cannot say is what those moved argmaxes cost as *accuracy*, and "
+                      "the SSv2 validation section answers that on a scale that resolves it: over "
+                      f"{_th(vr['n_clips'])} clips q8_0 moves "
+                      f"{round((1 - v['q8_0']['vs_pytorch']['top1_agreement']) * vr['n_clips'])} "
+                      f"top-1 decisions, and top-1 ends at {100*v['q8_0']['top1']:.2f} % against "
+                      f"PyTorch's {100*vr['top1']:.2f} %. The moved decisions are near-ties in both "
+                      "directions, so they cancel; prefer f16 because the argmaxes are the "
+                      "reference's, not because the score is.\n")
 
     sp = []
     for name, m in p["models"].items():
@@ -964,6 +1140,9 @@ def main() -> None:
     s.add_argument("--dtypes", default="f32,f16,q8_0")
     s.add_argument("--out-json", default=str(ROOT / "tests" / "results" / "accuracy-video.json"))
     s.add_argument("--out-md", default=str(ROOT / "docs" / "accuracy-video.md"))
+    s.add_argument("--ssv2-json", default=str(SSV2_VAL_JSON),
+                   help="SSv2 validation artifact written by scripts/bench_accuracy_ssv2.py; its "
+                        "tables are rendered into --out-md when the file exists")
     s.set_defaults(fn=stage_report)
 
     a = ap.parse_args()

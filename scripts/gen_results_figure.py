@@ -7,6 +7,9 @@ Every value on the figure is read from a committed artifact; nothing is typed in
                                        resident weights, and the PyTorch CPU baseline of each row
     tests/results/accuracy-image.json  Imagenette k-NN top-1, PyTorch against jepa.cpp per dtype
     tests/results/accuracy-video.json  UCF-101 k-NN top-1, the same comparison on clips
+    tests/results/accuracy-ssv2.json   SSv2 validation top-1 of the classifier checkpoint, PyTorch
+                                       against jepa.cpp per dtype (absent unless the licence-gated
+                                       dataset was on the machine)
     docs/performance.md                the GPU tables, which have no machine-readable twin — they are
                                        parsed out of the document the way scripts/gen_benchmarks_md.py
                                        parses docs/parity.md.  A GPU table is recognised by its
@@ -54,6 +57,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 BENCH_JSON = ROOT / "tests" / "results" / "benchmarks.json"
 ACC_IMAGE_JSON = ROOT / "tests" / "results" / "accuracy-image.json"
 ACC_VIDEO_JSON = ROOT / "tests" / "results" / "accuracy-video.json"
+ACC_SSV2_JSON = ROOT / "tests" / "results" / "accuracy-ssv2.json"
 PERF_MD = ROOT / "docs" / "performance.md"
 OUT_SVG = ROOT / "docs" / "assets" / "results.svg"
 
@@ -359,18 +363,43 @@ def video_knn_series(acc: dict):
     return out
 
 
-def panel_accuracy(ax, acc_img, acc_vid) -> None:
+def ssv2_series(acc: dict):
+    """The SSv2 classifier's real top-1 on the validation split, per jepa.cpp dtype.
+
+    The only block on this panel whose task has a trained head: the other two are look-ups over
+    frozen features, this one is the checkpoint's own attentive pooler and 174-way classifier.
+    """
+    runs = acc.get("runs", [])
+    ref = next((r for r in runs if r["backend"] == "pytorch" and r["scope"] == "full"), None)
+    if ref is None:
+        warn("accuracy-ssv2.json: no full-split PyTorch row — dropped from the accuracy panel")
+        return []
+    vals = {r["dtype"]: r["top1"] for r in runs
+            if r["backend"] != "pytorch" and r["scope"] == "full" and r.get("dtype")}
+    if not vals:
+        return []
+    return [(acc["model"]["name"], "174-way head", vals, ref["top1"], ref["n_clips"])]
+
+
+def panel_accuracy(ax, acc_img, acc_vid, acc_ssv2) -> None:
     blocks = []
     if acc_img:
         series = image_knn_series(acc_img)
         if series:
             n = series[0][4]
-            blocks.append((f"Imagenette · {n:,} val images".replace(",", " "), n, "images", series))
+            blocks.append((f"Imagenette · {n:,} val images · k = 20 cosine vote".replace(",", " "),
+                           n, "images", series))
     if acc_vid:
         series = video_knn_series(acc_vid)
         if series:
             n = series[0][4]
-            blocks.append((f"UCF-101 · {n} clips", n, "clips", series))
+            blocks.append((f"UCF-101 · {n} clips · k = 20 cosine vote", n, "clips", series))
+    if acc_ssv2:
+        series = ssv2_series(acc_ssv2)
+        if series:
+            n = series[0][4]
+            blocks.append((f"SSv2 · {n:,} val clips · the checkpoint's own head".replace(",", " "),
+                           n, "clips", series))
     if not blocks:
         ax.text(0.5, 0.5, "no k-NN artifacts", ha="center", va="center", transform=ax.transAxes,
                 color=MUTED)
@@ -408,7 +437,9 @@ def panel_accuracy(ax, acc_img, acc_vid) -> None:
 
     lim = max(1.1, max(abs(r[2]) for r in rows) * 1.45)
     ax.set_xlim(-lim, lim)
-    ax.set_ylim(rows[-1][0] + 0.8, heads[0][0] - 0.7)
+    # the extra room at the bottom is the "PyTorch f32" caption's; without it the caption sits on
+    # top of the last row's value label
+    ax.set_ylim(rows[-1][0] + 1.9, heads[0][0] - 0.7)
     ax.set_yticks([r[0] for r in rows])
     ax.set_yticklabels([r[1] for r in rows], fontsize=7.4)
     for lbl in ax.get_yticklabels():
@@ -416,11 +447,11 @@ def panel_accuracy(ax, acc_img, acc_vid) -> None:
     for yy, title in heads:
         ax.text(-lim * 0.98, yy, title, fontsize=7.8, color=MUTED, va="center", ha="left",
                 bbox=dict(boxstyle="square,pad=0.15", facecolor=PAGE, edgecolor="none", alpha=0.8))
-    ax.text(lim * 0.03, rows[-1][0] + 0.7, "PyTorch f32", fontsize=7.4, color=C_TORCH_CPU,
+    ax.text(lim * 0.03, rows[-1][0] + 1.75, "PyTorch f32", fontsize=7.4, color=C_TORCH_CPU,
             va="bottom", ha="left")
-    ax.set_xlabel("jepa.cpp k-NN top-1 minus PyTorch's, percentage points", fontsize=8, color=MUTED,
+    ax.set_xlabel("jepa.cpp top-1 minus PyTorch's, percentage points", fontsize=8, color=MUTED,
                   labelpad=4)
-    ax.set_title("Task accuracy: frozen features, k = 20 cosine vote, nothing trained",
+    ax.set_title("Task accuracy: the same pixels through both engines, nothing refitted",
                  fontsize=10.5, color=INK, loc="left", pad=8)
     ax.tick_params(axis="x", labelsize=7.5)
     style_axes(ax, xgrid=True)
@@ -551,7 +582,9 @@ def environment(bench, perf: str) -> str:
             for row in table:
                 if row and row[0].strip().lower() == "gpu" and len(row) > 1:
                     gpu = re.sub(r"^\d+\s*×\s*", "", row[1].split(",")[0]).replace("NVIDIA ", "")
-    bits = [b for b in (cpu, f"one {gpu}, device 0" if gpu else "", "idle box", date) if b]
+    # both cards in the box are the same model; the timing rows run on device 0 and the SSv2
+    # accuracy sweep on device 1, so the strip names the card rather than an index
+    bits = [b for b in (cpu, gpu, "idle box", date) if b]
     return "  ·  ".join(bits)
 
 
@@ -559,6 +592,7 @@ def build_figure():
     bench = load_json(BENCH_JSON)
     acc_img = load_json(ACC_IMAGE_JSON)
     acc_vid = load_json(ACC_VIDEO_JSON)
+    acc_ssv2 = load_json(ACC_SSV2_JSON) if ACC_SSV2_JSON.exists() else None
     perf = PERF_MD.read_text() if PERF_MD.exists() else ""
     if not perf:
         warn(f"cannot read {PERF_MD.relative_to(ROOT)}: every GPU series is dropped")
@@ -578,7 +612,7 @@ def build_figure():
     ax_quant = [fig.add_subplot(quant_gs[0]), fig.add_subplot(quant_gs[1])]
 
     panel_speed(ax_speed, groups, gpu)
-    panel_accuracy(ax_acc, acc_img, acc_vid)
+    panel_accuracy(ax_acc, acc_img, acc_vid, acc_ssv2)
     panel_quant(ax_quant, groups, gpu)
 
     fig.text(0.008, 0.975, "jepa.cpp — the same features as PyTorch, faster on a CPU and much "
