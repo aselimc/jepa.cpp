@@ -21,6 +21,10 @@ dimension value, which is what would make that substitution ambiguous.
     scripts/make_fuzz_corpus.py                       # -> tests/fuzz/corpus/
     scripts/make_fuzz_corpus.py --out DIR --models A.gguf B.gguf
 
+--models takes any GGUF of any family, so a run that should reach the video encoder, the 3-D RoPE
+tables or the masked predictor can seed itself from `vjepa2_1-vitb-384` and `levjepa-vitl16`; the
+default is the two small image models, which is what the committed workflow uses.
+
 Needs `gguf` (gguf-py): `pip install gguf`.
 """
 from __future__ import annotations
@@ -88,11 +92,14 @@ def dim_map(reader: "gguf.GGUFReader", ns: str) -> dict[int, int]:
     elif ns == "pred":
         old_d, old_f = get("embed_dim"), get("ffn_dim")
         old_inner = get("n_head") * (get("head_dim") or (old_d // get("n_head", 1) if get("n_head") else 0))
+        # pred.embed.* and pred.proj.* straddle the two widths, so the encoder's dims belong in this
+        # map too. They map to the same new value, so a collision between them is not one.
+        enc_d = int(kv_value(reader, "jepa.enc.embed_dim") or 0)
         old = {"d": old_d, "3d": 3 * old_d, "6d": 6 * old_d, "ffn": old_f,
-               "inner": old_inner, "3inner": 3 * old_inner,
+               "inner": old_inner, "3inner": 3 * old_inner, "enc_d": enc_d,
                "out": get("out_dim", old_d), "act": get("action_dim")}
         new = {"d": d, "3d": 3 * d, "6d": 6 * d, "ffn": f,
-               "inner": inner_new, "3inner": 3 * inner_new,
+               "inner": inner_new, "3inner": 3 * inner_new, "enc_d": d,
                "out": d, "act": TINY["action_dim"]}
     else:
         eget = lambda k, dd=0: int(kv_value(reader, f"jepa.enc.{k}") or dd)  # noqa: E731
