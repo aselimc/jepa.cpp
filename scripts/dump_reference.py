@@ -1021,9 +1021,14 @@ def dump_vjepa2_ac(a) -> None:
                            "by torch F.interpolate(bilinear, align_corners=False, no antialias) to 256x256, "
                            "then (x - 255*mean) / (255*std) on the CTHW float tensor. On the 256x256 Franka "
                            "renders both the crop and the resize are the identity.",
-            "resize": {"height": crop, "width": crop, "keep_aspect": True, "resample": "bilinear",
-                       "antialias": False, "on_dtype": "float32"},
-            "center_crop": "largest square", "rescale": 1 / 255, "mean": IMAGENET_MEAN, "std": IMAGENET_STD},
+            # Recorded as shortest_edge/centre-crop because that is the same square, scaled the same
+            # way, as Meta's crop-then-resize: only the discarded margin is resampled differently.
+            # On the square Franka renders both orders are the identity, and the own-preprocessing
+            # pass below measures the residual against the stored tensor.
+            "resize": {"shortest_edge": crop, "resample": "bilinear", "antialias": False,
+                       "on_dtype": "float32",
+                       "reference_order": "centre-crop to the largest square, THEN resize to 256"},
+            "center_crop": crop, "rescale": 1 / 255, "mean": IMAGENET_MEAN, "std": IMAGENET_STD},
         world_model={
             "encode": "one observation frame -> a 2-frame clip (the frame repeated along T, tubelet 2) -> "
                       f"{tpf} tokens after the encoder's final LayerNorm; then a NON-AFFINE LayerNorm over "
@@ -1040,7 +1045,8 @@ def dump_vjepa2_ac(a) -> None:
                           "ground-truth first action poses_to_diff(states[0], states[1]) and that action "
                           "shifted by +0.05 along x, y and z, each repeated over the horizon.",
         },
-        outputs={"input": "NCTHW float32 (the 2-frame clip of one observation frame)",
+        outputs={"frames_u8": "the uint8 observation frame, repeated to the 2-frame clip, THWC",
+                 "input": "NCTHW float32 (the 2-frame clip of one observation frame)",
                  "last_hidden_state": f"encoder(input)[0]: [{tpf}, {D}] tokens after the final LN, h-major then w",
                  "context": "F.layer_norm(last_hidden_state) -- the predictor's input",
                  "goal": "context of the LAST trajectory frame",
@@ -1062,8 +1068,12 @@ def dump_vjepa2_ac(a) -> None:
             fwd = time.time() - t
             hn = _ac_normalize(h)
             enc_rows[tag] = hn
+            # The uint8 frames the transform consumed, repeated along T exactly as `encode` does, so
+            # test-parity's own-preprocessing pass can rerun src/preprocess.cpp on the real pixels.
+            fr = np.repeat(np.ascontiguousarray(obs[idx])[None], 2, axis=0)   # [2, H, W, 3] uint8
             w.add(tag, f"franka_example_traj.npz[{idx}]",
-                  {"input": (x, "NCTHW (T=2, the frame repeated)"),
+                  {"frames_u8": (fr, "THWC uint8 (the observation frame, repeated to the 2-frame clip)"),
+                   "input": (x, "NCTHW (T=2, the frame repeated)"),
                    "last_hidden_state": (h, f"[{tpf}, D] h-major then w"),
                    "pooled_mean": (h.mean(0), "[D]"),
                    "context": (hn, f"[{tpf}, D] after the non-affine LayerNorm")},
