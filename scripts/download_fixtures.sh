@@ -52,20 +52,28 @@ fi
 if [ "$what" = all ] || [ "$what" = ref ]; then
   echo "== golden reference dumps from https://huggingface.co/datasets/$DS"
   mkdir -p "$R"
-  names="$*"
-  [ -z "$names" ] && names="$(curl -sL "https://huggingface.co/api/datasets/$DS/tree/main/ref" \
-      | python3 -c 'import sys,json; print(" ".join(e["path"].rsplit("/",1)[-1] for e in json.load(sys.stdin)))')"
+  # --include keeps the download inside ref/, so the tracked tests/fixtures/README.md is never overwritten
+  inc=(); for n in "$@"; do inc+=(--include "ref/$n/*"); done
+  [ ${#inc[@]} -eq 0 ] && inc=(--include "ref/*")
   if [ -n "$HFBIN" ]; then
-    inc=(); for n in $names; do inc+=(--include "ref/$n/*"); done
     "$HFBIN" download "$DS" --repo-type dataset "${inc[@]}" --local-dir "$ROOT/tests/fixtures" >/dev/null
   else
     echo "  the 'hf' CLI is not installed (pip install huggingface_hub); fetching with curl" >&2
-    for n in $names; do
-      for f in $(curl -sL "https://huggingface.co/api/datasets/$DS/tree/main/ref/$n" \
-          | python3 -c 'import sys,json; print(" ".join(e["path"] for e in json.load(sys.stdin)))'); do
-        mkdir -p "$ROOT/tests/fixtures/$(dirname "$f")"
-        get "https://huggingface.co/datasets/$DS/resolve/main/$f" "$ROOT/tests/fixtures/$f"
-      done
+    # the tree API paginates, so follow rel="next" rather than reading one page and hoping
+    for f in $(python3 - "$DS" "$@" <<'EOF'
+import json, sys, urllib.request
+ds, names = sys.argv[1], sys.argv[2:]
+url, out = f"https://huggingface.co/api/datasets/{ds}/tree/main/ref?recursive=true", []
+while url:
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "jepa.cpp"}), timeout=60) as r:
+        out += [e["path"] for e in json.load(r) if e.get("type") == "file"]
+        link = r.headers.get("Link", "")
+    url = next((p.split(";")[0].strip().strip("<>") for p in link.split(",") if 'rel="next"' in p), None)
+print("\n".join(p for p in out if not names or p.split("/")[1] in names))
+EOF
+    ); do
+      mkdir -p "$ROOT/tests/fixtures/$(dirname "$f")"
+      get "https://huggingface.co/datasets/$DS/resolve/main/$f" "$ROOT/tests/fixtures/$f"
     done
   fi
   du -sh "$R"/* 2>/dev/null || true
