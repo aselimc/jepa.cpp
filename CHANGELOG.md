@@ -8,6 +8,10 @@ across releases.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.1] — 2026-09-01
+
 ### Added
 
 - **Hardening of the untrusted-input paths** — a GGUF is a download and an image is bytes off a
@@ -30,6 +34,18 @@ across releases.
   **GGUF loader fuzz target** (`tests/fuzz/fuzz-gguf-load.cpp`, `-DJEPA_FUZZ=ON`, off by default)
   with a corpus generator (`scripts/make_fuzz_corpus.py`). The first two need no weights, so the
   ASAN+UBSAN CI job runs them; the fuzz target is build-only in CI.
+
+### Fixed
+
+- Fourteen input classes that crashed, hung or over-allocated the loader or a tool now return an
+  error: a zero head count (SIGFPE), an integer-typed matmul weight (a null kernel pointer),
+  block vectors of the wrong length, an f16 table in the f32 graph, tensor bytes beyond the end of
+  the file, an unknown activation, a promised predictor or head with no tensors, an odd head width
+  on a 3-D RoPE family, mask or frame counts past their tables, RoPE interpolation without a
+  reference grid, signed overflow in the rollout and batch size arithmetic, a degenerate image
+  aspect ratio, and a 32-bit seek that made GGUFs over 2 GB unloadable on Windows. Every case has a
+  regression test in `tests/test-errors.cpp`.
+- A data race on the engine's one-shot warning flags (now atomic).
 
 ## [0.1.0] — 2026-09-01
 

@@ -33,12 +33,12 @@ have no NVIDIA device to test it on. Build one from source with `-DJEPA_CUDA=ON`
 ([CUDA build](getting-started.md#cuda-build)).
 
 ```bash
-V=0.1.0
+V=0.1.1
 curl -sSLO https://github.com/aselimc/jepa.cpp/releases/download/v$V/jepa-$V-linux-x86_64.tar.gz
 curl -sSLO https://github.com/aselimc/jepa.cpp/releases/download/v$V/SHA256SUMS
 sha256sum -c SHA256SUMS
 tar xzf jepa-$V-linux-x86_64.tar.gz
-jepa-$V-linux-x86_64/bin/jepa-info --version        # 0.1.0
+jepa-$V-linux-x86_64/bin/jepa-info --version        # 0.1.1
 ```
 
 `SHA256SUMS` inside the archive lists every packaged file, so `sha256sum -c SHA256SUMS` from the

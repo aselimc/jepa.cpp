@@ -344,7 +344,10 @@ that describes nothing; token ids off the predictor's grid; and any graph whose 
 bytes exceed `$JEPA_MAX_GRAPH_MIB` (8 GiB by default) — the encoder shrinks its batch first and only
 errors when a single item still will not fit, the video encoder, the masked predictor and the LeWM
 rollout refuse outright. The image pipeline additionally caps the intermediate of the shortest-edge
-resize at 64 megapixels, which is what stops a 16384×1 image from asking for gigabytes.
+resize at 64 megapixels, which is what stops a 16384×1 image from asking for gigabytes. The cap is on the
+resized intermediate, so in terms of the input it is an aspect-ratio limit of 64 Mpx / `resize_short`²
+— about 1337:1 for a 224-pixel model and 350:1 for V-JEPA 2.1 at 438 — and a refusal names the input
+geometry and the bound.
 
 **Thread contract.** Stated in full in [`include/jepa.h`](api.md) and checked by
 `tests/test-threads.cpp`: a `jepa_model` is immutable after load and may be shared by any number of
@@ -355,7 +358,9 @@ Concurrent encodes through per-thread contexts are bit-identical to the same wor
 and doing both oversubscribes the machine. The suite forges its own model when given none, so it is
 a real check on a runner with no weights; run it under TSan with
 `-fsanitize=thread -DGGML_OPENMP=OFF` (TSan cannot see through libgomp's own synchronisation and
-reports its pool as a race in any program that uses it).
+reports its pool as a race in any program that uses it). On a kernel with 32-bit ASLR entropy
+TSan aborts at start-up with `unexpected memory mapping`; run the suite under `setarch -R` or set
+`vm.mmap_rnd_bits=28`.
 
 **Running the fuzzer.** `tests/fuzz/fuzz-gguf-load.cpp` feeds arbitrary bytes to `jepa_model_load`
 and, when they load, to a shallow encode/pool/predict pass. It is off by default; CI builds it and
