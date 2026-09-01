@@ -334,17 +334,19 @@ required-tensor checks run once the tensors are resident and before any graph is
 | every `jepa.*` float | not finite, or outside its range — `ln_eps` ∈ [0, 1], `rope_theta` > 0, `jepa.pre.std` ≠ 0 |
 | enum-valued strings | unknown `jepa.enc.act`, `jepa.enc.attn_mode`, `jepa.pred.act`, `jepa.pred.action_act`, `jepa.pred.proj_act` |
 | `attn_mode = block_causal` | on a family whose graph has no mask, where it would run unmasked |
-| derived invariants | `embed_dim % n_head`; an odd head width on a 3-D RoPE family (it rotates pairs); `rope_interpolate` with no `rope_ref_grid` to rescale from; a masked predictor with no position grid; a LeWM predictor with no `action_dim` or `n_frames` |
+| derived invariants | `embed_dim % n_head`; an odd head width on a 3-D RoPE family (it rotates pairs); `rope_interpolate` with no `rope_ref_grid` to rescale from; a masked predictor with no position grid; a LeWM predictor with no `action_dim` or `n_frames`; an **AC** predictor with no `action_dim`, `state_dim`, `n_cond_tokens`, `grid_size` or `n_frames`, or an odd head width (it rotates pairs too) |
 | tensor extent | any tensor whose bytes are not inside the file (a truncated download; the header alone can promise terabytes) |
 | tensor dtype | anything that is not f32, f16, bf16 or a quantized type; and, for the operands the graph adds, multiplies or concatenates — norms, biases, layer scales, CLS and register tokens, position tables, mask tokens, modality vectors — anything that is not f32 |
-| tensor shape | every weight, bias and vector of every encoder, predictor and head block against the hparams; and every table a metadata count indexes into (`pred.mask_tokens` against `n_mask_tokens`, `pred.pos_embed` against `n_frames`) |
+| tensor shape | every weight, bias and vector of every encoder, predictor and head block against the hparams; the AC conditioning projections (`pred.action_embed` / `pred.state_embed` against `action_dim` / `state_dim` and the predictor width, since both feed a `ggml_concat`); and every table a metadata count indexes into (`pred.mask_tokens` against `n_mask_tokens`, `pred.pos_embed` against `n_frames`) |
 | required tensors | a predictor or head the metadata promises and the tensors do not deliver |
 
 **What is refused at call time.** Non-positive or overflowing input shapes; an encoder output header
 that describes nothing; token ids off the predictor's grid; and any graph whose estimated activation
 bytes exceed `$JEPA_MAX_GRAPH_MIB` (8 GiB by default) — the encoder shrinks its batch first and only
-errors when a single item still will not fit, the video encoder, the masked predictor and the LeWM
-rollout refuse outright. The image pipeline additionally caps the intermediate of the shortest-edge
+errors when a single item still will not fit, the video encoder, the masked predictor, the LeWM
+rollout and both AC entry points refuse outright (`jepa_ac_predict` also refuses a context longer
+than `jepa.pred.n_frames`, the frame slots the block-causal mask was built for, and
+`jepa_ac_rollout` refuses a horizon that would reach past them). The image pipeline additionally caps the intermediate of the shortest-edge
 resize at 64 megapixels, which is what stops a 16384×1 image from asking for gigabytes. The cap is on the
 resized intermediate, so in terms of the input it is an aspect-ratio limit of 64 Mpx / `resize_short`²
 — about 1337:1 for a 224-pixel model and 350:1 for V-JEPA 2.1 at 438 — and a refusal names the input

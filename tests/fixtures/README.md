@@ -76,6 +76,8 @@ Token order is always t-major, then h, then w (images: h-major then w); `hfvit`-
 | `vjepa2-vitl-fpc64-256` | archery/bowling x {64, 16} frames | `frames_u8` [T,H,W,3] uint8 · `input` [1,T,3,256,256] **NTCHW** · `last_hidden_state` [T/2·256, 1024] · `pooled_mean` [1024] · `predictor_last_hidden_state` [T/2·256, 1024] (default masks: full context, predict every token) |
 | `vjepa2-vitl-fpc16-256-ssv2` | archery/bowling x 16 frames | `frames_u8` · `input` [1,16,3,256,256] · `last_hidden_state` [2048,1024] · `pooled` [1024] (attentive-pooler output = classifier input, via forward hook) · `logits` [174] · `top5_idx` [5] int64; `labels` (id2label) in the manifest |
 | `vjepa2_1-vitb-384` | archery x 16 frames + 2 images | `frames_u8` · `input` [1,3,16,384,384] **NCTHW** (video) / [1,3,1,384,384] (image path: `patch_embed_img` + `img_mod_embed`) · `last_hidden_state` [4608,768] / [576,768] = `norms_block[-1](x)` (the encoder's default inference output) · `pooled_mean` [768] |
+| `vjepa2-vitg-fpc64-256` | archery/bowling x {64, 16} frames | the same tensor set as `vjepa2-vitl-fpc64-256`, at 1408 dims: `frames_u8` · `input` [1,T,3,256,256] **NTCHW** · `last_hidden_state` [T/2·256, 1408] · `pooled_mean` [1408] · `predictor_last_hidden_state` [T/2·256, 1408] |
+| `vjepa2-ac-vitg` | `frame0`, `goalframe`, `step1`, `step2`, `rollout` | Meta's own world model on its own demo trajectory (`notebooks/franka_example_traj.npz`). Encoder samples: `frames_u8` [2,256,256,3] (the observation frame repeated to the 2-frame clip the world model encodes) · `input` [1,3,2,256,256] **NCTHW** · `last_hidden_state` [256,1408] · `pooled_mean` [1408] · `context` [256,1408] = `F.layer_norm(last_hidden_state)`, the predictor's actual input. `step1`: `context` · `action` [7] · `state` [7] · `pred_next` [256,1408]. `step2`: `context_seq` [512,1408] · `action_seq`/`state_seq` [2,7] · `pred_seq` [512,1408] (**every** row block; block *t* predicts frame *t+1*). `rollout`: `context`/`goal` [256,1408] · `state0` [7] · `actions`/`states_seq` [4,2,7] · `rollout` [4,2,256,1408] · `rollout_energy` [4] (Meta's `l1`) · `next_state_ref` [4,7] (`compute_new_pose`, the `jepa_ac_next_state` check) |
 | `levjepa-vitl16` | archery/bowling x 16 frames + 2 images | `frames_u8` [16,H,W,3] uint8 · `input` [1,3,16,224,224] **NCTHW** · `last_hidden_state` [3137,1024] = [CLS; 16·14·14 patches] after the final LN · `cls` [1024] (= `pooler_output`, the feature this model is used through) · `pooled_mean` [1024] (mean of the 3136 patch tokens). The two image samples take the model card's still-image path: `frames_u8` is the one decoded frame **repeated 16 times**, so the stored input and our own preprocessing describe the same clip |
 
 ## Preprocessing actually applied (also in each manifest)
@@ -92,6 +94,7 @@ re-implementation to 2.4e-7, whereas PIL resampling differs by up to 1.8e-2 (1-2
 | `lewm-pusht` | resize to exactly 224x224 (aspect not kept), bilinear; x/255; ImageNet mean/std (upstream trains/evals on 224x224 renders, so the resize only exists to feed COCO images) |
 | `vjepa2-*` | `VJEPA2VideoProcessor`: per frame, short side -> 292 = int(256*256/224), bilinear; center crop 256; x/255; ImageNet mean/std; output [B,T,3,H,W] |
 | `vjepa2_1-vitb-384` | same processor with crop 384 (short side -> 438), then permuted to [B,3,T,H,W]; images are 1-frame videos |
+| `vjepa2-ac-vitg` | **not** the V-JEPA 2 video processor: `app/vjepa_droid/transforms.py::make_transforms` with `random_resize_scale=(1,1)`, `random_resize_aspect_ratio=(1,1)`, `crop_size=256`, which degenerates to a centre crop of the largest square plus `F.interpolate(bilinear, align_corners=False, **no antialias**)` to 256x256, then `(x - 255*mean) / (255*std)`. On the square 256x256 Franka renders both the crop and the resize are the identity, so the manifest records it as short side -> 256 / centre crop 256; measured against `src/preprocess.cpp`, `max|diff| = 2.38e-07` (one float32 ulp, the fused-vs-sequential normalisation) |
 | `levjepa-vitl16` | no processor ships with the checkpoint: per frame, short side -> 224, **bicubic**; center crop 224; x/255; ImageNet mean/std; output [B,3,T,H,W]. The model card's notebook uses PIL BICUBIC instead of the torchvision resampler used here — measured on `archery_f16`, 99.599 % of the normalised values are bit-identical, the largest difference is 2.02 uint8 levels and exactly 1 value of 2 408 448 is off by more than one level, worth a worst-token cosine of 0.999984 (median 1.000000, CLS 1.000000) through the encoder |
 
 Frame sampling for clips: all frames decoded with PyAV (`rgb24`), then `idx = round(linspace(0, T_total-1, n))`; the indices are
@@ -102,6 +105,18 @@ what makes `jepa-embed --video archery.mp4 --frames 16` interchangeable with `--
 
 The parity test feeds the stored `input` tensor first (bypassing preprocessing) and only then runs our own preprocessor,
 so a preprocessing mismatch shows up separately from a graph bug.
+
+## V-JEPA 2-AC: what the predictor consumes
+
+Documented in `ref/vjepa2-ac-vitg/manifest.json` (`world_model`, `hparams.pred`), in short: a frame is
+encoded as a **2-frame clip** (the frame repeated along T, so the tubelet of 2 sees it twice) giving
+256 tokens, which pass through a **non-affine** `F.layer_norm` before and after the predictor. The
+predictor takes `[action_t, state_t, patch_t0..patch_t255]` per frame, attends block-causally over
+whole frames, and returns `T*256` rows of which the last 256 are the next frame. A pose is advanced
+by `compute_new_pose(pose, action)` — translation added, rotation composed as extrinsic-xyz Euler
+angles, gripper added and clipped to [0,1] — and candidates are scored by
+`l1(z, goal) = mean |z - goal|`. The four candidate action sequences are the trajectory's ground-truth
+first action, `poses_to_diff(states[0], states[1])`, and that action shifted by +0.05 along x, y and z.
 
 ## LeWM: what the predictor consumes
 
