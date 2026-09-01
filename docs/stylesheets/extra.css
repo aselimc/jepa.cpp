@@ -406,8 +406,15 @@ body {
 
 /* ------------------------------------------------------------- admonitions */
 
+/* every flavour reads as the same quiet grey note. The theme colours each type
+   from a selector one class longer than `.md-typeset .admonition`, so the
+   `[class]` matches below exist only to carry the same weight and win on
+   source order — they are not selecting anything the plain selector misses. */
+
 .md-typeset .admonition,
-.md-typeset details {
+.md-typeset details,
+.md-typeset .admonition[class],
+.md-typeset details[class] {
   background-color: var(--jc-surface);
   border: none;
   border-left: 0.1rem solid var(--md-typeset-a-color);
@@ -417,8 +424,8 @@ body {
   padding: 0 0.8rem;
 }
 
-.md-typeset .admonition-title,
-.md-typeset summary {
+.md-typeset .admonition[class] > .admonition-title,
+.md-typeset details[class] > summary {
   background-color: transparent;
   border: none;
   font-weight: 600;
@@ -426,11 +433,16 @@ body {
   padding: 0.5rem 0.8rem 0.2rem 2.2rem;
 }
 
-.md-typeset .admonition-title::before,
-.md-typeset summary::before {
+.md-typeset .admonition[class] > .admonition-title::before,
+.md-typeset details[class] > summary::before {
   background-color: var(--md-default-fg-color--light);
   left: 0.8rem;
   top: 0.62rem;
+}
+
+.md-typeset details[class] > summary::after {
+  color: var(--md-default-fg-color--light);
+  top: 0.5rem;
 }
 
 .md-typeset .admonition > :last-child,
