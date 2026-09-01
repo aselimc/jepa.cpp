@@ -24,7 +24,9 @@
 //   * jepa_ac_energy vs `rollout.rollout_energy`;
 //   * `rollout_seed2`: the n_seed = 2 rollout through jepa_ac_rollout_ex, its `seed_actions`
 //     argument shown to matter, and the cached-context handle (jepa_ac_context_new / _update /
-//     _trim / jepa_ac_rollout_cached) shown to be bit-identical to the explicit-context path.
+//     _trim / jepa_ac_rollout_cached) shown to be bit-identical to the explicit-context path;
+//   * `cem`: jepa_ac_plan replaying the random draws Meta's own cem() made, against the plan it
+//     returned.
 // --modality selects the V-JEPA 2.1 modality vector (pred.mod_embed_video / _img) for --case runs:
 //   the 576-token image case only reaches parity with `image` (see docs/parity.md, predictor table).
 // Exit status 1 on any failure.
@@ -707,6 +709,84 @@ static void run_ac_seed2(jepa_context * ctx, jepa_model * model, const std::stri
     (void) gpu;
 }
 
+// The `cem` sample: Meta's own planner, run on the Franka demo data with every torch.randn draw
+// recorded (scripts/dump_reference.py, "6."). torch's RNG cannot be replayed from C++, so the
+// fixture stores the draws and jepa_ac_plan consumes them in the same order — which makes this a
+// test of the ALGORITHM (sampling layout, clamps, elite selection, the unbiased std, the momentum
+// update and the final rounding), the only part that can be wrong.
+static void run_ac_cem(jepa_context * ctx, jepa_model * model, const std::string & ref,
+                       const thresholds & thr) {
+    const std::string cd = ref + "/cem";
+    if (!exists(cd + ".cem_action.npy")) return;
+    const int64_t D = jepa_model_embed_dim(model);
+    const int64_t HW = jepa_ac_tokens_per_frame(model);
+    const int A = jepa_ac_action_dim(model), S = jepa_ac_state_dim(model);
+    int64_t r = 0, d = 0;
+    std::vector<float> seed = load_f32(cd + ".context.npy", &r, &d);
+    std::vector<float> goal = load_f32(cd + ".goal.npy", &r, &d);
+    std::vector<float> st0  = load_f32(cd + ".state0.npy", &r, &d);
+    npy::Array noise = npy::load(cd + ".cem_noise.npy");      // [steps, H, K, 4]
+    std::vector<float> nz = noise.to_f32();
+    npy::Array want = npy::load(cd + ".cem_action.npy");      // [H, 7]
+    std::vector<float> wa = want.to_f32();
+    if (noise.shape.size() != 4) { printf("  cem_noise has rank %zu\n", noise.shape.size()); g_fail++; return; }
+
+    jepa_ac_cem_params q = jepa_ac_cem_default_params();
+    q.cem_steps = (int) noise.shape[0];
+    q.horizon   = (int) noise.shape[1];
+    q.samples   = (int) noise.shape[2];
+    q.topk      = 4;        // the fixture's AC_CEM
+    q.momentum_mean = 0.15f;
+    q.momentum_std  = 0.75f;
+    q.momentum_mean_gripper = 0.15f;
+    q.momentum_std_gripper  = 0.15f;
+
+    jepa_ac_context * h = jepa_ac_context_new(ctx, seed.data(), 1, nullptr, st0.data());
+    if (!h) { printf("  cem: jepa_ac_context_new failed\n"); g_fail++; return; }
+    std::vector<float> got((size_t) q.horizon * A), best((size_t) q.cem_steps);
+    const double t0 = jepa_context_last_compute_ms(ctx);
+    (void) t0;
+    if (jepa_ac_plan(ctx, h, goal.data(), &q, nz.data(), got.data(), best.data()) != 0) {
+        printf("  cem: jepa_ac_plan failed\n");
+        g_fail++;
+        jepa_ac_context_free(h);
+        return;
+    }
+    const double ms = jepa_context_last_compute_ms(ctx);
+    double worst = 0, scale = 0;
+    for (size_t i = 0; i < got.size(); i++) {
+        worst = std::fmax(worst, std::fabs(got[i] - wa[i]));
+        scale = std::fmax(scale, std::fabs(wa[i]));
+    }
+    // The plan is a handful of small numbers, so it is judged in absolute terms against the tier:
+    // f32 on the CPU reproduces the reference planner's action to float32 round-off; a lossy file
+    // moves the rollout, hence the energies, hence which candidates are elites.
+    const double bar = thr.min_mean >= 0.9999 && thr.max_rel > 0 ? 1e-6 : 5e-3;
+    const bool ok = worst <= bar;
+    if (!ok) g_fail++;
+    printf("  %-44s max|d| = %.3e over %d x %d (bar %.0e)  %8.2f ms  %s\n",
+           "jepa_ac_plan vs Meta's cem()", worst, q.horizon, A, bar, ms, ok ? "OK" : "FAIL");
+    printf("  %-44s ours [%.6f %.6f %.6f | %.6f]  reference [%.6f %.6f %.6f | %.6f]\n",
+           "  plan, step 0 (dx dy dz | gripper)", got[0], got[1], got[2], got[6],
+           wa[0], wa[1], wa[2], wa[6]);
+    // the rotation dimensions must be exact zeros, as the reference's are
+    bool zeros = true;
+    for (int hh = 0; hh < q.horizon; hh++) {
+        for (int j = 3; j < 6; j++) if (got[(size_t) hh * A + j] != 0.0f) zeros = false;
+    }
+    if (!zeros) g_fail++;
+    printf("  %-44s %s\n", "  rotation dimensions are hard zeros", zeros ? "OK" : "FAIL");
+    // the energy has to improve, or the loop is not optimising anything
+    if (q.cem_steps > 1) {
+        const bool better = best[(size_t) q.cem_steps - 1] <= best[0];
+        if (!better) g_fail++;
+        printf("  %-44s %.6f -> %.6f  %s\n", "  best energy over the iterations", best[0],
+               best[(size_t) q.cem_steps - 1], better ? "OK (non-increasing)" : "FAIL");
+    }
+    jepa_ac_context_free(h);
+    (void) HW; (void) S; (void) D;
+}
+
 int main(int argc, char ** argv) {
     std::string lewm_path, vjepa2_path, ac_path, ref, case_dir, samples_arg = "archery_f16", modality_arg = "video";
     jepa_context_params cp = jepa_context_default_params();
@@ -765,6 +845,7 @@ int main(int argc, char ** argv) {
     if (!ac_path.empty()) {
         run_ac(c, model, ref, thr, jepa_model_is_gpu(model));
         run_ac_seed2(c, model, ref, thr, jepa_model_is_gpu(model));
+        run_ac_cem(c, model, ref, thr);
     }
     if (!vjepa2_path.empty()) {
         if (!case_dir.empty()) run_case(c, case_dir, thr, modality);

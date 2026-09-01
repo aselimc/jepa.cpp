@@ -39,6 +39,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <vector>
 
 // ---------------------------------------------------------------------------------------------
@@ -740,4 +741,183 @@ extern "C" int jepa_ac_rollout_cached(jepa_context * ctx, jepa_ac_context * h,
                       h->n_frames > 1 ? h->actions.data() : nullptr, h->states.data(),
                       actions, states, n_cand, horizon, out);
     (void) p;
+}
+
+// ---------------------------------------------------------------------------------------------
+// CEM planner (plan item 7.2)
+// ---------------------------------------------------------------------------------------------
+// A line-for-line port of notebooks/utils/mpc_utils.py::cem (:28-163), the loop V-JEPA 2-AC's paper
+// plans with. Per iteration it samples `samples` action trajectories from a diagonal Gaussian, rolls
+// them all out through the world model in ONE batched graph per horizon step, scores the final frame
+// against the goal with the L1 energy, keeps the `topk` elites and moves the mean and standard
+// deviation towards them with momentum.
+//
+// Two details of the reference are load-bearing and easy to miss:
+//
+//  * only FOUR of the seven action dimensions are sampled -- translation (0..2) and the gripper (6).
+//    The three rotation dimensions are hard zeros (mpc_utils.py:98-105). The Gaussian, the clamps
+//    and the momentum all live in that 4-d space; `action_dim` 7 is only the layout handed to the
+//    predictor.
+//  * `selected.std(0)` is torch's default, which is the UNBIASED estimator (n-1 in the denominator).
+//    With topk = 4 that is a factor 1.155 against the biased one, applied every iteration.
+//
+// The sampling order is Meta's: iteration, then horizon step, then the `samples` rows of one
+// `torch.randn(samples, 4)` call. `noise` is consumed in exactly that order, which is what lets a
+// fixture recorded from their loop be replayed here (tests/fixtures/ref/vjepa2-ac-vitg, `cem`).
+extern "C" jepa_ac_cem_params jepa_ac_cem_default_params(void) {
+    jepa_ac_cem_params p;
+    p.samples = 100;                 // mpc_utils.py:39
+    p.topk = 10;                     // :40
+    p.cem_steps = 100;               // :34
+    p.horizon = 1;                   // :33 (`rollout`)
+    p.maxnorm = 0.05f;               // :42
+    p.gripper_clamp = 0.75f;         // :95
+    p.momentum_mean = 0.25f;         // :35
+    p.momentum_std = 0.95f;          // :36
+    p.momentum_mean_gripper = 0.15f; // :37
+    p.momentum_std_gripper = 0.15f;  // :38
+    p.round_gripper = 0.25f;         // :158 round_small_elements(..., 0.25)
+    p.seed = 0;
+    return p;
+}
+
+// xorshift128+ and Box-Muller. Deliberately NOT torch's RNG: a run that has to match a PyTorch one
+// passes `noise` instead (the fixture records exactly what torch.randn returned).
+namespace {
+struct cem_rng {
+    uint64_t s0, s1;
+    explicit cem_rng(uint32_t seed) : s0(0x9E3779B97F4A7C15ull ^ seed), s1(0xBF58476D1CE4E5B9ull + seed) {
+        for (int i = 0; i < 8; i++) next_u64();
+    }
+    uint64_t next_u64() {
+        uint64_t x = s0, y = s1;
+        s0 = y;
+        x ^= x << 23;
+        s1 = x ^ y ^ (x >> 17) ^ (y >> 26);
+        return s1 + y;
+    }
+    float uniform01() {   // (0, 1]
+        return (float) (((next_u64() >> 11) + 1) * (1.0 / 9007199254740993.0));
+    }
+    float normal() {
+        const float u1 = uniform01(), u2 = uniform01();
+        return sqrtf(-2.0f * logf(u1)) * cosf(6.2831853071795864769f * u2);
+    }
+};
+}  // namespace
+
+extern "C" int jepa_ac_plan(jepa_context * ctx, jepa_ac_context * handle, const float * goal,
+                            const jepa_ac_cem_params * params, const float * noise,
+                            float * out_actions, float * out_energy) {
+    if (!ctx || !handle || !goal || !params || !out_actions) return -1;
+    if (!ac_check(ctx, "jepa_ac_plan")) return -1;
+    const jepa_model * m = ctx->model;
+    const jepa_pred_hparams & p = m->hp.pred;
+    const int64_t enc_dim = m->hp.enc.embed_dim;
+    const int64_t HW = (int64_t) p.grid_size * p.grid_size;
+    const int A = p.action_dim;
+    const jepa_ac_cem_params & q = *params;
+    if (q.samples <= 0 || q.topk <= 0 || q.topk > q.samples || q.cem_steps <= 0 || q.horizon <= 0) {
+        jepa_log("jepa: jepa_ac_plan: need samples > 0, 0 < topk <= samples, cem_steps > 0 and "
+                 "horizon > 0 (got %d / %d / %d / %d)\n", q.samples, q.topk, q.cem_steps, q.horizon);
+        return -1;
+    }
+    if (A < 7) {
+        jepa_log("jepa: jepa_ac_plan: this CEM samples translation (0..2) and the gripper (6), so it "
+                 "needs action_dim >= 7; the model's is %d\n", A);
+        return -1;
+    }
+    const int K = q.samples, H = q.horizon;
+
+    // mean/std live in the 4-d sampled space [dx, dy, dz, dgripper] (mpc_utils.py:67-81)
+    std::vector<float> mean((size_t) H * 4, 0.0f), sd((size_t) H * 4, 0.0f);
+    for (int h = 0; h < H; h++) {
+        sd[(size_t) h * 4 + 0] = sd[(size_t) h * 4 + 1] = sd[(size_t) h * 4 + 2] = q.maxnorm;
+        sd[(size_t) h * 4 + 3] = 1.0f;
+    }
+    std::vector<float> acts((size_t) K * H * A, 0.0f);
+    std::vector<float> roll((size_t) K * H * HW * enc_dim);
+    std::vector<float> energy((size_t) K);
+    std::vector<int> order((size_t) K);
+    cem_rng rng(q.seed);
+
+    for (int it = 0; it < q.cem_steps; it++) {
+        // -- sample, in Meta's order: horizon step, then the K rows of one randn(K, 4)
+        for (int h = 0; h < H; h++) {
+            for (int c = 0; c < K; c++) {
+                float v[4];
+                for (int j = 0; j < 4; j++) {
+                    const float z = noise
+                        ? noise[(((size_t) it * H + h) * K + c) * 4 + j]
+                        : rng.normal();
+                    v[j] = z * sd[(size_t) h * 4 + j] + mean[(size_t) h * 4 + j];
+                }
+                for (int j = 0; j < 3; j++) {
+                    if (v[j] < -q.maxnorm) v[j] = -q.maxnorm;
+                    if (v[j] >  q.maxnorm) v[j] =  q.maxnorm;
+                }
+                if (v[3] < -q.gripper_clamp) v[3] = -q.gripper_clamp;
+                if (v[3] >  q.gripper_clamp) v[3] =  q.gripper_clamp;
+                float * a = acts.data() + ((size_t) c * H + h) * A;
+                for (int j = 0; j < A; j++) a[j] = 0.0f;
+                a[0] = v[0]; a[1] = v[1]; a[2] = v[2];
+                a[6] = v[3];
+            }
+        }
+        // -- roll every candidate out through the cached context, then score the FINAL frame
+        if (jepa_ac_rollout_cached(ctx, handle, acts.data(), nullptr, K, H, roll.data()) != 0) return -1;
+        std::vector<float> last((size_t) K * HW * enc_dim);
+        for (int c = 0; c < K; c++) {
+            memcpy(last.data() + (size_t) c * HW * enc_dim,
+                   roll.data() + ((size_t) c * H + (H - 1)) * HW * enc_dim,
+                   (size_t) HW * enc_dim * sizeof(float));
+        }
+        jepa_ac_energy(last.data(), goal, K, HW, enc_dim, energy.data());
+
+        // -- elites: the topk SMALLEST energies (torch topk(largest=False)); ties by lower index
+        for (int c = 0; c < K; c++) order[(size_t) c] = c;
+        std::stable_sort(order.begin(), order.end(),
+                         [&](int a, int b) { return energy[(size_t) a] < energy[(size_t) b]; });
+        if (out_energy) out_energy[it] = energy[(size_t) order[0]];
+
+        // -- momentum update of mean and std, in the 4-d space (mpc_utils.py:132-150)
+        for (int h = 0; h < H; h++) {
+            double mu[4] = {0, 0, 0, 0};
+            for (int e = 0; e < q.topk; e++) {
+                const float * a = acts.data() + ((size_t) order[(size_t) e] * H + h) * A;
+                mu[0] += a[0]; mu[1] += a[1]; mu[2] += a[2]; mu[3] += a[6];
+            }
+            for (int j = 0; j < 4; j++) mu[j] /= (double) q.topk;
+            double var[4] = {0, 0, 0, 0};
+            for (int e = 0; e < q.topk; e++) {
+                const float * a = acts.data() + ((size_t) order[(size_t) e] * H + h) * A;
+                const double d[4] = { a[0] - mu[0], a[1] - mu[1], a[2] - mu[2], a[6] - mu[3] };
+                for (int j = 0; j < 4; j++) var[j] += d[j] * d[j];
+            }
+            // torch's .std() is unbiased: n-1 in the denominator (1 elite would give NaN there, as
+            // it does in torch, so it is left to the caller not to ask for topk == 1).
+            const double denom = q.topk > 1 ? (double) (q.topk - 1) : 1.0;
+            for (int j = 0; j < 4; j++) var[j] = sqrt(var[j] / denom);
+            float * mn = mean.data() + (size_t) h * 4;
+            float * st = sd.data() + (size_t) h * 4;
+            for (int j = 0; j < 3; j++) {
+                mn[j] = (float) (mu[j] * (1.0 - q.momentum_mean) + mn[j] * q.momentum_mean);
+                st[j] = (float) (var[j] * (1.0 - q.momentum_std) + st[j] * q.momentum_std);
+            }
+            mn[3] = (float) (mu[3] * (1.0 - q.momentum_mean_gripper) + mn[3] * q.momentum_mean_gripper);
+            st[3] = (float) (var[3] * (1.0 - q.momentum_std_gripper) + st[3] * q.momentum_std_gripper);
+        }
+    }
+
+    // -- the plan: the mean, with the rotation zeroed and small gripper commands rounded away
+    for (int h = 0; h < H; h++) {
+        float * a = out_actions + (size_t) h * A;
+        for (int j = 0; j < A; j++) a[j] = 0.0f;
+        a[0] = mean[(size_t) h * 4 + 0];
+        a[1] = mean[(size_t) h * 4 + 1];
+        a[2] = mean[(size_t) h * 4 + 2];
+        const float g = mean[(size_t) h * 4 + 3];
+        a[6] = fabsf(g) < q.round_gripper ? 0.0f : g;
+    }
+    return 0;
 }

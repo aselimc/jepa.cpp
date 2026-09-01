@@ -1,6 +1,6 @@
 // jepa-bench: timing harness for every graph jepa.cpp can run.
 //
-//   jepa-bench -m model.gguf [--mode encoder|head|predictor|lewm-step|lewm-rollout|ac|ac-rollout]
+//   jepa-bench -m model.gguf [--mode encoder|head|predictor|lewm-step|lewm-rollout|ac|ac-rollout|ac-plan]
 //              [--frames N] [--size HxW] [--batch B] [--threads 32,96] [--gpu [N]] [--gpu-prec f16|f32]
 //              [--repeat R] [--warmup W] [--kv-f16|--kv-f32] [--no-flash]
 //              [--seed S] [--steps K] [--md] [--json out.json] [--ftype-label NAME] [-v]
@@ -32,6 +32,14 @@
 //   ac-rollout   jepa_ac_rollout: --steps (default 2, the reference planner's horizon) autoregressive
 //                steps for --batch candidates. ms is reported PER STEP and `units` is the candidate
 //                count, so `ms/item` is the cost of one candidate in one rollout step.
+//                --no-cached uses the explicit-context entry point (the observed frames are uploaded
+//                and replicated across the candidates every step) instead of a cached context handle;
+//                the default is cached, which is what a planner uses.
+//   ac-plan      jepa_ac_plan: --cem-steps CEM iterations (default 1) of --batch candidates over a
+//                --steps horizon, i.e. what a planner actually pays per decision. ms is reported per
+//                ITERATION and `units` is the candidate count, so `ms/item` is one candidate's share
+//                of one planning iteration. The random draws come from --seed, so the shape of the
+//                work is fixed and only the numbers differ run to run.
 //
 // The reported ms is the wall time of ggml_backend_graph_compute (jepa_context_last_compute_ms), i.e.
 // graph build/alloc and the host-side patchify are excluded; `wall_ms` in the JSON is the full API
@@ -67,7 +75,10 @@ static void usage(const char * a0) {
     fprintf(stderr,
         "usage: %s -m model.gguf [options]\n"
         "  --mode M          encoder (default) | head | predictor | lewm-step | lewm-rollout\n"
-        "                    | ac | ac-rollout   (V-JEPA 2-AC: --batch is the candidate count)\n"
+        "                    | ac | ac-rollout | ac-plan  (V-JEPA 2-AC: --batch is the candidate count)\n"
+        "  --cem-steps N     ac-plan CEM iterations (default 1)\n"
+        "  --no-cached       ac-rollout/ac-plan: upload and replicate the context every step instead\n"
+        "                    of keeping it on the device in a jepa_ac_context handle\n"
         "  --frames N        frames per item (video models; default min(jepa.enc.n_frames, 16))\n"
         "  --size HxW        input crop (default: the model's jepa.enc.img_size square)\n"
         "  --batch B         items per encoder call (default 1); image families put all B through ONE graph\n"
@@ -284,7 +295,8 @@ int main(int argc, char ** argv) {
     std::string model_path, mode = "encoder", json_out, label, ftype_label, size_arg, threads_arg;
     jepa_context_params cp = jepa_context_default_params();
     jepa_model_params   mp = jepa_model_default_params();
-    int frames = -1, batch = 1, repeat = 3, warmup = 1, steps = 20;
+    int frames = -1, batch = 1, repeat = 3, warmup = 1, steps = 20, cem_steps = 1;
+    bool cached = true;
     int gpu_prec = -1;   // -1 = the context default (F32 on a GPU), 0 = --gpu-prec f16, 1 = f32
     uint64_t seed = 1234;
     bool md = false, md_header = true, verbose = false;
@@ -303,6 +315,9 @@ int main(int argc, char ** argv) {
         else if (a == "--repeat")               repeat      = atoi(next("--repeat"));
         else if (a == "--warmup")               warmup      = atoi(next("--warmup"));
         else if (a == "--steps")                steps       = atoi(next("--steps"));
+        else if (a == "--cem-steps")            cem_steps   = atoi(next("--cem-steps"));
+        else if (a == "--no-cached")            cached      = false;
+        else if (a == "--cached")               cached      = true;
         else if (a == "--seed")                 seed        = strtoull(next("--seed"), nullptr, 10);
         else if (a == "--kv-f16")               cp.flash_kv = JEPA_KV_F16;
         else if (a == "--kv-f32")               cp.flash_kv = JEPA_KV_F32;
@@ -325,15 +340,17 @@ int main(int argc, char ** argv) {
     }
     if (model_path.empty()) { usage(argv[0]); return 1; }
     if (mode != "encoder" && mode != "head" && mode != "predictor" &&
-        mode != "lewm-step" && mode != "lewm-rollout" && mode != "ac" && mode != "ac-rollout") {
+        mode != "lewm-step" && mode != "lewm-rollout" && mode != "ac" && mode != "ac-rollout" &&
+        mode != "ac-plan") {
         fprintf(stderr, "unknown --mode %s\n", mode.c_str());
         return 1;
     }
+    if (cem_steps < 1) cem_steps = 1;
     if (repeat < 1) repeat = 1;
     if (warmup < 0) warmup = 0;
     if (batch  < 1) batch  = 1;
     if (steps  < 1) steps  = 1;
-    if (batch > 1 && mode != "encoder" && mode != "ac" && mode != "ac-rollout") {
+    if (batch > 1 && mode != "encoder" && mode != "ac" && mode != "ac-rollout" && mode != "ac-plan") {
         fprintf(stderr, "note: --batch only applies to --mode encoder / ac / ac-rollout; %s times one item\n",
                 mode.c_str());
         batch = 1;
@@ -381,7 +398,7 @@ int main(int argc, char ** argv) {
 
     const bool needs_encoder = mode == "encoder" || mode == "head" || mode == "predictor";
     const bool lewm_mode     = mode == "lewm-step" || mode == "lewm-rollout";
-    const bool ac_mode       = mode == "ac" || mode == "ac-rollout";
+    const bool ac_mode       = mode == "ac" || mode == "ac-rollout" || mode == "ac-plan";
     if (mode == "head" && !jepa_model_has_head(model)) {
         fprintf(stderr, "%s carries no jepa.head — nothing to time in --mode head\n", model_path.c_str());
         return 1;
@@ -400,7 +417,8 @@ int main(int argc, char ** argv) {
                 model_path.c_str(), mode.c_str());
         return 1;
     }
-    if (ac_mode && mode == "ac-rollout" && steps == 20) steps = 2;   // the reference planner's horizon
+    // the reference planner's horizon, for the two modes that roll out
+    if (ac_mode && mode != "ac" && steps == 20) steps = 2;
 
     if (needs_encoder && jepa_token_grid(model, T, H, W, nullptr, nullptr, nullptr) == 0) {
         fprintf(stderr, "%d frame(s) of %dx%d is not encodable by this model (tubelet %d, patch %d)\n",
@@ -432,7 +450,7 @@ int main(int argc, char ** argv) {
         const int D = jepa_model_embed_dim(model);
         const int HW = jepa_ac_tokens_per_frame(model);
         const int A = jepa_ac_action_dim(model), S = jepa_ac_state_dim(model);
-        const int nf = mode == "ac" ? (frames > 0 ? frames : 1) : 1;   // rollout seeds with one frame
+        const int nf = mode == "ac" ? (frames > 0 ? frames : 1) : 1;   // a rollout seeds with one frame
         const int na = mode == "ac" ? nf : steps;
         rng r(seed);
         embs.resize((size_t) batch * nf * HW * D);
@@ -579,6 +597,39 @@ int main(int argc, char ** argv) {
                 if (i >= warmup) { ms.push_back(jepa_context_last_compute_ms(ctx)); wall.push_back(w_ms); }
                 jepa_free(out.data);
             }
+        } else if (mode == "ac-plan") {
+            const int HW = jepa_ac_tokens_per_frame(model);
+            const int A  = jepa_ac_action_dim(model);
+            jepa_ac_cem_params q = jepa_ac_cem_default_params();
+            q.samples = batch;
+            q.horizon = steps;
+            q.cem_steps = cem_steps;
+            q.topk = std::min(batch, std::max(1, batch / 4));
+            q.seed = (uint32_t) seed;
+            r.steps  = cem_steps;
+            r.frames = 1;
+            // ms is per CEM iteration and a unit is a candidate, so ms/item is one candidate's share
+            // of one planning decision — the number a planner budgets with.
+            r.units  = batch;
+            r.tokens = (int64_t) HW * steps;
+            r.shape  = "plan K=" + std::to_string(batch) + ", H=" + std::to_string(steps) +
+                       ", it=" + std::to_string(cem_steps) + (cached ? "" : ", uncached");
+            std::vector<float> plan((size_t) steps * A), best((size_t) cem_steps);
+            jepa_ac_context * h = jepa_ac_context_new(ctx, embs.data(), 1, nullptr, states.data());
+            if (!h) { failed = true; }
+            for (int i = 0; i < warmup + repeat && !failed; i++) {
+                const double t0 = now_ms();
+                if (jepa_ac_plan(ctx, h, embs.data(), &q, nullptr, plan.data(), best.data()) != 0) {
+                    failed = true;
+                    break;
+                }
+                const double w_ms = now_ms() - t0;
+                if (i >= warmup) {
+                    ms.push_back(jepa_context_last_compute_ms(ctx) / (double) cem_steps);
+                    wall.push_back(w_ms / (double) cem_steps);
+                }
+            }
+            jepa_ac_context_free(h);
         } else if (mode == "ac-rollout") {
             const int HW = jepa_ac_tokens_per_frame(model);
             const int D  = jepa_model_embed_dim(model);
@@ -589,12 +640,21 @@ int main(int argc, char ** argv) {
             // cost of carrying one candidate through one rollout step. `tokens` is that step's rows.
             r.units  = batch;
             r.tokens = HW;
-            r.shape  = "rollout H=" + std::to_string(steps) + ", K=" + std::to_string(batch);
+            r.shape  = "rollout H=" + std::to_string(steps) + ", K=" + std::to_string(batch) +
+                       (cached ? "" : ", uncached");
             std::vector<float> out((size_t) batch * steps * HW * D);
+            jepa_ac_context * h = nullptr;
+            if (cached) {
+                h = jepa_ac_context_new(ctx, embs.data(), 1, nullptr, states.data());
+                if (!h) failed = true;
+            }
             for (int i = 0; i < warmup + repeat && !failed; i++) {
                 const double t0 = now_ms();
-                if (jepa_ac_rollout(ctx, embs.data(), 1, states.data(), acts.data(), nullptr,
-                                    batch, steps, out.data()) != 0) {
+                const int rc = cached
+                    ? jepa_ac_rollout_cached(ctx, h, acts.data(), nullptr, batch, steps, out.data())
+                    : jepa_ac_rollout(ctx, embs.data(), 1, states.data(), acts.data(), nullptr,
+                                      batch, steps, out.data());
+                if (rc != 0) {
                     failed = true;
                     break;
                 }
@@ -604,6 +664,7 @@ int main(int argc, char ** argv) {
                     wall.push_back(w_ms / (double) steps);
                 }
             }
+            jepa_ac_context_free(h);
         } else {  // lewm-rollout: ms is per predicted step
             const int D = jepa_model_embed_dim(model);
             r.steps  = steps;

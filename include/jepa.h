@@ -310,6 +310,43 @@ int  jepa_ac_rollout_cached(jepa_context * ctx, jepa_ac_context * handle,
                             const float * actions, const float * states,
                             int n_cand, int horizon, float * out);
 
+// --- CEM planner ------------------------------------------------------------------------------
+// The loop V-JEPA 2-AC plans with (notebooks/utils/mpc_utils.py::cem): sample `samples` action
+// trajectories from a diagonal Gaussian, roll them all out in one batched graph per horizon step,
+// score the final frame against the goal with jepa_ac_energy, keep the `topk` elites and move the
+// mean and standard deviation towards them with momentum.
+//
+// Only FOUR of the seven action dimensions are sampled — translation (0..2) and the gripper (6);
+// the three rotation dimensions are hard zeros. That is the reference's action space, not a
+// simplification, and the clamps and momenta below all live in it.
+typedef struct {
+    int   samples;                 // candidates per iteration (K, on the graph's batch axis)
+    int   topk;                    // elites kept per iteration
+    int   cem_steps;               // iterations
+    int   horizon;                 // H, the planned action-sequence length
+    float maxnorm;                 // |dx|,|dy|,|dz| clamp and the initial translation std (0.05)
+    float gripper_clamp;           // |dgripper| clamp (0.75)
+    float momentum_mean, momentum_std;                  // translation
+    float momentum_mean_gripper, momentum_std_gripper;  // gripper
+    float round_gripper;           // zero a final |gripper| below this (0.25)
+    uint32_t seed;                 // RNG seed, used only when `noise` is NULL
+} jepa_ac_cem_params;
+
+// Every field at the reference's default (mpc_utils.py's own signature defaults).
+jepa_ac_cem_params jepa_ac_cem_default_params(void);
+
+// Plan against `goal` ([tokens_per_frame, enc_dim], normalised like the handle's latents).
+//   noise       : [cem_steps, horizon, samples, 4] standard-normal draws consumed in the reference's
+//                 order (iteration, horizon step, then the rows of one randn(samples, 4)), or NULL
+//                 to generate them from `seed`. Pass the draws to reproduce a PyTorch run: the
+//                 built-in generator is xorshift+Box-Muller, not torch's.
+//   out_actions : [horizon, action_dim] — the plan, rotation zeroed and small gripper commands
+//                 rounded away, exactly what cem() returns.
+//   out_energy  : [cem_steps] best energy per iteration, or NULL.
+int jepa_ac_plan(jepa_context * ctx, jepa_ac_context * handle, const float * goal,
+                 const jepa_ac_cem_params * params, const float * noise,
+                 float * out_actions, float * out_energy);
+
 // Meta's pose update (notebooks/utils/mpc_utils.py::compute_new_pose): translation added, rotation
 // composed as extrinsic-xyz Euler angles, gripper added and clipped to [0, 1]. `state`, `action`
 // and `out` are state_dim/action_dim long; `out` may not alias `state`.
