@@ -354,18 +354,24 @@ reference is [`python/README.md`](https://github.com/aselimc/jepa.cpp/blob/main/
 ctest --test-dir build
 ```
 
-Nine suites: five parity and predictor replays of the PyTorch golden dumps, plus `batch` (batched vs
-per-item bit-exactness), `ops` (3-D RoPE against generated vectors), `attn` (flash vs naive attention
-against a double-precision reference) and `backend` (GPU graph validation and CPU/GPU agreement,
-which exits 0 with a skip line when the build has no GPU, so one `ctest` invocation covers both kinds
-of machine). The parity suites register at CMake configure time and need `models/gguf/` and
-`tests/fixtures/ref/` populated, so re-run `cmake` once after downloading and converting. The
-methodology is in [Architecture → testing and parity](architecture.md#testing-and-parity-methodology).
+Thirteen suites: five parity and predictor replays of the PyTorch golden dumps, plus `batch` (batched
+vs per-item bit-exactness), `ops` (3-D RoPE against generated vectors), `attn` (flash vs naive
+attention against a double-precision reference), `video` (`--video` decode and sampling against the
+reference dumps' PyAV frames), `backend` (GPU graph validation and CPU/GPU agreement, which exits 0
+with a skip line when the build has no GPU, so one `ctest` invocation covers both kinds of machine),
+`errors` (malformed GGUFs it forges itself, and the NULL / oversized / budget guards of the inference
+entry points) and `threads` (the [thread contract](architecture.md#robustness), N threads sharing one
+model). The parity suites register at CMake configure time and need `models/gguf/` and
+`tests/fixtures/ref/` populated, so re-run `cmake` once after downloading and converting. `errors`
+and `threads` need neither and always register. The methodology is in
+[Architecture → testing and parity](architecture.md#testing-and-parity-methodology), and what the
+loader validates is in [Architecture → robustness](architecture.md#robustness).
 
 CI runs on every push to `main` and every pull request (`.github/workflows/ci.yml`): a build and
 `ctest` on Ubuntu 22.04, Ubuntu 24.04 and macOS arm64, a Metal build on macOS, an MSVC build on
 Windows, and an ASAN+UBSAN build with `detect_leaks=1`. A runner has no converted weights, so those
-jobs run the two suites that need none — `ops` and `attn`. A separate `parity` job fetches the
+jobs run the four suites that need none — `ops`, `attn`, `errors` and `threads` — and build (never
+run) the fuzz target. A separate `parity` job fetches the
 LeJEPA and LeWorldModel GGUFs and their reference dumps from the Hugging Face hub and runs the
 `parity-*`, `predictor-lewm`, `batch` and `backend` suites on top; while those files are unpublished
 it says so and stops. The same workflow gates the generated documentation — `gen_api_md.py --check`,

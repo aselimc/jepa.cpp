@@ -16,9 +16,10 @@ concurrency:
 
 jobs:
   # Build and run the suites that need no weights. On a checkout with no GGUFs the CMake asset gates
-  # register exactly two: `ops` (3-D RoPE against generated vectors plus the block-causal mask) and
-  # `attn` (flash vs naive attention against a double-precision reference). Everything else needs a
-  # model file and belongs to the `parity` job below.
+  # register four: `ops` (3-D RoPE against generated vectors plus the block-causal mask), `attn`
+  # (flash vs naive attention against a double-precision reference), `errors` (the loader's and the
+  # API's failure paths, on GGUFs it forges itself) and `threads` (the thread contract). Everything
+  # else needs a model file and belongs to the `parity` job below.
   build-test-linux:
     name: linux ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -108,10 +109,16 @@ jobs:
       - name: version
         run: build\Release\jepa-info.exe --version
 
-  # ASAN + UBSAN over the same two model-free suites. OpenMP is off here on purpose: libgomp's
-  # thread pool is still allocated at exit and LeakSanitizer reports it, which would force either a
-  # suppression file or detect_leaks=0 — turning it off keeps detect_leaks=1 meaningful. ggml then
-  # uses its own threadpool, which is the path the sanitizers should cover anyway.
+  # ASAN + UBSAN over the model-free suites. On a checkout with no GGUFs that is now four: `ops` and
+  # `attn` as before, plus `errors` (forged and truncated GGUFs through every loader check, and the
+  # NULL / oversized / budget guards of the inference entry points) and `threads` (the thread
+  # contract of include/jepa.h). Both of the new ones build what they need in a temp directory, so
+  # they need no weights and run here at full strength. -fno-sanitize-recover=all makes a UBSan
+  # report a failure rather than a line in the log.
+  # OpenMP is off here on purpose: libgomp's thread pool is still allocated at exit and
+  # LeakSanitizer reports it, which would force either a suppression file or detect_leaks=0 —
+  # turning it off keeps detect_leaks=1 meaningful. ggml then uses its own threadpool, which is the
+  # path the sanitizers should cover anyway, and is also the one tests/test-threads.cpp exercises.
   sanitizers:
     name: asan + ubsan
     runs-on: ubuntu-24.04
@@ -126,8 +133,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DGGML_LLAMAFILE=ON \
             -DGGML_OPENMP=OFF \
-            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
-            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
 
       - name: build
@@ -137,7 +144,19 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: ctest --test-dir build-asan --output-on-failure
+        run: |
+          ctest --test-dir build-asan -N
+          ctest --test-dir build-asan --output-on-failure
+
+      # Build-only, and deliberately: a fuzz run is measured in hours and belongs on a developer's
+      # box (docs/architecture.md "Robustness"). What CI owes the target is that it still compiles
+      # against the current headers, and that the corpus generator still runs.
+      - name: build the fuzz target
+        run: |
+          cmake -S . -B build-fuzz -DCMAKE_BUILD_TYPE=RelWithDebInfo -DJEPA_FUZZ=ON \
+                -DJEPA_BUILD_TOOLS=OFF -DGGML_OPENMP=OFF
+          cmake --build build-fuzz -j "$(nproc)" --target fuzz-gguf-load
+          build-fuzz/fuzz-gguf-load --help
 
   # The generated artifacts have to match their sources. matplotlib and numpy are pinned because the
   # figure scripts compare committed SVGs byte for byte and another matplotlib re-emits glyph paths
@@ -247,8 +266,9 @@ jobs:
           du -sh models/gguf tests/fixtures/ref
 
       # Configure after the download: the parity, predictor, batch and backend suites are registered
-      # at configure time from the files that exist (CMakeLists.txt). With this set that is seven
-      # suites — parity-lejepa-vits16, parity-lewm-pusht, predictor-lewm, batch, ops, backend, attn.
+      # at configure time from the files that exist (CMakeLists.txt). With this set that is nine
+      # suites — parity-lejepa-vits16, parity-lewm-pusht, predictor-lewm, batch, ops, backend, attn,
+      # errors and threads; the last two also run in the sanitizers job, there against forged files.
       - name: configure
         if: steps.hub.outputs.ready == 'true'
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_LLAMAFILE=ON

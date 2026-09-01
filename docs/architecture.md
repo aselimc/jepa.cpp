@@ -313,6 +313,74 @@ reason a single backend beats a scheduler; every measurement on this site warms 
 
 `jepa_context_set_mul_mat_prec_f32(ctx, false)` is the API form of `JEPA_GPU_PREC=f16`.
 
+## Robustness
+
+A GGUF is a file someone downloaded, and an image is bytes off a network. Both are parsed before
+anything about them is known, so the loader and the preprocessor treat every number in them as
+hostile until it is in range. Nothing is clamped or defaulted silently: an input that does not
+describe a model this engine can run is refused, by name, on `stderr` and in
+[`jepa_error_text()`](api.md).
+
+**What the loader validates.** In this order, and all of it before a byte of weight is allocated:
+
+| check | refused when |
+|---|---|
+| `general.architecture`, `jepa.family` | not `jepa`; not one of the seven families |
+| every `jepa.*` integer | outside its range — `embed_dim` 1–65536, `n_layer` 1–1024, `n_head` 1–1024, `ffn_dim` 1–2²⁰, `patch_size`/`tubelet_size` 1–1024, `img_size`/`n_frames` 1–65536, `in_chans` 1–1024, token counts ≤ 2²² (`JEPA_LIMIT_*` in `src/jepa-internal.h`) |
+| every `jepa.*` float | not finite, or outside its range — `ln_eps` ∈ [0, 1], `rope_theta` > 0, `jepa.pre.std` ≠ 0 |
+| enum-valued strings | unknown `jepa.enc.act`, `jepa.enc.attn_mode`, `jepa.pred.act`, `jepa.pred.action_act`, `jepa.pred.proj_act` |
+| `attn_mode = block_causal` | on a family whose graph has no mask, where it would run unmasked |
+| derived invariants | `embed_dim % n_head`; a masked predictor with no position grid; a LeWM predictor with no `action_dim` or `n_frames` |
+| tensor extent | any tensor whose bytes are not inside the file (a truncated download; the header alone can promise terabytes) |
+| tensor dtype | anything that is not f32, f16, bf16 or a quantized type; and, for the operands the graph adds, multiplies or concatenates — norms, biases, layer scales, CLS and register tokens, position tables, mask tokens, modality vectors — anything that is not f32 |
+| tensor shape | every weight, bias and vector of every encoder, predictor and head block against the hparams |
+| required tensors | a predictor or head the metadata promises and the tensors do not deliver |
+
+**What is refused at call time.** Non-positive or overflowing input shapes; an encoder output header
+that describes nothing; token ids off the predictor's grid; and any graph whose estimated activation
+bytes exceed `$JEPA_MAX_GRAPH_MIB` (8 GiB by default) — the encoder shrinks its batch first and only
+errors when a single item still will not fit, the video encoder, the masked predictor and the LeWM
+rollout refuse outright. The image pipeline additionally caps the intermediate of the shortest-edge
+resize at 64 megapixels, which is what stops a 16384×1 image from asking for gigabytes.
+
+**Thread contract.** Stated in full in [`include/jepa.h`](api.md) and checked by
+`tests/test-threads.cpp`: a `jepa_model` is immutable after load and may be shared by any number of
+threads; a `jepa_context` belongs to one thread; `jepa_error_reset` / `jepa_error_text` are
+thread-local; preprocessing is re-entrant; the "said once" warnings are published atomically.
+Concurrent encodes through per-thread contexts are bit-identical to the same work run serially.
+`n_threads` is the width of the pool *inside* one graph — a context per thread parallelises calls,
+and doing both oversubscribes the machine.
+
+**Running the fuzzer.** `tests/fuzz/fuzz-gguf-load.cpp` feeds arbitrary bytes to `jepa_model_load`
+and, when they load, to a shallow encode/pool/predict pass. It is off by default; CI builds it and
+never runs it.
+
+```bash
+scripts/make_fuzz_corpus.py                       # needs gguf-py; writes tests/fuzz/corpus/
+cmake -S . -B build-fuzz -DJEPA_FUZZ=ON -DGGML_OPENMP=OFF \
+      -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fsanitize-recover=undefined -g" \
+      -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fsanitize-recover=undefined -g" \
+      -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+cmake --build build-fuzz -j --target fuzz-gguf-load
+build-fuzz/fuzz-gguf-load --corpus tests/fuzz/corpus --out findings --fork --seconds 3600
+build-fuzz/fuzz-gguf-load --file findings/crash-0000-sig11-exit-1.gguf     # replay one input
+```
+
+The seed corpus is generated from the two small GGUFs: a shrunk-but-loadable copy of each (D=8,
+2 layers, 8×8 images), truncations of both those and the real files, and one-key mutations. With
+clang the same source is a libFuzzer target (`-fsanitize=fuzzer`, `LLVMFuzzerTestOneInput`); with
+any other compiler it is the deterministic mutation loop above, reproducible from `--seed`.
+`--fork` runs each input in a child, so a crash or a hang (`--timeout`, default 10 s) is written to
+`--out` and the run continues.
+
+UBSan is *recoverable* in that build on purpose. The GGUF reader in the ggml submodule loads a type
+tag into an uninitialised `gguf_type` on its own failure path and computes tensor sizes before
+range-checking them (`ggml/src/gguf.cpp:575`, `:584`, `:714`, `ggml/src/ggml.c:1288`); those are
+upstream's and they fire on most malformed inputs. Making UBSan non-fatal there keeps every check
+enabled and turns triage into "which source file does the report name" — a report outside `ggml/` is
+ours. The sanitizer CI job, which feeds only valid files, runs with `halt_on_error=1` and no
+exclusions.
+
 ## Repository layout
 
 ```
@@ -341,11 +409,15 @@ tests/test-attn       flash vs naive attention against a double-precision refere
 tests/test-ops        rope3d against tests/vectors/, and the block-causal mask on both attention paths
 tests/test-backend    GPU graph validation and CPU/GPU agreement; skips cleanly without a GPU
 tests/test-video      --video decode+sampling vs the reference dumps' PyAV frames; skips without ffmpeg
+tests/test-errors     the failure paths: forged and truncated GGUFs, bad shapes, budget refusals
+tests/test-threads    one model, N threads, a context each: outputs bit-identical to single-threaded
+tests/fuzz/           the GGUF loader fuzz target (-DJEPA_FUZZ=ON) and its corpus generator
 
 scripts/convert.py          HF safetensors / torch.hub .pt -> GGUF
 scripts/dump_reference.py   PyTorch golden outputs -> tests/fixtures/ref/<model>/
 scripts/compare.py          .npy / ref-dir comparison (cosine, max-abs, rel, top-k)
 scripts/knn_eval.py         the frozen-feature k-NN protocol shared by both accuracy benchmarks
+scripts/make_fuzz_corpus.py the fuzz seed corpus: shrunk minis, truncations, one-key mutations
 scripts/bench_all.sh + gen_benchmarks_md.py       the benchmark sweep and its document generator
 scripts/bench_accuracy_{image,video}.py           the Imagenette / UCF-101 sweeps
 ```

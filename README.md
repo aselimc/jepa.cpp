@@ -174,7 +174,7 @@ policy, parity thresholds — is on the [documentation site](https://aselimc.git
 ## Testing
 
 ```bash
-ctest --test-dir build        # 11 suites: parity, predictors, batching, RoPE vectors + the block-causal mask, attention, backend, video ingest
+ctest --test-dir build        # 13 suites: parity, predictors, batching, RoPE vectors + the block-causal mask, attention, backend, video ingest, error paths, threads
 ```
 
 `test-parity` replays PyTorch golden dumps through the engine and gates per-token cosine, pooled
@@ -182,9 +182,14 @@ outputs and classifier top-1/top-5 with per-family thresholds; `test-predictor` 
 three predictors, including a bit-exactness causality check on the world model. Details:
 [parity](https://aselimc.github.io/jepa.cpp/parity/) · [accuracy](docs/accuracy.md).
 
-The suites that need no weights (`ops`, `attn`) run in CI on Ubuntu 22.04 and 24.04, on macOS arm64
-and under ASAN+UBSAN, alongside a Windows/MSVC build and the documentation gates; the rest run from
-hub-hosted GGUFs. See
+`test-errors` forges malformed GGUFs and requires each to be refused with a message rather than a
+crash, `test-threads` checks the thread contract, and the loader has a fuzz target behind
+`-DJEPA_FUZZ=ON` — all three described under
+[robustness](https://aselimc.github.io/jepa.cpp/architecture/#robustness).
+
+The suites that need no weights (`ops`, `attn`, `errors`, `threads`) run in CI on Ubuntu 22.04 and
+24.04, on macOS arm64 and under ASAN+UBSAN, alongside a Windows/MSVC build and the documentation
+gates; the rest run from hub-hosted GGUFs. See
 [getting started → tests](https://aselimc.github.io/jepa.cpp/getting-started/#tests).
 
 ## Optional: running on a GPU

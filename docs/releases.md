@@ -75,7 +75,8 @@ release, which is also when the loader starts range-checking the field — today
 
 [`ci.yml`](https://github.com/aselimc/jepa.cpp/blob/main/.github/workflows/ci.yml) runs on every push
 to `main` and every pull request: builds and `ctest` on Ubuntu 22.04 and 24.04 and on macOS arm64, a
-Metal build on macOS, an MSVC build on Windows, an ASAN+UBSAN build, and the generator checks that
-keep `docs/api.md`, the figures and the accuracy tables in step with their sources.
+Metal build on macOS, an MSVC build on Windows, an ASAN+UBSAN build that also runs the error-path
+and thread-contract suites and compiles the fuzz target, and the generator checks that keep
+`docs/api.md`, the figures and the accuracy tables in step with their sources.
 [`release.yml`](https://github.com/aselimc/jepa.cpp/blob/main/.github/workflows/release.yml) builds,
 packages, smoke-tests and publishes the archive from a `v*` tag.

@@ -10,6 +10,26 @@ across releases.
 
 ### Added
 
+- **Hardening of the untrusted-input paths** — a GGUF is a download and an image is bytes off a
+  network, and both are now range-checked before anything is allocated. The loader validates every
+  `jepa.*` integer and float against a documented bound, refuses an unknown activation or attention
+  mode, checks that each tensor's bytes are actually inside the file, that its dtype is one the
+  engine can compute with, and that every weight, bias and vector of every block has the shape and
+  the f32-ness the graph will assume — so a file that promises a predictor or a head it does not
+  carry is refused at load rather than aborting on first use. Call-time guards cover non-positive
+  and overflowing shapes, ids off the predictor's grid, and the `$JEPA_MAX_GRAPH_MIB` ceiling, which
+  now also applies to the masked predictor and the LeWM rollout. The image pipeline caps the
+  intermediate of the shortest-edge resize at 64 megapixels. Nothing is clamped silently: every
+  refusal names the key or tensor, on `stderr` and in `jepa_error_text()`.
+  [docs/architecture.md "Robustness"](docs/architecture.md#robustness).
+- **Thread-safety contract**, stated in `include/jepa.h` and checked by the new `threads` ctest
+  suite: a `jepa_model` is immutable after load and shareable across threads, a `jepa_context`
+  belongs to one thread, `jepa_error_text()` is thread-local, preprocessing is re-entrant, and
+  concurrent encodes through per-thread contexts are bit-identical to the same work run serially.
+- **`errors` and `threads` ctest suites** (`tests/test-errors.cpp`, `tests/test-threads.cpp`), and a
+  **GGUF loader fuzz target** (`tests/fuzz/fuzz-gguf-load.cpp`, `-DJEPA_FUZZ=ON`, off by default)
+  with a corpus generator (`scripts/make_fuzz_corpus.py`). The first two need no weights, so the
+  ASAN+UBSAN CI job runs them; the fuzz target is build-only in CI.
 - **Python bindings** — `pip install jepa-cpp` (import `jepa_cpp`), a thin wrapper over
   `include/jepa.h` with numpy on both ends: `Model.encode` / `pool` / `classify` / `predict` /
   `lewm_rollout`, the file's metadata as properties, and `jepa_cpp._api` as the unwrapped header.
