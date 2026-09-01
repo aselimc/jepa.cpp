@@ -18,6 +18,9 @@ option(JEPA_NATIVE      "Optimize for the host CPU (-march=native)" ON)
 # should ship by default (docs/getting-started.md "CUDA build"). Configure a CUDA build in its own dir:
 #   cmake -S . -B build-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DJEPA_CUDA=ON
 option(JEPA_CUDA        "Build with the ggml CUDA backend (adds --gpu to the tools)" OFF)
+# OFF by default: the fuzz target is a developer tool, not part of the suite ctest runs. CI builds it
+# (never runs it) so it cannot rot. See docs/architecture.md "Robustness".
+option(JEPA_FUZZ        "Build tests/fuzz/fuzz-gguf-load (libFuzzer with clang, mutation loop otherwise)" OFF)
 
 # --- ggml (submodule) --------------------------------------------------------
 set(GGML_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
@@ -221,5 +224,42 @@ if(JEPA_BUILD_TESTS)
     add_executable(test-attn tests/test-attn.cpp)
     target_link_libraries(test-attn PRIVATE ggml)
     add_test(NAME attn COMMAND test-attn --n 256,2048 --max-s 60)
+  endif()
+  # Error paths and the thread contract: both self-contained (they forge their own GGUFs and images
+  # in a temp directory), so they register unconditionally and run in every CI job. Passing a model
+  # adds the cases that need real weights.
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-errors.cpp)
+    add_executable(test-errors tests/test-errors.cpp)
+    target_link_libraries(test-errors PRIVATE jepa)
+    target_include_directories(test-errors PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    set(_err_args "")
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lejepa-vits16-pretrain-in1k-f32.gguf)
+      set(_err_args --model ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lejepa-vits16-pretrain-in1k-f32.gguf)
+    endif()
+    add_test(NAME errors COMMAND test-errors ${_err_args})
+  endif()
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-threads.cpp)
+    add_executable(test-threads tests/test-threads.cpp)
+    target_link_libraries(test-threads PRIVATE jepa)
+    target_include_directories(test-threads PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    set(_thr_args "")
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lejepa-vits16-pretrain-in1k-f32.gguf)
+      set(_thr_args --model ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lejepa-vits16-pretrain-in1k-f32.gguf)
+    endif()
+    add_test(NAME threads COMMAND test-threads ${_thr_args} --threads 4)
+  endif()
+endif()
+
+# --- fuzz target (-DJEPA_FUZZ=ON) --------------------------------------------
+# libFuzzer when the compiler has it (clang), otherwise the deterministic mutation loop the same
+# source carries — the coverage is the loader's failure paths either way. Never registered with
+# ctest: a fuzz run is measured in hours, not seconds.
+if(JEPA_FUZZ AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/fuzz-gguf-load.cpp)
+  add_executable(fuzz-gguf-load tests/fuzz/fuzz-gguf-load.cpp)
+  target_link_libraries(fuzz-gguf-load PRIVATE jepa)
+  target_compile_options(fuzz-gguf-load PRIVATE ${JEPA_WARN_FLAGS})
+  if(CMAKE_CXX_FLAGS MATCHES "fsanitize=[^ ]*fuzzer")
+    target_compile_definitions(fuzz-gguf-load PRIVATE JEPA_FUZZ_LIBFUZZER)
+    target_link_options(fuzz-gguf-load PRIVATE -fsanitize=fuzzer)
   endif()
 endif()
