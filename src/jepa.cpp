@@ -12,8 +12,26 @@
 #include <cstring>
 #include <thread>
 
+// Diagnostics capture (jepa.h "APPEND-ONLY: diagnostics capture"). Every jepa_log line is teed into
+// a thread-local buffer so a binding with no stderr to read can quote the reason a call failed.
+// stderr still gets the line either way; the tee stops appending once the buffer is full so a
+// runaway logger cannot grow it without bound.
+static const size_t JEPA_ERROR_TEXT_MAX = 8192;
+static thread_local std::string g_error_text;
+
+void jepa_error_reset(void) { g_error_text.clear(); }
+const char * jepa_error_text(void) { return g_error_text.c_str(); }
+
 void jepa_log(const char * fmt, ...) {
     va_list ap; va_start(ap, fmt); vfprintf(stderr, fmt, ap); va_end(ap);
+    if (g_error_text.size() >= JEPA_ERROR_TEXT_MAX) return;
+    char buf[1024];
+    va_list ap2; va_start(ap2, fmt);
+    const int n = vsnprintf(buf, sizeof(buf), fmt, ap2);
+    va_end(ap2);
+    if (n <= 0) return;
+    g_error_text.append(buf, std::min((size_t) n, sizeof(buf) - 1));
+    if (g_error_text.size() > JEPA_ERROR_TEXT_MAX) g_error_text.resize(JEPA_ERROR_TEXT_MAX);
 }
 const char * jepa_version(void) { return JEPA_VERSION; }
 void jepa_print_system_info(void) {

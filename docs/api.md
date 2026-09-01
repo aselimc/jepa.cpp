@@ -4,7 +4,7 @@
 
 The whole public surface is this one header: C linkage, opaque handles (`jepa_model`, `jepa_context`), plain structs, `malloc`-returned buffers freed with `jepa_free`. Typical flow: `jepa_model_load` → `jepa_context_new` → `jepa_preprocess_*` → `jepa_encode` → `jepa_pool_*` / `jepa_head` / `jepa_predict*` / `jepa_lewm_*`.
 
-**Functions (69):** `jepa_context_default_params` · `jepa_context_free` · `jepa_context_last_batch` · `jepa_context_last_compute_ms` · `jepa_context_max_batch` · `jepa_context_mul_mat_prec_f32` · `jepa_context_n_threads` · `jepa_context_new` · `jepa_context_set_max_batch` · `jepa_context_set_mul_mat_prec_f32` · `jepa_device_count` · `jepa_device_description` · `jepa_device_memory` · `jepa_device_name` · `jepa_encode` · `jepa_free` · `jepa_head` · `jepa_head_ex` · `jepa_lewm_action_dim` · `jepa_lewm_n_frames` · `jepa_lewm_predict` · `jepa_lewm_project` · `jepa_lewm_project_rows` · `jepa_lewm_rollout` · `jepa_load_image_rgb` · `jepa_model_default_params` · `jepa_model_device` · `jepa_model_device_name` · `jepa_model_embed_dim` · `jepa_model_family` · `jepa_model_file_type` · `jepa_model_file_type_name` · `jepa_model_free` · `jepa_model_has_cls` · `jepa_model_has_head` · `jepa_model_has_predictor` · `jepa_model_has_projector` · `jepa_model_img_size` · `jepa_model_is_gpu` · `jepa_model_label` · `jepa_model_load` · `jepa_model_load_ex` · `jepa_model_n_bytes` · `jepa_model_n_classes` · `jepa_model_n_frames` · `jepa_model_n_head` · `jepa_model_n_layer` · `jepa_model_n_prefix_tokens` · `jepa_model_n_registers` · `jepa_model_name` · `jepa_model_patch_size` · `jepa_model_tubelet_size` · `jepa_pool_cls` · `jepa_pool_mean` · `jepa_predict` · `jepa_predict_ex` · `jepa_predict_mod` · `jepa_preprocess_default_params` · `jepa_preprocess_frames_rgb` · `jepa_preprocess_frames_rgb_ex` · `jepa_preprocess_image_file` · `jepa_preprocess_image_rgb` · `jepa_preprocess_image_rgb_ex` · `jepa_print_system_info` · `jepa_resize_antialias_u8` · `jepa_softmax` · `jepa_token_grid` · `jepa_top_k` · `jepa_version`
+**Functions (71):** `jepa_context_default_params` · `jepa_context_free` · `jepa_context_last_batch` · `jepa_context_last_compute_ms` · `jepa_context_max_batch` · `jepa_context_mul_mat_prec_f32` · `jepa_context_n_threads` · `jepa_context_new` · `jepa_context_set_max_batch` · `jepa_context_set_mul_mat_prec_f32` · `jepa_device_count` · `jepa_device_description` · `jepa_device_memory` · `jepa_device_name` · `jepa_encode` · `jepa_error_reset` · `jepa_error_text` · `jepa_free` · `jepa_head` · `jepa_head_ex` · `jepa_lewm_action_dim` · `jepa_lewm_n_frames` · `jepa_lewm_predict` · `jepa_lewm_project` · `jepa_lewm_project_rows` · `jepa_lewm_rollout` · `jepa_load_image_rgb` · `jepa_model_default_params` · `jepa_model_device` · `jepa_model_device_name` · `jepa_model_embed_dim` · `jepa_model_family` · `jepa_model_file_type` · `jepa_model_file_type_name` · `jepa_model_free` · `jepa_model_has_cls` · `jepa_model_has_head` · `jepa_model_has_predictor` · `jepa_model_has_projector` · `jepa_model_img_size` · `jepa_model_is_gpu` · `jepa_model_label` · `jepa_model_load` · `jepa_model_load_ex` · `jepa_model_n_bytes` · `jepa_model_n_classes` · `jepa_model_n_frames` · `jepa_model_n_head` · `jepa_model_n_layer` · `jepa_model_n_prefix_tokens` · `jepa_model_n_registers` · `jepa_model_name` · `jepa_model_patch_size` · `jepa_model_tubelet_size` · `jepa_pool_cls` · `jepa_pool_mean` · `jepa_predict` · `jepa_predict_ex` · `jepa_predict_mod` · `jepa_preprocess_default_params` · `jepa_preprocess_frames_rgb` · `jepa_preprocess_frames_rgb_ex` · `jepa_preprocess_image_file` · `jepa_preprocess_image_rgb` · `jepa_preprocess_image_rgb_ex` · `jepa_print_system_info` · `jepa_resize_antialias_u8` · `jepa_softmax` · `jepa_token_grid` · `jepa_top_k` · `jepa_version`
 
 ## Types and handles
 
@@ -296,4 +296,20 @@ bool         jepa_model_is_gpu(const jepa_model * model);
 // Takes effect from the next graph built by this context.
 void jepa_context_set_mul_mat_prec_f32(jepa_context * ctx, bool on);
 bool jepa_context_mul_mat_prec_f32(const jepa_context * ctx);
+
+// ======================================================================================
+// APPEND-ONLY: diagnostics capture (src/jepa.cpp) — for callers with no stderr to read.
+// ======================================================================================
+
+// Every diagnostic this library emits — the reason an entry point returned -1 or NULL included —
+// is written to stderr through a single internal function. A language binding that has to turn a
+// failed call into an error value cannot read that stream, so the same text is also appended to a
+// per-thread capture buffer: call jepa_error_reset() to empty it, make the call, and on failure
+// read jepa_error_text() for the message. Both the buffer and the reset are thread-local, so a
+// capture only ever sees the lines the calling thread produced, and neither changes what is
+// written to stderr. The buffer holds the last few kilobytes and is truncated beyond that; it also
+// collects the informational lines of a verbose model load, which is why it is worth resetting
+// immediately before the call whose failure you want to describe.
+void         jepa_error_reset(void);
+const char * jepa_error_text(void);   // never NULL; "" when nothing was logged since the reset
 ```
