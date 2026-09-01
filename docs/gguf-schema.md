@@ -211,10 +211,12 @@ single `vjepa2-ac-vitg.pt`; `src/vjepa2_ac.cpp` builds the graph and
 `scripts/jepa_convert/selftest.py::ac_predictor_forward` is the executable spec.
 
 **The encoder in that checkpoint is not the HF `facebook/vjepa2-vitg-fpc64-256` release.** Measured
-per tensor, the two agree only to cosine ≈ 0.998 (e.g. `blocks.0.attn.proj.weight` 0.998273,
-`mlp.fc1.weight` 0.998545, max |Δ| 2.1e-2 on values up to 1.35), while `encoder` and
-`target_encoder` inside the AC checkpoint are **bit-identical** — the encoder was frozen during AC
-training. `src/hub/backbones.py::_make_vjepa2_ac_model` loads `state_dict["encoder"]`, so that is
+per tensor over all **484** encoder tensors, the cosine is **median 0.99995**, p05 0.99896, **min
+0.99647** (`blocks.0.norm1.weight`), with 38 of 484 below 0.999 — the low tail is the early blocks'
+attention projections (`blocks.1.attn.proj.weight` 0.99767, `blocks.0.attn.proj.weight` 0.99827) and
+max |Δ| reaches 2.1e-2 on values up to 1.35. Close, in other words, but not the same weights.
+Meanwhile `encoder` and `target_encoder` inside the AC checkpoint are **bit-identical** — the encoder
+was frozen during AC training. `src/hub/backbones.py::_make_vjepa2_ac_model` loads `state_dict["encoder"]`, so that is
 what the bundle ships, and it gets its own parity fixtures.
 
 Predictor (`src/models/ac_predictor.py::VisionTransformerPredictorAC`, 24 blocks × 1024 dims,

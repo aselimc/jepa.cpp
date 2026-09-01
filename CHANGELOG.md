@@ -30,7 +30,7 @@ across releases.
   ffn-48/11 encoder here. The converter and the graph were already metadata-driven and needed no
   change; what is new is the golden dumps, the parity fixtures and the honest record of where a
   40-layer model sits against bars fitted on ViT-L (`docs/parity.md` "V-JEPA 2 ViT-g/16"). The numpy
-  spec run on the GGUF's own weights matches HF at cosine **1.0000000**, rel 2.8e-05.
+  spec run on the GGUF's own weights matches HF at cosine **1.0000000**, rel 2.893e-05.
 - `scripts/jepa_convert/vjepa2_ac.py`, `scripts/jepa_convert/selftest.py::ac_predictor_forward` (the
   executable spec), `scripts/torch_ac_baseline.py` (the PyTorch-on-the-same-card timing baseline) and
   `dump_reference.py --model vjepa2-ac-vitg | vjepa2-vitg-fpc64-256`.

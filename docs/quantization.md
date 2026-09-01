@@ -289,9 +289,21 @@ basis, and the most tolerant on a pooled one. Measured by `test-parity` against 
 | **q4_k** | 564.8 MiB | 2048 | 0.909267 | 0.976313 | 0.0752 | 9.5e-01 | 0.996920 |
 | **q4_k** | 564.8 MiB | 8192 | 0.911208 | 0.972787 | 0.0181 | 7.8e-01 | 0.996801 |
 
-Every tier **passes** the video-family bars (which gate the *median* token, not the worst) on both the
-CPU and CUDA, and `pooled_mean` never drops below 0.9968 — so pooled use is safe down to q4_k while
-per-token use is not, the same shape as the ViT-L row below, one step more extreme.
+Every tier **passes** on both the CPU and CUDA, and `pooled_mean` never drops below 0.9968 — so
+pooled use is safe down to q4_k while per-token use is not, the same shape as the ViT-L row below,
+one step more extreme. Read "passes" for what it is per tier, though: at **f16 and q8_0** the
+video-family bars gate the token map's *mean* and *median* (≥ 0.99 and ≥ 0.999) and only report the
+worst token; at the **low-bit tier (q4_*, q5_*, q6_k) the token map is not gated at all** — it is
+printed, and the pass/fail comes from the derived tensors (`pooled_mean` ≥ 0.99) and the top-1
+(`tests/test-parity.cpp`, `POLICY`, "advisory"). A q4_k row above is a measurement, not a guarantee.
+
+**A labelling quirk worth knowing.** `vjepa2-vitg-fpc64-256-q4_k.gguf` self-reports
+`general.file_type = q4_0`, and so does the AC bundle's. K-quants need `ne[0] % 256 == 0`, and this
+family's width is 1408 = 5.5 × 256, so every `[*, 1408]`-row matrix — `attn_qkv`, `attn_out`,
+`ffn_up`, `pred.embed` — falls back to q4_0 and only the `ffn_down` matrices (`ne[0]` 6144 or 4096)
+stay q4_K. The file ends up 158 q4_0 against 52 q4_K, and `general.file_type` is the *most common*
+stored type, so the honest majority answer is q4_0. The label is left as the file computes it; the
+filename says what was asked for, and `jepa-info` lists the real mix.
 
 ### V-JEPA 2-AC ViT-g (`vjepa2-ac`, source f32, encoder + action-conditioned predictor)
 

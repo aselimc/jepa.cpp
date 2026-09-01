@@ -151,10 +151,17 @@ row of `tests/results/benchmarks-gpu.json`, and `jepa-classify --time` for its C
 These rows were measured on the second card of the same box, not device 0 like the tables above (the
 display hangs off device 0 and the machine was in use). The two cards are the same model, so the
 numbers are comparable, but they are not from the same sweep and are kept separate for that reason.
-`jepa-bench --gpu 1`, best of 5 after 2 warmups, `GGML_PREC_F32`. The CPU column is the same binary
-at `-t 32` on the idle box (best of 3 after 1 warmup, `jepa-bench -t 32`, Tctl 52 → 84 °C over the
-pass), and the PyTorch column is the float32 forward the reference dump recorded at 32 threads
+`jepa-bench --gpu 1`, 5 measured runs after 2 warmups, `GGML_PREC_F32`. The CPU column is the same
+binary at `-t 32` on the idle box (3 runs after 1 warmup, Tctl 52 → 84 °C over the pass), and the
+PyTorch column is the float32 forward the reference dump recorded at 32 threads
 (`tests/fixtures/ref/*/manifest.json`, `timing_s.forward_s`).
+
+**Which statistic:** every `jepa-bench` figure on this page is the **mean** of the measured runs (its
+headline column; the minimum is printed beside it in parentheses), while
+`scripts/torch_ac_baseline.py` and `scripts/torch_gpu_baseline.py` report the **minimum**. On an idle
+card the two differ by less than 0.1 % — the K = 64 rollout row below reads 786.11 ms mean against
+785.71 min — so the comparison stands, but the columns are not the same estimator and a loaded box
+would separate them.
 
 | model | mode | shape | GPU f32 | GPU f16 | GPU q8_0 | GPU q4_k | CPU f16 t=32 | PyTorch f32 t=32 | **GPU f16 speed-up** |
 |---|---|---|---:|---:|---:|---:|---:|---:|---|

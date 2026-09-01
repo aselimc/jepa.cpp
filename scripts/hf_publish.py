@@ -206,7 +206,12 @@ MODELS = [
             "exact to six digits. **Pool it, or use f32 if you consume individual tokens.** Its f32 CPU `rel_max` also\n"
             "sits above a bound calibrated on ViT-L on one of six calibration clips (2.3e-03 against 1e-03) at cosine\n"
             "0.999975 — accumulated float32 round-off over 40 blocks, measured and explained in\n"
-            "[parity]({site}/parity/)."
+            "[parity]({site}/parity/).\n\n"
+            "**`-q4_k.gguf` self-reports `general.file_type = q4_0`, and that is correct.** K-quants need\n"
+            "`ne[0] % 256 == 0`, and this family's width is 1408 = 5.5 x 256, so every `[*, 1408]`-row matrix\n"
+            "falls back to q4_0 and only the `ffn_down` matrices stay q4_K — 158 q4_0 against 52 q4_K. The\n"
+            "file-type field is the *most common* stored type, so the honest majority answer is q4_0. The\n"
+            "filename says what was asked for; `jepa-info` lists the real mix."
         ),
     ),
     dict(
@@ -256,7 +261,11 @@ MODELS = [
             "a GPU the planning energy misranks the candidates and the model picks a different action. The encoder\n"
             "half of the bundle passes at every tier on both backends. At f32 on the CPU the predictor is exact to\n"
             "cosine 1.0000000 against Meta's own world-model dump, and K candidates batched on the graph's batch\n"
-            "axis are bit-identical to K sequential rollouts. Full tables in [parity]({site}/parity/)."
+            "axis are bit-identical to K sequential rollouts, and `jepa_ac_plan` reproduces Meta's own CEM\n"
+            "planner to 3e-08 on its own recorded random draws. Full tables in [parity]({site}/parity/).\n\n"
+            "**`-q4_k.gguf` self-reports `general.file_type = q4_0`, and that is correct.** K-quants need\n"
+            "`ne[0] % 256 == 0` and this family's width is 1408 = 5.5 x 256, so every `[*, 1408]`-row matrix\n"
+            "falls back to q4_0; the field is the most common stored type. `jepa-info` lists the real mix."
         ),
     ),
     dict(

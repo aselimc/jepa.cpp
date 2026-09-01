@@ -319,13 +319,17 @@ plan with**; q8_0 is usable for a single step and marginal over a horizon; q4_* 
 
 Four invariants beyond the reference comparison, all gated by `test-predictor --ac`:
 
-| invariant | CPU (every dtype) | CUDA (f32 / f16) |
-|---|---|---|
-| `jepa_ac_predict(T)` == the last row block of `jepa_ac_predict_all(T)` | max\|Δ\| **0** | max\|Δ\| **0** |
-| block-causality: `predict(T=1)` == row block 0 of `predict(T=2)` | max\|Δ\| **0** | cos 0.9999999 / 0.9999939, rel 3.0e-03 |
-| block-causality: perturbing frame 1's context | max\|Δ\| **0** on block 0, 3.56 on block 1 | same |
-| **batched K == K sequential rollouts** | max\|Δ\| **0** (bit-identical, f32 → q4_k) | rel 3.2e-03 (step 0) / 8.0e-02 (step 1) |
-| `jepa_ac_next_state` vs scipy's `compute_new_pose` | max\|Δ\| **0** | max\|Δ\| **0** |
+| invariant | CPU (every dtype) | CUDA f32 | CUDA f16 |
+|---|---|---|---|
+| `jepa_ac_predict(T)` == the last row block of `jepa_ac_predict_all(T)` | max\|Δ\| **0** | max\|Δ\| **0** | max\|Δ\| **0** |
+| block-causality: `predict(T=1)` == row block 0 of `predict(T=2)` | max\|Δ\| **0** | rel 3.020e-03 | rel 5.076e-03 |
+| block-causality: perturbing frame 1's context | max\|Δ\| **0** on block 0, 3.56 on block 1 | same | same |
+| **batched K == K sequential rollouts**, step 0 | max\|Δ\| **0** (bit-identical, f32 → q4_k) | rel 3.224e-03 | rel 5.140e-03 |
+| **batched K == K sequential rollouts**, step 1 | max\|Δ\| **0** | rel 7.957e-02 | rel 6.092e-02 |
+| `jepa_ac_next_state` vs scipy's `compute_new_pose` | max\|Δ\| **0** | max\|Δ\| **0** | max\|Δ\| **0** |
+| n_seed = 2 rollout vs Meta's predictor (f32 CPU) | cos **1.0000000** / **1.0000000**, rel 4.5e-06 (step 0), 1.7e-05 (step 1) | — | — |
+| cached context == explicit context | max\|Δ\| **0** | max\|Δ\| **0** | max\|Δ\| **0** |
+| `jepa_ac_plan` vs Meta's `cem()` on its own draws (f32 CPU) | max\|Δ\| **2.98e-08** over the 2 × 7 plan | — | — |
 
 Putting the K candidates of a planning step on the graph's batch axis therefore changes nothing on
 the CPU: the items share a graph but never a reduction. On a GPU the GEMM tiling does depend on the
@@ -353,8 +357,9 @@ first file to exercise those numbers, so it gets its own fixtures and its own ro
 
 **The conversion is exact.** The numpy spec run on the GGUF's own weights against the HF model
 (`vjepa2_numpy_ref.py --gguf models/gguf/vjepa2-vitg-fpc64-256-f32.gguf --hf models/facebook/vjepa2-vitg-fpc64-256
---frames 4`) gives encoder `last_hidden_state` cos **1.0000000**, rel **2.8e-05**, and the masked
-predictor cos **1.0000000**, rel **1.8e-06**.
+--frames 4 --size 256`) gives encoder `last_hidden_state` cos **1.0000000**, rel **2.893e-05**
+(max |Δ| 1.543e-03), and the masked predictor cos **1.0000000**, rel **1.794e-06**. The input is
+`torch.randn` under `torch.manual_seed(0)`, so the figure is deterministic and reproduces exactly.
 
 | ftype | backend | sample set | tokens | cos mean | cos med | cos min | rel_max | pooled | verdict |
 |---|---|---|---|---|---|---|---|---|---|
@@ -375,19 +380,40 @@ Two honest non-passes, both of a bar fitted on ViT-L, neither a conversion or gr
 
 1. **CPU f32, `rel_max` 2.30e-03 on one clip against a 1e-03 bound.** `REL(N) = 1e-3 · max(1, √(N/2048))`
    was calibrated on the 24-layer / 1024-dim ViT-L, where the same clip measures 7.51e-04. Six
-   calibration clips at 2048 tokens on ViT-g measure 2.59e-04, 3.82e-04, 4.33e-04, 4.94e-04, 5.49e-04
-   and **2.30e-03** — five well inside the bound and one outlier, the same single ill-conditioned
+   calibration clips at 2048 tokens on ViT-g measure 2.59e-04 (high_jump2), 3.82e-04 (high_jump),
+   4.33e-04 (archery), 4.94e-04 (flying_kite), 5.49e-04 (marching) and **2.30e-03** (bowling) — five
+   well inside the bound and one outlier, the same single ill-conditioned
    token that still reads cosine 0.999975 while the mean and median are 1.000000 and the pooled
    feature is exact. `--no-flash` gives 2.11e-03, so it is not the attention kernel; the numpy
-   cross-check above puts the file itself at 2.8e-05. It is ggml's float32 accumulation over 40
+   cross-check above puts the file itself at 2.893e-05. It is ggml's float32 accumulation over 40
    blocks of 1408 dims. A √-in-depth term predicts 1.5e-03 and a linear one 2.0e-03 — neither covers
    the outlier, so **the shared bound is left as it is** rather than widened to fit one measurement;
    this table is the record instead, and the registered ctest entry is the f16 one.
+   Those six figures come from a calibration dump that is **not** part of the committed fixture set
+   (the published `tests/fixtures/ref/vjepa2-vitg-fpc64-256` carries the two clips at 16 and 64
+   frames, as every other video model does). Regenerate them with, from the repo root:
+
+   ```bash
+   # the six clips are the ones scripts/download_fixtures.sh puts in tests/fixtures/media
+   .venv/bin/python scripts/dump_reference.py --model vjepa2-vitg-fpc64-256 \
+       --n-clips 6 --frames 16 --out tmp/vitg-calib
+   build/test-parity models/gguf/vjepa2-vitg-fpc64-256-f32.gguf tmp/vitg-calib/vjepa2-vitg-fpc64-256 \
+       --threads 16 --samples archery_f16,bowling_f16,flying_kite_f16,high_jump_f16,high_jump2_f16,marching_f16
+   ```
+
 2. **CUDA f32/f16 sit on the GPU video tier's bars** (`rel ≤ 0.5·√(N/2048)`, mean ≥ 0.99): 5.03e-01
    against 5.0e-01 at 2048 tokens, and mean 0.989901 against 0.99 on the 64-frame bowling clip. The
    worst-token tail of a ViT-g at f16 is genuinely longer than a ViT-L's (0.33 against 0.51 at the
    same tier) — depth and width, not a defect. Every quantized tier passes on both backends, because
    their bars are the wider ones.
+
+**Which of these ctest actually gates.** Only the **f16** ViT-g configuration is registered
+(`parity-vjepa2-vitg-fpc64-256-clips`, the two 16-frame clips) — the f32 row above does not clear a
+bound calibrated on ViT-L, and the 64-frame samples take ~18 s each at 8 threads. Note what the f16
+video bar is: token-map **mean ≥ 0.99 and median ≥ 0.999**, with the worst token reported and not
+gated. For a 1 B-parameter encoder that is a wide bar — this model's worst token is 0.30 and it
+passes. The gate is a regression tripwire, not a statement that every token is faithful; the table
+above is where the per-token truth is, and `pooled_mean ≥ 0.9999` is what holds across the board.
 
 ### V-JEPA 2.1 ViT-B predictor — image vs video modality (vs the numpy spec)
 

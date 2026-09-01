@@ -4,7 +4,7 @@
 
 The whole public surface is this one header: C linkage, opaque handles (`jepa_model`, `jepa_context`), plain structs, `malloc`-returned buffers freed with `jepa_free`. Typical flow: `jepa_model_load` → `jepa_context_new` → `jepa_preprocess_*` → `jepa_encode` → `jepa_pool_*` / `jepa_head` / `jepa_predict*` / `jepa_lewm_*`.
 
-**Functions (90):** `jepa_ac_action_dim` · `jepa_ac_context_capacity` · `jepa_ac_context_free` · `jepa_ac_context_n_frames` · `jepa_ac_context_new` · `jepa_ac_context_trim` · `jepa_ac_context_update` · `jepa_ac_energy` · `jepa_ac_max_frames` · `jepa_ac_next_state` · `jepa_ac_normalize` · `jepa_ac_normalize_reps` · `jepa_ac_predict` · `jepa_ac_predict_all` · `jepa_ac_rollout` · `jepa_ac_rollout_cached` · `jepa_ac_rollout_ex` · `jepa_ac_state_dim` · `jepa_ac_tokens_per_frame` · `jepa_context_default_params` · `jepa_context_free` · `jepa_context_last_batch` · `jepa_context_last_compute_ms` · `jepa_context_max_batch` · `jepa_context_mul_mat_prec_f32` · `jepa_context_n_threads` · `jepa_context_new` · `jepa_context_set_max_batch` · `jepa_context_set_mul_mat_prec_f32` · `jepa_device_count` · `jepa_device_description` · `jepa_device_memory` · `jepa_device_name` · `jepa_encode` · `jepa_error_reset` · `jepa_error_text` · `jepa_free` · `jepa_head` · `jepa_head_ex` · `jepa_lewm_action_dim` · `jepa_lewm_n_frames` · `jepa_lewm_predict` · `jepa_lewm_project` · `jepa_lewm_project_rows` · `jepa_lewm_rollout` · `jepa_load_image_rgb` · `jepa_model_default_params` · `jepa_model_device` · `jepa_model_device_name` · `jepa_model_embed_dim` · `jepa_model_family` · `jepa_model_file_type` · `jepa_model_file_type_name` · `jepa_model_free` · `jepa_model_has_cls` · `jepa_model_has_head` · `jepa_model_has_predictor` · `jepa_model_has_projector` · `jepa_model_img_size` · `jepa_model_is_gpu` · `jepa_model_label` · `jepa_model_load` · `jepa_model_load_ex` · `jepa_model_n_bytes` · `jepa_model_n_classes` · `jepa_model_n_frames` · `jepa_model_n_head` · `jepa_model_n_layer` · `jepa_model_n_prefix_tokens` · `jepa_model_n_registers` · `jepa_model_name` · `jepa_model_patch_size` · `jepa_model_tubelet_size` · `jepa_pool_cls` · `jepa_pool_mean` · `jepa_predict` · `jepa_predict_ex` · `jepa_predict_mod` · `jepa_preprocess_default_params` · `jepa_preprocess_frames_rgb` · `jepa_preprocess_frames_rgb_ex` · `jepa_preprocess_image_file` · `jepa_preprocess_image_rgb` · `jepa_preprocess_image_rgb_ex` · `jepa_print_system_info` · `jepa_resize_antialias_u8` · `jepa_softmax` · `jepa_token_grid` · `jepa_top_k` · `jepa_version`
+**Functions (92):** `jepa_ac_action_dim` · `jepa_ac_cem_default_params` · `jepa_ac_context_capacity` · `jepa_ac_context_free` · `jepa_ac_context_n_frames` · `jepa_ac_context_new` · `jepa_ac_context_trim` · `jepa_ac_context_update` · `jepa_ac_energy` · `jepa_ac_max_frames` · `jepa_ac_next_state` · `jepa_ac_normalize` · `jepa_ac_normalize_reps` · `jepa_ac_plan` · `jepa_ac_predict` · `jepa_ac_predict_all` · `jepa_ac_rollout` · `jepa_ac_rollout_cached` · `jepa_ac_rollout_ex` · `jepa_ac_state_dim` · `jepa_ac_tokens_per_frame` · `jepa_context_default_params` · `jepa_context_free` · `jepa_context_last_batch` · `jepa_context_last_compute_ms` · `jepa_context_max_batch` · `jepa_context_mul_mat_prec_f32` · `jepa_context_n_threads` · `jepa_context_new` · `jepa_context_set_max_batch` · `jepa_context_set_mul_mat_prec_f32` · `jepa_device_count` · `jepa_device_description` · `jepa_device_memory` · `jepa_device_name` · `jepa_encode` · `jepa_error_reset` · `jepa_error_text` · `jepa_free` · `jepa_head` · `jepa_head_ex` · `jepa_lewm_action_dim` · `jepa_lewm_n_frames` · `jepa_lewm_predict` · `jepa_lewm_project` · `jepa_lewm_project_rows` · `jepa_lewm_rollout` · `jepa_load_image_rgb` · `jepa_model_default_params` · `jepa_model_device` · `jepa_model_device_name` · `jepa_model_embed_dim` · `jepa_model_family` · `jepa_model_file_type` · `jepa_model_file_type_name` · `jepa_model_free` · `jepa_model_has_cls` · `jepa_model_has_head` · `jepa_model_has_predictor` · `jepa_model_has_projector` · `jepa_model_img_size` · `jepa_model_is_gpu` · `jepa_model_label` · `jepa_model_load` · `jepa_model_load_ex` · `jepa_model_n_bytes` · `jepa_model_n_classes` · `jepa_model_n_frames` · `jepa_model_n_head` · `jepa_model_n_layer` · `jepa_model_n_prefix_tokens` · `jepa_model_n_registers` · `jepa_model_name` · `jepa_model_patch_size` · `jepa_model_tubelet_size` · `jepa_pool_cls` · `jepa_pool_mean` · `jepa_predict` · `jepa_predict_ex` · `jepa_predict_mod` · `jepa_preprocess_default_params` · `jepa_preprocess_frames_rgb` · `jepa_preprocess_frames_rgb_ex` · `jepa_preprocess_image_file` · `jepa_preprocess_image_rgb` · `jepa_preprocess_image_rgb_ex` · `jepa_print_system_info` · `jepa_resize_antialias_u8` · `jepa_softmax` · `jepa_token_grid` · `jepa_top_k` · `jepa_version`
 
 ## Types and handles
 
@@ -336,6 +336,46 @@ int  jepa_ac_context_trim(jepa_ac_context * handle, int n_keep);
 int  jepa_ac_rollout_cached(jepa_context * ctx, jepa_ac_context * handle,
                             const float * actions, const float * states,
                             int n_cand, int horizon, float * out);
+```
+
+## CEM planner
+
+```c
+// The loop V-JEPA 2-AC plans with (notebooks/utils/mpc_utils.py::cem): sample `samples` action
+// trajectories from a diagonal Gaussian, roll them all out in one batched graph per horizon step,
+// score the final frame against the goal with jepa_ac_energy, keep the `topk` elites and move the
+// mean and standard deviation towards them with momentum.
+//
+// Only FOUR of the seven action dimensions are sampled — translation (0..2) and the gripper (6);
+// the three rotation dimensions are hard zeros. That is the reference's action space, not a
+// simplification, and the clamps and momenta below all live in it.
+typedef struct {
+    int   samples;                 // candidates per iteration (K, on the graph's batch axis)
+    int   topk;                    // elites kept per iteration
+    int   cem_steps;               // iterations
+    int   horizon;                 // H, the planned action-sequence length
+    float maxnorm;                 // |dx|,|dy|,|dz| clamp and the initial translation std (0.05)
+    float gripper_clamp;           // |dgripper| clamp (0.75)
+    float momentum_mean, momentum_std;                  // translation
+    float momentum_mean_gripper, momentum_std_gripper;  // gripper
+    float round_gripper;           // zero a final |gripper| below this (0.25)
+    uint32_t seed;                 // RNG seed, used only when `noise` is NULL
+} jepa_ac_cem_params;
+
+// Every field at the reference's default (mpc_utils.py's own signature defaults).
+jepa_ac_cem_params jepa_ac_cem_default_params(void);
+
+// Plan against `goal` ([tokens_per_frame, enc_dim], normalised like the handle's latents).
+//   noise       : [cem_steps, horizon, samples, 4] standard-normal draws consumed in the reference's
+//                 order (iteration, horizon step, then the rows of one randn(samples, 4)), or NULL
+//                 to generate them from `seed`. Pass the draws to reproduce a PyTorch run: the
+//                 built-in generator is xorshift+Box-Muller, not torch's.
+//   out_actions : [horizon, action_dim] — the plan, rotation zeroed and small gripper commands
+//                 rounded away, exactly what cem() returns.
+//   out_energy  : [cem_steps] best energy per iteration, or NULL.
+int jepa_ac_plan(jepa_context * ctx, jepa_ac_context * handle, const float * goal,
+                 const jepa_ac_cem_params * params, const float * noise,
+                 float * out_actions, float * out_energy);
 
 // Meta's pose update (notebooks/utils/mpc_utils.py::compute_new_pose): translation added, rotation
 // composed as extrinsic-xyz Euler angles, gripper added and clipped to [0, 1]. `state`, `action`
