@@ -8,6 +8,18 @@ across releases.
 
 ## [Unreleased]
 
+### Added
+
+- **Python bindings** — `pip install jepa-cpp` (import `jepa_cpp`), a thin wrapper over
+  `include/jepa.h` with numpy on both ends: `Model.encode` / `pool` / `classify` / `predict` /
+  `lewm_rollout`, the file's metadata as properties, and `jepa_cpp._api` as the unwrapped header.
+  Preprocessing and every floating-point operation stay in C, so on a CPU the bindings reproduce
+  `jepa-embed` bit for bit — `python/tests/test_parity.py` gates that alongside the golden dumps.
+  The wheel bundles one self-contained shared library; `.github/workflows/wheels.yml` builds
+  manylinux x86-64 and macOS arm64.
+- **`jepa_error_reset()` / `jepa_error_text()`** — the text the library logs for a failed call,
+  readable by a caller with no stderr to read. Append-only; nothing else changes.
+
 ## [0.1.0] — 2026-09-01
 
 First release. A single C/C++ engine on [ggml](https://github.com/ggml-org/ggml) that runs seven

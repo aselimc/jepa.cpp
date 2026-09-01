@@ -39,8 +39,16 @@ __all__ = [
     "version",
 ]
 
-#: The package version. The loaded C library reports its own through :func:`version`.
-__version__ = "0.1.0.dev0"
+#: The package version, which the build reads from the repository's ``CMakeLists.txt`` — the one
+#: place the project keeps it (docs/releases.md). The *loaded* library reports its own through
+#: :func:`version`; the two differ only if ``$JEPA_CPP_LIB`` points at a library from another build.
+try:
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _dist_version
+
+    __version__ = _dist_version("jepa-cpp")
+except PackageNotFoundError:  # pragma: no cover - running from a source tree, uninstalled
+    __version__ = "0+unknown"
 
 #: Alias for :func:`version`, for when both versions are in play.
 library_version = version

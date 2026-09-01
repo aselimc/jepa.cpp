@@ -4,8 +4,9 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "jepa-cpp"
-# Tracks JEPA_VERSION in src/jepa-internal.h ("0.1.0-dev"), spelled the way PEP 440 wants it.
-version = "0.1.0.dev0"
+# The version lives in exactly one place, the root CMakeLists' project(), and everything else reads
+# it from there — jepa_version(), jepa-info --version, and this (docs/releases.md).
+dynamic = ["version"]
 description = "Python bindings for jepa.cpp — CPU/CUDA inference for the JEPA family on ggml"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -29,6 +30,11 @@ Source = "https://github.com/aselimc/jepa.cpp"
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "../CMakeLists.txt"
+regex = '''project\(jepa\.cpp VERSION (?P<value>[0-9]+\.[0-9]+\.[0-9]+)'''
 
 [tool.scikit-build]
 minimum-version = "0.10"
@@ -76,6 +82,7 @@ select = ["E", "F", "W", "I", "UP", "B"]
 
 [tool.black]
 line-length = 100
+target-version = ["py39"]   # the floor in requires-python
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

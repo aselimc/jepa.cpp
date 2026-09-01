@@ -25,8 +25,21 @@ def model(threads):
 
 def test_library_identity():
     assert jepa_cpp.library_path().is_file()
-    assert jepa_cpp.version()  # whatever JEPA_VERSION says
-    assert jepa_cpp.__version__.startswith("0.1.0")
+    assert jepa_cpp.version()  # whatever the loaded library's jepa_version() says
+
+
+def test_the_package_version_is_the_projects_version():
+    """docs/releases.md: the version lives in exactly one place, the root CMakeLists."""
+    import re
+
+    from conftest import REPO
+
+    cmakelists = REPO / "CMakeLists.txt"
+    if not cmakelists.is_file():
+        pytest.skip("no checkout here — the wheel carries the version, not its source")
+    m = re.search(r"project\(jepa\.cpp VERSION ([0-9]+\.[0-9]+\.[0-9]+)", cmakelists.read_text())
+    assert m, "CMakeLists.txt has no project() version"
+    assert jepa_cpp.__version__ == m.group(1)
 
 
 def test_a_failed_load_carries_the_c_message(tmp_path):
