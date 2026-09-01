@@ -3,6 +3,7 @@
 #include "jepa-internal.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -119,9 +120,12 @@ int jepa_device_from_env(void) {
     if (p == std::string::npos && !v.empty() && v.find_first_not_of("0123456789") == std::string::npos) {
         return atoi(v.c_str());
     }
-    static bool warned_device = false;   // the parser runs once per model and once per context
-    if (!warned_device) {
-        warned_device = true;
+    // One-shot, and any number of threads may reach it at once (the parser runs once per model and
+    // once per context). exchange() makes "have I said this already?" one atomic step, so the line
+    // is emitted exactly once and there is no data race for TSAN to find — docs/architecture.md
+    // "Robustness".
+    static std::atomic<bool> warned_device{false};
+    if (!warned_device.exchange(true)) {
         jepa_log("jepa: ignoring JEPA_DEVICE='%s' (expected cpu, cuda:N, gpu:N or a bare device index)\n", s);
     }
     return -1;
@@ -473,9 +477,8 @@ ggml_type jepa_context_kv_type(const jepa_context * ctx) {
     // 2.8x at 2048, and whose score matrix is 4*N^2*H bytes.
     if (ctx->is_gpu) {
         if (ctx->params.flash_kv == JEPA_KV_F32) {
-            static bool warned = false;
-            if (!warned) {
-                warned = true;
+            static std::atomic<bool> warned{false};
+            if (!warned.exchange(true)) {
                 jepa_log("jepa: F32 K/V was requested but no GPU flash-attention kernel keeps K/V in F32 — "
                          "they are converted to F16 before the kernel runs and the PV accumulator is F16 "
                          "either way (docs/architecture.md 'Attention and precision'). Use "
@@ -499,9 +502,8 @@ bool jepa_gpu_flash_ok(const jepa_context * ctx, int head_dim) {
     // It hits the V-JEPA 2 / 2.1 masked predictors (384-d, 12 heads) and nothing else: the encoders
     // are head_dim 64 (ViT-L/B) or 80 (I-JEPA ViT-H), and the LeWM predictor is 64.
     if (head_dim != 32) return true;
-    static bool warned = false;
-    if (!warned) {
-        warned = true;
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true)) {
         jepa_log("jepa: no GPU flash-attention kernel exists at head_dim 32, so this predictor uses the "
                  "naive mul_mat + soft_max_ext path (fully F32, and supported) — "
                  "docs/architecture.md 'GPU backend'\n");
@@ -643,10 +645,17 @@ static int jepa_encode_image(jepa_context * ctx, const jepa_input * in, jepa_out
         }
     }
 
-    const int64_t out_rows = n_items * n_tokens;
-    if (out_rows <= 0 || (double) out_rows * (double) D * sizeof(float) >= (double) SIZE_MAX) {
+    // In double, because `n_items * n_tokens` is exactly the multiply that would overflow: both
+    // factors are the caller's and int64 wraps silently into a small, wrong allocation.
+    if ((double) n_items * (double) n_tokens * (double) D * sizeof(float) >= (double) SIZE_MAX) {
         jepa_log("jepa: %lld items x %lld tokens x %lld dims does not fit in memory\n",
                  (long long) n_items, (long long) n_tokens, (long long) D);
+        return -1;
+    }
+    const int64_t out_rows = n_items * n_tokens;
+    if (out_rows <= 0) {
+        jepa_log("jepa: %lld items x %lld tokens is not a positive row count\n",
+                 (long long) n_items, (long long) n_tokens);
         return -1;
     }
     out->n_tokens = out_rows;
@@ -903,9 +912,8 @@ static int jepa_encode_video(jepa_context * ctx, const jepa_input * in, jepa_out
     }
     if (e.block_causal()) {
         const double mask_mib = 2.0 * (double) R * (double) R / mib;   // one copy
-        static bool warned_mask = false;
-        if (mask_mib > 64.0 && !warned_mask) {
-            warned_mask = true;
+        static std::atomic<bool> warned_mask{false};
+        if (mask_mib > 64.0 && !warned_mask.exchange(true)) {
             jepa_log("jepa: %lld rows put the block-causal attention mask at %.0f MiB (R x R F16), held "
                      "once on the host and once in the graph — it is the one part of this graph that "
                      "grows with the square of the clip length\n", (long long) R, mask_mib);
@@ -1036,6 +1044,11 @@ int jepa_head_ex(jepa_context * ctx, const jepa_output * enc, jepa_output * pool
         jepa_log("jepa: jepa_head: encoder rows are %lld wide, expected %d\n", (long long) enc->dim, m->hp.enc.embed_dim);
         return -1;
     }
+    if ((double) enc->n_tokens * (double) enc->dim * sizeof(float) >= (double) SIZE_MAX) {
+        jepa_log("jepa: jepa_head: %lld x %lld tokens do not fit in memory\n",
+                 (long long) enc->n_tokens, (long long) enc->dim);
+        return -1;
+    }
     const int64_t D = enc->dim, N = enc->n_tokens;
     jepa_graph_begin(ctx, (size_t) m->hp.head.n_pool_layers * 64 + 128);
     ggml_tensor * inp = ggml_new_tensor_2d(ctx->ctx_g, GGML_TYPE_F32, D, N);
@@ -1136,6 +1149,14 @@ int jepa_encode(jepa_context * ctx, const jepa_input * in, jepa_output * out) {
         jepa_log("jepa: bad input shape [%d, %d, %d, %d, %d]\n", in->n_batch, in->n_chans, in->n_frames, in->height, in->width);
         return -1;
     }
+    // These five numbers are the only description of in->data there is, so a product that does not
+    // fit a size_t is a description no buffer can match — refuse it before anything indexes with it.
+    const double n_elems = (double) in->n_batch * in->n_chans * in->n_frames * in->height * in->width;
+    if (n_elems * sizeof(float) >= (double) SIZE_MAX) {
+        jepa_log("jepa: input shape [%d, %d, %d, %d, %d] describes %.3g floats, which cannot be a buffer\n",
+                 in->n_batch, in->n_chans, in->n_frames, in->height, in->width, n_elems);
+        return -1;
+    }
     out->data = nullptr; out->n_tokens = 0; out->dim = 0;
     switch (m->hp.family) {
         case JEPA_FAMILY_IJEPA:
@@ -1166,6 +1187,13 @@ int jepa_pool_mean(const jepa_model * model, const jepa_output * enc, jepa_outpu
     if (!model || !enc || !out || !enc->data) return -1;
     const int64_t skip = jepa_model_n_prefix_tokens(model);
     const int64_t D = enc->dim, n = enc->n_tokens - skip;
+    // enc is a plain struct the caller fills in: a non-positive dim would become a huge size_t in
+    // the calloc below, and a row count under the prefix would walk backwards through the buffer.
+    if (D <= 0 || enc->n_tokens <= 0) {
+        jepa_log("jepa: jepa_pool_mean: encoder output is [%lld tokens, %lld dims]\n",
+                 (long long) enc->n_tokens, (long long) D);
+        return -1;
+    }
     if (n <= 0) return -1;
     out->n_tokens = 1;
     out->dim = D;
@@ -1186,6 +1214,11 @@ int jepa_pool_cls(const jepa_model * model, const jepa_output * enc, jepa_output
         jepa_log("jepa: jepa_pool_cls: model has no CLS token\n");
         return -1;
     }
+    if (enc->dim <= 0 || enc->n_tokens < 1) {
+        jepa_log("jepa: jepa_pool_cls: encoder output is [%lld tokens, %lld dims]\n",
+                 (long long) enc->n_tokens, (long long) enc->dim);
+        return -1;
+    }
     out->n_tokens = 1;
     out->dim = enc->dim;
     out->data = (float *) malloc((size_t) enc->dim * sizeof(float));
@@ -1202,6 +1235,10 @@ int jepa_lewm_project_rows(jepa_context * ctx, const float * cls_rows, int n_row
         return -1;
     }
     const int64_t D = m->hp.enc.embed_dim;
+    if ((double) D * (double) n_rows * sizeof(float) >= (double) SIZE_MAX) {
+        jepa_log("jepa: jepa_lewm_project_rows: %d rows of %lld do not fit in memory\n", n_rows, (long long) D);
+        return -1;
+    }
     jepa_graph_begin(ctx, 64);
     ggml_tensor * inp = ggml_new_tensor_2d(ctx->ctx_g, GGML_TYPE_F32, D, n_rows);
     ggml_set_input(inp);

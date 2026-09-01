@@ -32,7 +32,9 @@ jepa_rope3d_params jepa_predictor_rope_params(const jepa_model & m, int64_t max_
     const int grid = p.grid_size > 0 ? p.grid_size : e.grid_size();
     rp.grid_h = rp.grid_w = grid;
     const int64_t per_frame = (int64_t) grid * grid;
-    rp.grid_t = (int) (max_id / per_frame) + 1;
+    // grid 0 would divide by zero here. The loader refuses a masked predictor without a grid, so
+    // this only ever reports the impossible case; the caller turns grid_t <= 0 into an error.
+    rp.grid_t = per_frame > 0 ? (int) (max_id / per_frame) + 1 : 0;
     rp.head_dim = p.head_dim_eff();
     rp.theta = e.rope_theta;
     rp.interpolate = p.rope_interpolate;             // false for both released families
@@ -85,11 +87,13 @@ ggml_tensor * jepa_build_predictor_masked(jepa_context * ctx, ggml_tensor * inp,
         const bool image = modality == JEPA_MODALITY_IMAGE;
         ggml_tensor * mod = m->get(image ? "pred.mod_embed_img" : "pred.mod_embed_video");
         if (!mod) {
+            // Adding the wrong vector — or none — is a two-digit cosine error, so this is a refusal
+            // rather than a warning the caller can miss (see the JEPA_MODALITY_* note in jepa.h).
             jepa_log("jepa: jepa_predict: jepa.pred.modality_embed is set but pred.mod_embed_%s is missing\n",
                      image ? "img" : "video");
-        } else {
-            x = ggml_add(g, x, mod);
+            return nullptr;
         }
+        x = ggml_add(g, x, mod);
     }
 
     // 4. blocks with 3-D RoPE on q and k
@@ -141,6 +145,25 @@ static int predict_masked(jepa_context * ctx, const jepa_output * enc,
         jepa_log("jepa: jepa_predict: need n_target > 0 and n_context >= 0 (got %d / %d)\n", n_target, n_context);
         return -1;
     }
+    if (enc->n_tokens <= 0) {
+        jepa_log("jepa: jepa_predict: the encoder output holds %lld rows\n", (long long) enc->n_tokens);
+        return -1;
+    }
+    // The same $JEPA_MAX_GRAPH_MIB ceiling jepa_encode applies, for the same reason: n_context and
+    // n_target are the caller's and there is nothing else between them and the allocator.
+    {
+        const int64_t n_rows = (int64_t) n_context + n_target;
+        const double per_row = 3.0 * p.embed_dim + (double) p.ffn_dim + 8.0 * p.embed_dim;
+        const double need = (double) n_rows * per_row * sizeof(float);
+        const size_t budget = ctx->max_graph_bytes ? ctx->max_graph_bytes : JEPA_DEFAULT_MAX_GRAPH_BYTES;
+        if (need >= (double) budget) {
+            jepa_log("jepa: jepa_predict: %lld context + %lld target rows need about %.1f MiB of graph "
+                     "activations, over the %.1f MiB limit — raise $JEPA_MAX_GRAPH_MIB or predict fewer "
+                     "tokens per call\n", (long long) n_context, (long long) n_target,
+                     need / (1024.0 * 1024.0), (double) budget / (1024.0 * 1024.0));
+            return -1;
+        }
+    }
 
     // token ids: context first, then targets (the row order of the predictor input)
     std::vector<int32_t> ids((size_t) n_context + n_target);
@@ -167,6 +190,14 @@ static int predict_masked(jepa_context * ctx, const jepa_output * enc,
 
     // RoPE tables for ctx+tgt ids
     const jepa_rope3d_params rp = jepa_predictor_rope_params(*m, max_id);
+    // grid_t is derived from the largest token id, and the per-axis tables below are grid_t rows
+    // long: an id of 2^31 on a 1x1 grid would ask for 85 GiB of cos/sin before anything else runs.
+    if (rp.grid_t <= 0 || rp.grid_t > JEPA_LIMIT_N_FRAMES) {
+        jepa_log("jepa: jepa_predict: token id %lld puts the predictor grid at %d temporal slices "
+                 "(grid %dx%d, limit %d) — the ids are not positions on this model's grid\n",
+                 (long long) max_id, rp.grid_t, rp.grid_h, rp.grid_w, JEPA_LIMIT_N_FRAMES);
+        return -1;
+    }
     // AUTO: a single temporal slice on the predictor grid is the V-JEPA 2.1 image path
     // (24x24 = 576 ids for the 384-px checkpoints); anything longer is a clip.
     if (modality == JEPA_MODALITY_AUTO) {
@@ -197,6 +228,7 @@ static int predict_masked(jepa_context * ctx, const jepa_output * enc,
     ggml_set_input(sin_t);
 
     ggml_tensor * y = jepa_build_predictor_masked(ctx, inp, n_target, mask_index, modality, cos_t, sin_t);
+    if (!y) return -1;
     ggml_build_forward_expand(ctx->gf, y);
     if (!jepa_graph_alloc(ctx)) return -1;
     if (inp) ggml_backend_tensor_set(inp, rows.data(), 0, rows.size() * sizeof(float));

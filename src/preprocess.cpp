@@ -50,6 +50,9 @@ struct aa_table {
 };
 
 aa_table compute_aa_table(int in_size, int out_size, int resample) {
+    // out_size 0 would make `scale` infinite and `(int) ceil(support)` undefined; callers check, so
+    // this only closes the door.
+    if (in_size <= 0 || out_size <= 0) return aa_table{};
     const int interp_size = resample == JEPA_RESAMPLE_BICUBIC ? 4 : 2;
     double (*filter)(double) = resample == JEPA_RESAMPLE_BICUBIC ? filter_cubic : filter_linear;
     const double scale = (double) in_size / (double) out_size;
@@ -106,6 +109,11 @@ inline uint8_t clip8(int32_t acc, int prec) {
 } // namespace
 
 void jepa_resize_antialias_u8(const uint8_t * src, int h, int w, int c, uint8_t * dst, int out_h, int out_w, int resample) {
+    // Public entry point: a non-positive extent would turn into a huge size_t in the memcpy below.
+    if (!src || !dst || h <= 0 || w <= 0 || c <= 0 || out_h <= 0 || out_w <= 0) {
+        jepa_log("jepa: jepa_resize_antialias_u8: %dx%dx%d -> %dx%d is not a resize\n", h, w, c, out_h, out_w);
+        return;
+    }
     if (h == out_h && w == out_w) {
         memcpy(dst, src, (size_t) h * w * c);
         return;
@@ -181,18 +189,40 @@ uint8_t * jepa_load_image_rgb(const char * path, int * h, int * w) {
     return data;
 }
 
+// The intermediate the shortest-edge resize goes through is `resize_short` on the short side and
+// resize_short * long/short on the other, so a 16384x1 image (stb decodes up to 2^24 per axis) asks
+// for a 224 x 3.6 M buffer — 2.5 GiB — from a 48 KB file. That is the whole aspect-ratio class, and
+// the cap below is what turns it into a refusal. 64 megapixels is 25x the largest sane input
+// (8000x8000) and 260x a 224-crop model's own working set.
+#define JEPA_MAX_RESIZE_PIXELS (64ll * 1024 * 1024)
+
 // Resize + centre crop one HWC RGB frame to crop x crop (uint8), following the transformers torchvision backend.
-static void resize_crop_u8(const jepa_preprocess_params * p, const uint8_t * rgb, int h, int w, std::vector<uint8_t> & out, int * out_size) {
-    int rh, rw;
-    if (p->resize_mode == JEPA_RESIZE_SQUASH) {
-        rh = rw = p->resize_short;
-    } else if (w <= h) {
-        rw = p->resize_short;
-        rh = (int) ((double) ((int64_t) p->resize_short * h) / (double) w);
-    } else {
-        rh = p->resize_short;
-        rw = (int) ((double) ((int64_t) p->resize_short * w) / (double) h);
+// Returns false when the geometry is not something this pipeline can carry out.
+static bool resize_crop_u8(const jepa_preprocess_params * p, const uint8_t * rgb, int h, int w, std::vector<uint8_t> & out, int * out_size) {
+    if (p->resize_short <= 0) {
+        jepa_log("jepa: preprocess: resize_short is %d — nothing to resize to\n", p->resize_short);
+        return false;
     }
+    int64_t rh64, rw64;
+    if (p->resize_mode == JEPA_RESIZE_SQUASH) {
+        rh64 = rw64 = p->resize_short;
+    } else if (w <= h) {
+        rw64 = p->resize_short;
+        rh64 = (int64_t) p->resize_short * h / w;
+    } else {
+        rh64 = p->resize_short;
+        rw64 = (int64_t) p->resize_short * w / h;
+    }
+    if (rh64 < 1) rh64 = 1;
+    if (rw64 < 1) rw64 = 1;
+    if (rh64 * rw64 > JEPA_MAX_RESIZE_PIXELS) {
+        jepa_log("jepa: preprocess: %dx%d at shortest edge %d resizes to %lldx%lld = %.1f megapixels, "
+                 "over the %lld-megapixel limit — the aspect ratio, not the input size, is what makes "
+                 "this buffer large\n", h, w, p->resize_short, (long long) rh64, (long long) rw64,
+                 (double) (rh64 * rw64) / (1024.0 * 1024.0), (long long) (JEPA_MAX_RESIZE_PIXELS >> 20));
+        return false;
+    }
+    const int rh = (int) rh64, rw = (int) rw64;
     std::vector<uint8_t> resized((size_t) rh * rw * 3);
     jepa_resize_antialias_u8(rgb, h, w, 3, resized.data(), rh, rw, p->resample);
 
@@ -214,10 +244,24 @@ static void resize_crop_u8(const jepa_preprocess_params * p, const uint8_t * rgb
         memcpy(out.data() + (size_t) y * crop * 3, cur + ((size_t) (top + y) * cw + left) * 3, (size_t) crop * 3);
     }
     *out_size = crop;
+    return true;
 }
 
 float * jepa_preprocess_frames_rgb_ex(const jepa_preprocess_params * p, const uint8_t * const * frames, int n_frames, int h, int w, int * out_h, int * out_w) {
     if (!p || !frames || n_frames <= 0 || h <= 0 || w <= 0) return nullptr;
+    // The explicit-parameter entry points take this struct from the caller, so it gets the same
+    // checks jepa_hparams_from_gguf applies to jepa.pre.*: a zero std divides every pixel by zero.
+    if ((double) h * w * 3 >= (double) SIZE_MAX) {
+        jepa_log("jepa: preprocess: a %dx%d RGB frame cannot be a buffer\n", h, w);
+        return nullptr;
+    }
+    for (int c = 0; c < 3; c++) {
+        if (!(p->std[c] > 1e-9f) || !(p->std[c] < 1e9f) || !(p->rescale > 0.0f)) {
+            jepa_log("jepa: preprocess: std[%d] = %g and rescale = %g must be finite and non-zero\n",
+                     c, (double) p->std[c], (double) p->rescale);
+            return nullptr;
+        }
+    }
     // Invert the (float32) rescale factor the way the HF processors do in double: 1/0.00392156862745098
     // = 255.00000000000003 -> 255.0f. Snap to the nearest integer so that float32(1/255) round-trips.
     double invd = 1.0 / (double) p->rescale;
@@ -233,9 +277,13 @@ float * jepa_preprocess_frames_rgb_ex(const jepa_preprocess_params * p, const ui
     std::vector<uint8_t> u8;
     for (int t = 0; t < n_frames; t++) {
         int sz = 0;
-        resize_crop_u8(p, frames[t], h, w, u8, &sz);
+        if (!frames[t] || !resize_crop_u8(p, frames[t], h, w, u8, &sz) || sz <= 0) { free(out); return nullptr; }
         if (!out) {
             crop = sz;
+            if ((double) 3 * n_frames * crop * crop * sizeof(float) >= (double) SIZE_MAX) {
+                jepa_log("jepa: preprocess: %d frames of %dx%d floats do not fit in memory\n", n_frames, crop, crop);
+                return nullptr;
+            }
             out = (float *) malloc((size_t) 3 * n_frames * crop * crop * sizeof(float));
             if (!out) return nullptr;
         }

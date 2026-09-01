@@ -152,6 +152,15 @@ bool probe(const std::string & path, probe_result & pr, std::string & err) {
         err = path + ": no video stream (ffprobe reported no frame size)";
         return false;
     }
+    // ffprobe reads these out of the container, i.e. out of a file nobody here wrote. decode_pass
+    // sizes its buffers as width*height*3 per kept frame, so an 8K x 8K claim is a 1.5 GiB
+    // allocation from a header field. 16384 is twice the largest real format (8K UHD).
+    const int MAX_EDGE = 16384;
+    if (pr.width > MAX_EDGE || pr.height > MAX_EDGE) {
+        err = path + ": the container reports " + std::to_string(pr.width) + "x" + std::to_string(pr.height) +
+              " frames, past the " + std::to_string(MAX_EDGE) + "-pixel edge this decoder accepts";
+        return false;
+    }
     if (pr.n_frames <= 0) {
         // Matroska/WebM and any stream-copied container carry no frame count: count them the only
         // exact way there is, by decoding. Cheap for the clip sizes these models take (40-60 ms for
@@ -172,6 +181,11 @@ bool probe(const std::string & path, probe_result & pr, std::string & err) {
 bool decode_pass(const std::string & path, const probe_result & pr, const std::vector<int> & idx,
                  std::vector<uint8_t> & out, int * seen, std::string & err) {
     const size_t fsz = (size_t) pr.width * pr.height * 3;
+    if (fsz == 0 || idx.size() > (size_t) -1 / fsz) {
+        err = path + ": " + std::to_string(idx.size()) + " frames of " + std::to_string(fsz) +
+              " bytes do not fit in memory";
+        return false;
+    }
     out.assign(idx.size() * fsz, 0);
 
     FILE * p = JEPA_POPEN(decode_command(path).c_str(), "r");

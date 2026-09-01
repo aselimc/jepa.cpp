@@ -132,6 +132,17 @@ extern "C" int jepa_lewm_predict(jepa_context * ctx, const float * embs, const f
                  n_frames, p.n_frames);
         return -1;
     }
+    // The causal mask is the one T^2 term here; the rest is linear. Same ceiling as everywhere else.
+    {
+        const size_t budget = ctx->max_graph_bytes ? ctx->max_graph_bytes : JEPA_DEFAULT_MAX_GRAPH_BYTES;
+        const double need = 2.0 * 2.0 * (double) T * (double) T + (double) T * (D + A) * sizeof(float);
+        if (need >= (double) budget) {
+            jepa_log("jepa: jepa_lewm_predict: %d frames need about %.1f MiB of graph memory, over the "
+                     "%.1f MiB limit ($JEPA_MAX_GRAPH_MIB)\n", n_frames, need / (1024.0 * 1024.0),
+                     (double) budget / (1024.0 * 1024.0));
+            return -1;
+        }
+    }
 
     jepa_graph_begin(ctx, (size_t) p.n_layer * 64 + 128);
     ggml_context * g = ctx->ctx_g;
@@ -181,23 +192,36 @@ extern "C" int jepa_lewm_rollout(jepa_context * ctx, const float * embs, int n_s
     const int64_t D = p.embed_dim, A = p.action_dim;
     const int win = p.n_frames > 0 ? p.n_frames : 1;
 
+    // `n_seed + n_steps` in int overflows before the cast, so the sum is taken in int64 and the
+    // buffer it sizes is checked against SIZE_MAX before it is asked for.
+    const int64_t n_seq = (int64_t) n_seed + n_steps;
+    const size_t budget = ctx->max_graph_bytes ? ctx->max_graph_bytes : JEPA_DEFAULT_MAX_GRAPH_BYTES;
+    if ((double) n_seq * (double) D * sizeof(float) >= (double) budget) {
+        jepa_log("jepa: jepa_lewm_rollout: %d seed + %d step frames of %lld need %.1f MiB for the "
+                 "sequence buffer alone, over the %.1f MiB limit ($JEPA_MAX_GRAPH_MIB)\n",
+                 n_seed, n_steps, (long long) D,
+                 (double) n_seq * (double) D * sizeof(float) / (1024.0 * 1024.0),
+                 (double) budget / (1024.0 * 1024.0));
+        return -1;
+    }
     // Growing frame sequence: the seeds, then one predicted embedding per step.
-    std::vector<float> seq((size_t) (n_seed + n_steps) * D);
+    std::vector<float> seq((size_t) n_seq * D);
     memcpy(seq.data(), embs, (size_t) n_seed * D * sizeof(float));
 
     std::vector<float> win_emb((size_t) win * D), win_act((size_t) win * A);
     double total_ms = 0;
     for (int step = 0; step < n_steps; step++) {
-        const int have = n_seed + step;                 // frames known so far
-        const int w = have < win ? have : win;          // window length
-        const int first = have - w;                     // global index of the first window frame
+        // int64 throughout: `n_seed + step` is a sum of two caller-supplied ints
+        const int64_t have = (int64_t) n_seed + step;   // frames known so far
+        const int w = have < win ? (int) have : win;    // window length
+        const int64_t first = have - w;                 // global index of the first window frame
         memcpy(win_emb.data(), seq.data() + (size_t) first * D, (size_t) w * D * sizeof(float));
         for (int i = 0; i < w; i++) {
             // Frame j uses the action of the step that produced its successor; the seed frames
             // before the last one have no action of their own and reuse actions[0].
-            int ai = first + i - (n_seed - 1);
+            int64_t ai = first + i - ((int64_t) n_seed - 1);
             if (ai < 0) ai = 0;
-            if (ai > n_steps - 1) ai = n_steps - 1;
+            if (ai > (int64_t) n_steps - 1) ai = n_steps - 1;
             memcpy(win_act.data() + (size_t) i * A, actions + (size_t) ai * A, (size_t) A * sizeof(float));
         }
         jepa_output step_out = {};
