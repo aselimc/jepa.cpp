@@ -213,10 +213,42 @@ then pool, predict or classify. The complete reference is on the [C API page](ap
 
 ```c
 jepa_model   * m = jepa_model_load("models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf", false);
-jepa_context * c = jepa_context_new(m, NULL);
-jepa_encode_image_file(c, "img.jpg");
-const float * f = jepa_pooled(c, JEPA_POOL_CLS);
+jepa_context * c = jepa_context_new(m, jepa_context_default_params());
+
+int h = 0, w = 0;
+float * x = jepa_preprocess_image_file(m, "img.jpg", &h, &w);   // NCTHW, N = T = 1
+jepa_input  in  = { x, 1, 3, 1, h, w };
+jepa_output enc = {0}, cls = {0};
+jepa_encode(c, &in, &enc);        // enc.data = [n_tokens, embed_dim]
+jepa_pool_cls(m, &enc, &cls);     // cls.data = [embed_dim]
+// every .data above is the caller's: jepa_free(cls.data), jepa_free(enc.data), jepa_free(x)
 ```
+
+### Python bindings
+
+`pip install jepa-cpp` puts the same engine behind numpy — a thin wrapper over `include/jepa.h`,
+with the preprocessing, the graph and every floating-point operation still on the C side. The wheel
+carries one self-contained shared library, so it needs neither ggml nor a compiler. A source build,
+`pip install ./python` from a recursive clone, is the route to a `-march=native` or CUDA-enabled
+library, and `$JEPA_CPP_LIB` points an installed package at one built by hand.
+
+```python
+import jepa_cpp
+
+with jepa_cpp.Model("models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf", threads=32) as m:
+    tokens  = m.encode("img.jpg")                 # [197, 384] float32
+    feature = m.encode("img.jpg", pool="cls")     # [384]
+    batch   = m.encode(["a.jpg", "b.jpg"], pool="cls")   # [2, 384], one encoder graph
+
+with jepa_cpp.Model("models/gguf/vjepa2-vitl-fpc16-256-ssv2-f16.gguf", device="cuda:0") as m:
+    print(m.classify(frames_thwc_uint8).top(5))   # [(index, label, probability), ...]
+```
+
+`Model` also carries `pool`, `predict`, `classify`, `lewm_project`, `lewm_predict` and
+`lewm_rollout`, and the file's metadata as properties; `jepa_cpp._api` is the unwrapped header, one
+Python name per C name. On a CPU the bindings reproduce `jepa-embed`'s output bit for bit, which
+`python/tests/test_parity.py` gates against the tools and the golden dumps alike. The package's own
+reference is [`python/README.md`](https://github.com/aselimc/jepa.cpp/blob/main/python/README.md).
 
 ## Tests
 

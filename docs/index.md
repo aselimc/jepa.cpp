@@ -8,7 +8,8 @@ preprocessing recipe, class labels — so at run time the requirement is one bin
 is no Python in the inference path and no per-model C++ code: a new checkpoint of a known family is a
 converter run, because the loader builds the graph from the file's metadata. Seven model bundles of
 six families ship today — image and video embedding, video classification, latent-space prediction
-and action-conditioned world-model rollout — through four command-line tools and one C header.
+and action-conditioned world-model rollout — through four command-line tools, one C header, and a
+Python package (`pip install jepa-cpp`) that wraps that header and returns numpy arrays.
 
 ![jepa.cpp in four numbers: the same SSv2 validation top-1 as PyTorch, faster on a CPU,
 much faster on one GPU, and half the weights at q8_0, over a bar chart of one image
