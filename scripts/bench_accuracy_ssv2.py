@@ -433,6 +433,20 @@ def _manifest(cj: dict, index: dict, n: int) -> dict:
                     f"{n} validation clips, in clips.json order", "clips": out}
 
 
+def _commit(prev: dict, restamp: bool) -> str:
+    """The revision this artifact's numbers were first written at.
+
+    Stamping the checkout's HEAD on every `report` would make the file change every time the
+    documents are regenerated, which is exactly the round-trip the frame-cache fallback exists to
+    protect; the sweep's own revision is also the honest answer, since a later `report` re-derives
+    the same metrics from the same logits.  `--restamp` takes the current HEAD instead.
+    """
+    if prev.get("commit") and not restamp:
+        return prev["commit"]
+    return subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
+                          capture_output=True, text=True).stdout.strip()
+
+
 def _relpath(p: Path) -> str:
     """Repo-relative when it can be, absolute when it cannot.
 
@@ -627,8 +641,7 @@ def stage_report(a) -> None:
         "benchmark": "Something-Something-v2 validation accuracy (single view) — "
                      "PyTorch vs jepa.cpp",
         "date": time.strftime("%Y-%m-%d"),
-        "commit": subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
-                                 capture_output=True, text=True).stdout.strip(),
+        "commit": _commit(prev, a.restamp),
         "model": {"name": MODEL, "label": LABEL, "hf": "facebook/" + MODEL,
                   "head": "attentive pooler (3 blocks + cross-attention) + 174-way linear",
                   "gguf": f"models/gguf/{MODEL}-<dtype>.gguf"},
@@ -733,6 +746,9 @@ def main() -> None:
                    help="frame cache the manifest digests (default data/ssv2/frames-val)")
     s.add_argument("--manifest-clips", type=int, default=16,
                    help="how many clip tensors to digest into the committed manifest")
+    s.add_argument("--restamp", action="store_true",
+                   help="record the current HEAD as `commit` instead of keeping the revision the "
+                        "artifact was first written at")
     s.add_argument("--out-json", default=str(ROOT / "tests" / "results" / "accuracy-ssv2.json"),
                    help="the committed artifact; `bench_accuracy_video.py report` renders its "
                         "tables into docs/accuracy-video.md")
