@@ -300,9 +300,19 @@ of machine). The parity suites register at CMake configure time and need `models
 `tests/fixtures/ref/` populated, so re-run `cmake` once after downloading and converting. The
 methodology is in [Architecture → testing and parity](architecture.md#testing-and-parity-methodology).
 
-There is **no build or test CI**: `.github/workflows/` holds only the documentation job, so `ctest`
-runs on developer machines. A CPU build-and-test job and a compile-only CUDA job are the obvious
-additions whenever CI is set up.
+CI runs on every push to `main` and every pull request (`.github/workflows/ci.yml`): a build and
+`ctest` on Ubuntu 22.04, Ubuntu 24.04 and macOS arm64, a Metal build on macOS, an MSVC build on
+Windows, and an ASAN+UBSAN build with `detect_leaks=1`. A runner has no converted weights, so those
+jobs run the two suites that need none — `ops` and `attn`. A separate `parity` job fetches the
+LeJEPA and LeWorldModel GGUFs and their reference dumps from the Hugging Face hub and runs the
+`parity-*`, `predictor-lewm`, `batch` and `backend` suites on top; while those files are unpublished
+it says so and stops. The same workflow gates the generated documentation — `gen_api_md.py --check`,
+both figure scripts, `render_accuracy_md.py --check`, `mkdocs build --strict` and `shellcheck`.
+
+The CUDA build is not in CI, because GitHub-hosted runners have no NVIDIA device: `-DJEPA_CUDA=ON`
+and the `backend` suite on a GPU stay a developer-machine check. `docs/benchmarks.md` has no CI gate
+either — it is rebuilt from a sweep directory measured on a known-idle box, and
+`scripts/gen_benchmarks_md.py --check` is the local gate for it.
 
 ## Documentation
 

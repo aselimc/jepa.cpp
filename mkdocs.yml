@@ -56,6 +56,7 @@ validation:
 nav:
   - Overview: index.md
   - Getting started: getting-started.md
+  - Releases: releases.md
   - Architecture: architecture.md
   - GGUF format: gguf-schema.md
   - Benchmarks:

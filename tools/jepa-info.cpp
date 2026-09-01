@@ -10,10 +10,11 @@
 
 static void usage(const char * argv0) {
     fprintf(stderr, "usage: %s model.gguf [--no-tensors] [--kv]\n"
-                    "       %s --devices\n"
+                    "       %s --devices | --version\n"
                     "  --no-tensors   skip the tensor table\n"
                     "  --kv           also dump every general.* / jepa.* key verbatim\n"
-                    "  --devices      list the GPU devices the ggml backend registry can see\n", argv0, argv0);
+                    "  --devices      list the GPU devices the ggml backend registry can see\n"
+                    "  --version      print the engine version (jepa_version()) and exit\n", argv0, argv0);
 }
 
 int main(int argc, char ** argv) {
@@ -21,6 +22,8 @@ int main(int argc, char ** argv) {
     const char * path = nullptr;
     bool tensors = true, kv = false, devices = false;
     for (int i = 1; i < argc; i++) {
+        // --version answers without a model, so a packaged binary can be identified on its own.
+        if (strcmp(argv[i], "--version") == 0) { printf("%s\n", jepa_version()); return 0; }
         if (strcmp(argv[i], "--no-tensors") == 0) tensors = false;
         else if (strcmp(argv[i], "--kv") == 0) kv = true;
         else if (strcmp(argv[i], "--devices") == 0) devices = true;
