@@ -1,0 +1,89 @@
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "jepa-cpp"
+# The version lives in exactly one place, the root CMakeLists' project(), and everything else reads
+# it from there — jepa_version(), jepa-info --version, and this (docs/releases.md).
+dynamic = ["version"]
+description = "Python bindings for jepa.cpp — CPU/CUDA inference for the JEPA family on ggml"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "jepa.cpp contributors" }]
+keywords = ["jepa", "i-jepa", "v-jepa", "ggml", "inference", "embeddings", "world-model"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["numpy>=1.21"]
+
+[project.urls]
+Homepage = "https://github.com/aselimc/jepa.cpp"
+Documentation = "https://aselimc.github.io/jepa.cpp/"
+Source = "https://github.com/aselimc/jepa.cpp"
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "../CMakeLists.txt"
+regex = '''project\(jepa\.cpp VERSION (?P<value>[0-9]+\.[0-9]+\.[0-9]+)'''
+
+[tool.scikit-build]
+minimum-version = "0.10"
+cmake.version = ">=3.24"
+cmake.source-dir = "."
+cmake.build-type = "Release"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/jepa_cpp"]
+# There is no CPython extension module here — the wheel carries one plain shared library and pure
+# Python — so one build serves every interpreter of a platform.
+wheel.py-api = "py3"
+# python/ is not self-contained — CMakeLists.txt builds the engine from the repository around it —
+# so the distribution channel is wheels, and a source build means a recursive clone. An sdist of
+# python/ alone would configure and then fail with the message in CMakeLists.txt.
+sdist.exclude = ["build", "tests/__pycache__"]
+
+[tool.cibuildwheel]
+# Wheels that leave this machine must not be compiled for this machine's CPU.
+build = "cp39-*"
+skip = ["*-musllinux_*", "*_i686", "*-win32"]
+build-frontend = "build"
+test-requires = "pytest"
+# The parity suite needs GGUF files and golden dumps that are not in the repository; the smoke test
+# is that the wheel imports, finds its library and can read the version out of it.
+test-command = "python -c \"import jepa_cpp; print(jepa_cpp.__version__, jepa_cpp.library_path())\""
+environment = { CMAKE_ARGS = "-DJEPA_PY_NATIVE=OFF" }
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64"]
+manylinux-x86-64-image = "manylinux_2_28"
+
+[tool.cibuildwheel.macos]
+archs = ["arm64"]
+environment = { CMAKE_ARGS = "-DJEPA_PY_NATIVE=OFF", MACOSX_DEPLOYMENT_TARGET = "11.0" }
+
+# ruff lints, black formats — `ruff check python` and `black python` from the repository root.
+# (`ruff format` is deliberately not part of the loop: it disagrees with black on where to break an
+# `assert cond, "message"`, and running two formatters over one tree only produces churn.)
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]   # the floor in requires-python
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error"]

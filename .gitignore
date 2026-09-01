@@ -5,6 +5,12 @@
 /.venv/
 __pycache__/
 *.pyc
+# python bindings: scikit-build-core's build tree, wheels and pytest scratch
+/python/build/
+/python/dist/
+/python/**/*.egg-info/
+.pytest_cache/
+/wheelhouse/
 # weights (kept on disk in-repo, never committed)
 /models
 *.gguf

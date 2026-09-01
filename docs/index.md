@@ -8,7 +8,8 @@ preprocessing recipe, class labels — so at run time the requirement is one bin
 is no Python in the inference path and no per-model C++ code: a new checkpoint of a known family is a
 converter run, because the loader builds the graph from the file's metadata. Seven model bundles of
 six families ship today — image and video embedding, video classification, latent-space prediction
-and action-conditioned world-model rollout — through four command-line tools and one C header. The
+and action-conditioned world-model rollout — through four command-line tools, one C header, and a
+Python package (`pip install jepa-cpp`) that wraps that header and returns numpy arrays. The
 converted files are published on Hugging Face under [**jepacpp**](https://huggingface.co/jepacpp), so
 converting anything yourself is optional: `scripts/download_models.sh` fetches them.
 

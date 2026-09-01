@@ -151,6 +151,10 @@ The C API is one header, [`include/jepa.h`](include/jepa.h) — opaque handles, 
 types. Load a model, make a context, `jepa_encode`, then pool or predict. The full reference is on the
 [API page](https://aselimc.github.io/jepa.cpp/api/).
 
+To call the same engine from Python, `pip install jepa-cpp` wraps that header behind numpy arrays —
+preprocessing, graph and arithmetic all still in C, and bit-identical to `jepa-embed` on a CPU
+([`python/README.md`](python/README.md)).
+
 ## How it works, in one paragraph
 
 The seven models of six families run one shared ViT graph: patchify (a host-side rearrangement plus one matmul), add

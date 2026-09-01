@@ -276,6 +276,22 @@ bool         jepa_model_is_gpu(const jepa_model * model);
 void jepa_context_set_mul_mat_prec_f32(jepa_context * ctx, bool on);
 bool jepa_context_mul_mat_prec_f32(const jepa_context * ctx);
 
+// ======================================================================================
+// APPEND-ONLY: diagnostics capture (src/jepa.cpp) — for callers with no stderr to read.
+// ======================================================================================
+
+// Every diagnostic this library emits — the reason an entry point returned -1 or NULL included —
+// is written to stderr through a single internal function. A language binding that has to turn a
+// failed call into an error value cannot read that stream, so the same text is also appended to a
+// per-thread capture buffer: call jepa_error_reset() to empty it, make the call, and on failure
+// read jepa_error_text() for the message. Both the buffer and the reset are thread-local, so a
+// capture only ever sees the lines the calling thread produced, and neither changes what is
+// written to stderr. The buffer holds the last few kilobytes and is truncated beyond that; it also
+// collects the informational lines of a verbose model load, which is why it is worth resetting
+// immediately before the call whose failure you want to describe.
+void         jepa_error_reset(void);
+const char * jepa_error_text(void);   // never NULL; "" when nothing was logged since the reset
+
 #ifdef __cplusplus
 }
 #endif

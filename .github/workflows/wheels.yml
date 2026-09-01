@@ -1,0 +1,40 @@
+# Builds the jepa-cpp wheels. Deliberately separate from ci.yml / release.yml: those own the C++
+# build and the tagged binaries, this one only drives cibuildwheel over python/, whose whole
+# configuration lives in python/pyproject.toml ([tool.cibuildwheel]).
+#
+# It builds and uploads artifacts; it does not publish. Pushing to PyPI is a step for release.yml
+# to add over these artifacts once a token exists.
+name: wheels
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]   # manylinux x86-64 and macOS arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The wheel compiles ggml from the submodule, and python/CMakeLists.txt builds against
+          # the checkout around python/, so a shallow copy of python/ alone is not enough.
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: pypa/cibuildwheel@v2.21
+        with:
+          package-dir: python
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
