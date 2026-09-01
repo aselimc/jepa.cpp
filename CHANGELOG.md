@@ -8,6 +8,10 @@ across releases.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] — 2026-09-02
+
 ### Added
 
 - **V-JEPA 2-AC, the action-conditioned world model** (`jepa.pred.kind = "ac"`). One GGUF bundle
