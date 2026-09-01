@@ -312,4 +312,41 @@ bool jepa_context_mul_mat_prec_f32(const jepa_context * ctx);
 // immediately before the call whose failure you want to describe.
 void         jepa_error_reset(void);
 const char * jepa_error_text(void);   // never NULL; "" when nothing was logged since the reset
+
+// ======================================================================================
+// Thread safety
+//
+// The contract, which tests/test-threads.cpp checks and docs/architecture.md "Robustness"
+// repeats:
+//
+//   jepa_model    — immutable once jepa_model_load returns. Any number of threads may share one
+//                   model and call every introspection entry point (jepa_model_*), the
+//                   preprocessing entry points and jepa_pool_* on it concurrently. The weights are
+//                   read, never written, after load. The one exception is jepa_model_free, which
+//                   must not overlap with any use of that model or of a context built from it.
+//   jepa_context  — one per thread. It owns the graph arena, the graph allocator and the
+//                   last-call statistics, all of which every jepa_encode / jepa_predict /
+//                   jepa_head / jepa_lewm_* call rewrites, so two threads must never be inside one
+//                   context at the same time. Build a context per thread from the shared model:
+//                   contexts of one model are independent and never touch each other's state.
+//                   Concurrent encodes are bit-identical to running them one after another, at the
+//                   same n_threads, on the CPU.
+//   jepa_error_reset / jepa_error_text — thread-local. A capture only ever holds the lines the
+//                   calling thread produced, which is what makes it usable from a worker pool.
+//   preprocessing — jepa_preprocess_*, jepa_load_image_rgb, jepa_resize_antialias_u8,
+//                   jepa_softmax and jepa_top_k keep no state at all and are re-entrant.
+//   diagnostics   — the "said once" warnings (JEPA_DEVICE, the GPU K/V and flash-attention notes,
+//                   the mask-size note) are published atomically: at most one thread prints, and
+//                   no thread races.
+//   devices       — the ggml backend registry is loaded on first use behind the C++ static
+//                   initialisation guarantee, so jepa_device_count / jepa_device_name and a
+//                   concurrent first jepa_model_load are safe together.
+//
+// Also: n_threads is the width of the ggml thread pool INSIDE one graph. Raising it parallelises
+// one call; a context per thread parallelises calls. Doing both oversubscribes the machine.
+//
+// Freed handles follow C's usual rule: a jepa_model * or jepa_context * that has been passed to its
+// free function must not be used again, exactly as with free(). Passing NULL to any entry point is
+// defined — it returns an error or is a no-op — but a stale pointer is not.
+// ======================================================================================
 ```
