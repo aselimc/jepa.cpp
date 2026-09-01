@@ -333,10 +333,10 @@ required-tensor checks run once the tensors are resident and before any graph is
 | every `jepa.*` float | not finite, or outside its range — `ln_eps` ∈ [0, 1], `rope_theta` > 0, `jepa.pre.std` ≠ 0 |
 | enum-valued strings | unknown `jepa.enc.act`, `jepa.enc.attn_mode`, `jepa.pred.act`, `jepa.pred.action_act`, `jepa.pred.proj_act` |
 | `attn_mode = block_causal` | on a family whose graph has no mask, where it would run unmasked |
-| derived invariants | `embed_dim % n_head`; a masked predictor with no position grid; a LeWM predictor with no `action_dim` or `n_frames` |
+| derived invariants | `embed_dim % n_head`; an odd head width on a 3-D RoPE family (it rotates pairs); `rope_interpolate` with no `rope_ref_grid` to rescale from; a masked predictor with no position grid; a LeWM predictor with no `action_dim` or `n_frames` |
 | tensor extent | any tensor whose bytes are not inside the file (a truncated download; the header alone can promise terabytes) |
 | tensor dtype | anything that is not f32, f16, bf16 or a quantized type; and, for the operands the graph adds, multiplies or concatenates — norms, biases, layer scales, CLS and register tokens, position tables, mask tokens, modality vectors — anything that is not f32 |
-| tensor shape | every weight, bias and vector of every encoder, predictor and head block against the hparams |
+| tensor shape | every weight, bias and vector of every encoder, predictor and head block against the hparams; and every table a metadata count indexes into (`pred.mask_tokens` against `n_mask_tokens`, `pred.pos_embed` against `n_frames`) |
 | required tensors | a predictor or head the metadata promises and the tensors do not deliver |
 
 **What is refused at call time.** Non-positive or overflowing input shapes; an encoder output header
