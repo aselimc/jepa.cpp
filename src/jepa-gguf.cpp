@@ -837,6 +837,10 @@ jepa_model * jepa_model_load_ex(const char * gguf_path, const jepa_model_params 
     if (!m->patch_embed_w) { jepa_log("jepa: enc.patch_embed.weight missing\n"); ok = false; }
     ok &= check_shape(*m, "enc.patch_embed.weight", patch_in, D);
     ok &= check_vec(*m, "enc.patch_embed.bias", D);
+    // The V-JEPA 2.1 image tokenizer: the same rows minus the tubelet, and its output is added to
+    // the modality vector, so its width has to be D as well (jepa_video_shape_for checks only ne[0]).
+    ok &= check_shape(*m, "enc.patch_embed_img.weight", (int64_t) e.in_chans * e.patch_size * e.patch_size, D);
+    ok &= check_vec(*m, "enc.patch_embed_img.bias", D);
     ok &= check_shape(*m, "enc.pos_embed", D);
     ok &= check_vec(*m, "enc.cls_token", D);
     ok &= check_vec(*m, "enc.norm.weight", D);
