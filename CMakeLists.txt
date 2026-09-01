@@ -182,6 +182,26 @@ if(JEPA_BUILD_TESTS)
                ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf --threads 8)
     endif()
   endif()
+  # The tools' ffmpeg ingest against the frame tensors PyAV produced for the reference dumps: same
+  # count, same indices, same pixels. Registered when the (git-ignored) reference dumps and their
+  # source clips are present; the binary itself exits 0 with a "skipped" line when ffmpeg is absent,
+  # so a checkout without it costs nothing. ~2 s.
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-video.cpp)
+    add_executable(test-video tests/test-video.cpp tools/video-decode.cpp)
+    target_include_directories(test-video PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/src
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+    set(_video_refs "")
+    foreach(_ref vjepa2_1-vitb-384 vjepa2-vitl-fpc64-256 vjepa2-vitl-fpc16-256-ssv2 levjepa-vitl16)
+      if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/${_ref}/manifest.json)
+        list(APPEND _video_refs --ref ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/${_ref})
+      endif()
+    endforeach()
+    if(_video_refs AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/media/archery.mp4)
+      add_test(NAME video COMMAND test-video --media ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/media
+                                  ${_video_refs})
+    endif()
+  endif()
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-attn.cpp)
     add_executable(test-attn tests/test-attn.cpp)
     target_link_libraries(test-attn PRIVATE ggml)
