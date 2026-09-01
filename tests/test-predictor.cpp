@@ -478,6 +478,25 @@ static void run_ac(jepa_context * ctx, jepa_model * model, const std::string & r
                best_got, best_ref, best_got == best_ref ? "OK" : "FAIL");
     }
 
+    // ---- 5b. caller-supplied poses == the ones jepa_ac_next_state generates. The dump stores the
+    // poses compute_new_pose produced for every candidate and step, so passing them in explicitly has
+    // to reproduce the states = NULL run exactly (jepa_ac_next_state matches scipy bit-for-bit above).
+    {
+        std::vector<float> st_seq = npy::load(ro + ".states_seq.npy").to_f32();   // [K, H, S]
+        std::vector<float> out2((size_t) K * H * HW * D);
+        if (jepa_ac_rollout(ctx, seed.data(), 1, st0.data(), acts.data(), st_seq.data(), K, H, out2.data()) != 0) {
+            printf("  rollout with explicit states failed\n");
+            g_fail++;
+        } else {
+            double worst = 0;
+            for (size_t i = 0; i < out2.size(); i++) worst = std::fmax(worst, std::fabs(out2[i] - out[i]));
+            const bool ok = worst == 0.0;
+            if (!ok) g_fail++;
+            printf("  %-44s max|d| = %.3e  %s\n", "explicit states == jepa_ac_next_state", worst,
+                   ok ? "OK (bit-identical)" : "FAIL");
+        }
+    }
+
     // ---- 6. batched K == K sequential single-candidate rollouts
     {
         std::vector<float> seq_out((size_t) K * H * HW * D);

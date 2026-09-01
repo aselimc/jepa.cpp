@@ -11,6 +11,7 @@ the graph the C++ side has to build.
   selftest.py --gguf models/gguf/lewm-pusht-f32.gguf --src models/quentinll/lewm-pusht --lewm-src tmp/<branch>/stable-worldmodel
   selftest.py --gguf models/gguf/ijepa_vith14_1k-f16.gguf --src models/facebook/ijepa_vith14_1k --n-images 2
   selftest.py --gguf models/gguf/levjepa-vitl16-f32.gguf --src models/galilai-group/LeVJEPA-VideoMix-Large --n-images 1
+  selftest.py --gguf models/gguf/vjepa2-ac-vitg-f32.gguf --ac-ref tests/fixtures/ref/vjepa2-ac-vitg
 
 Reference models: hfvit -> timm VisionTransformer (same block math as DINOv2 ViTv2, loaded from
 the safetensors); lewm -> transformers ViTModel + stable_worldmodel.wm.lewm.module (Predictor,
@@ -543,20 +544,60 @@ def ref_lewm(src: Path, m: Model, lewm_src: Path | None):
     return run_enc, run_proj, run_pred
 
 
+# ----------------------------------------------------------------------------- V-JEPA 2-AC check
+def check_ac(m: Model, ref: Path, tol: float | None) -> bool:
+    """Run ac_predictor_forward on the GGUF alone and compare with Meta's own dump.
+
+    The dump is produced by `scripts/dump_reference.py --model vjepa2-ac-vitg`, which runs
+    facebookresearch/vjepa2's `vjepa2_ac_vit_giant` on its Franka demo trajectory. Nothing here
+    imports torch: the point of the numpy spec is that it re-derives the graph from the file.
+    """
+    types = m.tensor_types()
+    is_q = any(k not in ("F32", "F16") for k in types)
+    if tol is None:
+        tol = 2e-1 if is_q else 2e-2 if "F16" in types else 1e-4
+    print(f"{m.hp['general.name']}: tensor types={types} tol(rel)={tol}  ref={ref}")
+    ok = True
+    ctx = np.load(ref / "step1.context.npy")
+    act = np.load(ref / "step1.action.npy")[None]
+    st = np.load(ref / "step1.state.npy")[None]
+    ok &= report("step1 pred_next (T=1)", ac_predictor_forward(m, ctx, act, st),
+                 np.load(ref / "step1.pred_next.npy"), tol)
+    ctx2 = np.load(ref / "step2.context_seq.npy")
+    got2 = ac_predictor_forward(m, ctx2, np.load(ref / "step2.action_seq.npy"),
+                                np.load(ref / "step2.state_seq.npy"))
+    want2 = np.load(ref / "step2.pred_seq.npy")
+    ok &= report("step2 pred_seq (T=2, all rows)", got2, want2, tol)
+    # block-causality: the T = 1 answer has to BE row block 0 of the T = 2 run
+    hw = m.hp["jepa.pred.grid_size"] ** 2
+    ok &= report("causal: T=1 == T=2 block 0", ac_predictor_forward(m, ctx, act, st), got2[:hw], tol)
+    print("RESULT:", "PASS" if ok else "FAIL")
+    return ok
+
+
 # ----------------------------------------------------------------------------- main
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--gguf", required=True)
-    ap.add_argument("--src", required=True, help="source checkpoint directory (for the PyTorch reference)")
+    ap.add_argument("--src", default=None, help="source checkpoint directory (for the PyTorch reference)")
+    ap.add_argument("--ac-ref", default=None, metavar="REFDIR",
+                    help="V-JEPA 2-AC: check ac_predictor_forward against a dump from "
+                         "scripts/dump_reference.py --model vjepa2-ac-vitg (tests/fixtures/ref/vjepa2-ac-vitg). "
+                         "Needs no PyTorch and no source checkpoint.")
     ap.add_argument("--lewm-src", default=None, help="checkout of stable-worldmodel (for the LeWM predictor reference)")
     ap.add_argument("--n-images", type=int, default=3)
     ap.add_argument("--tol", type=float, default=None, help="max relative error (default 1e-4 f32 / 2e-2 f16)")
     ap.add_argument("--threads", type=int, default=16)
     args = ap.parse_args(argv)
 
+    m = Model(args.gguf)
+    if args.ac_ref:
+        return 0 if check_ac(m, Path(args.ac_ref), args.tol) else 1
+    if not args.src:
+        ap.error("--src is required unless --ac-ref is given")
+
     import torch
     torch.set_num_threads(args.threads)
-    m = Model(args.gguf)
     fam = m.hp["jepa.family"]
     types = m.tensor_types()
     is_q = any(k not in ("F32", "F16") for k in types)  # quantized by tools/jepa-quantize

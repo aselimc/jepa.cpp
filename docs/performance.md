@@ -146,6 +146,50 @@ the predictor and LeWM rows, whose GPU column was re-measured with the 2026-09-0
 three `test-predictor --gpu 0` launches per file); `jepa-bench --gpu 0` for the head row, which is a
 row of `tests/results/benchmarks-gpu.json`, and `jepa-classify --time` for its CPU cell.*
 
+### V-JEPA 2 ViT-g/16 and V-JEPA 2-AC (2026-09-01, **device 1**)
+
+These rows were measured on the second card of the same box, not device 0 like the tables above (the
+display hangs off device 0 and the machine was in use). The two cards are the same model, so the
+numbers are comparable, but they are not from the same sweep and are kept separate for that reason.
+`jepa-bench --gpu 1`, best of 5 after 2 warmups, `GGML_PREC_F32`.
+
+| model | mode | shape | f32 | f16 | q8_0 | q4_k |
+|---|---|---|---:|---:|---:|---:|
+| V-JEPA 2 ViT-g/16 | encoder | 16 f 256² (2 048 tok) | 133.2 | 142.8 | 101.7 | **100.7** |
+| V-JEPA 2 ViT-g/16 | encoder | 64 f 256² (8 192 tok) | 889.6 | 905.1 | **831.2** | 832.3 |
+| V-JEPA 2 ViT-g/16 | masked predictor | 4 096 rows | – | 112.2 | – | – |
+| V-JEPA 2-AC ViT-g | encoder | 2 f 256² (256 tok) | – | 27.7 | 14.0 | **13.4** |
+
+The ViT-g is the first model here where **f16 is slower than f32 on the GPU** (142.8 vs 133.2 ms at
+2 048 tokens): with `GGML_PREC_F32` forced, an f16 weight buys no arithmetic and costs an up-convert,
+and at 1408 dims the up-convert is no longer free. The quantized files are the fastest, as everywhere
+else — they never reach cuBLAS.
+
+### The planning shapes: `jepa_ac_predict` and `jepa_ac_rollout` vs PyTorch on the same card
+
+The action-conditioned predictor is what a planner runs thousands of times against one encode, so
+the axis that matters is **K, the candidate count on the graph's batch axis**. `H = 2` is the
+reference planner's horizon (`mpc_args["rollout"]`). jepa.cpp is f16, PyTorch is float32 — Meta's
+`ACRoPEAttention` cannot run in pure float16 (its RoPE promotes q/k to float32 while v stays half, and
+`scaled_dot_product_attention` rejects the mix), so float32 is the only PyTorch baseline there is.
+`scripts/torch_ac_baseline.py`, same protocol: best of 5 after 2 warmups with `cuda.synchronize()`.
+
+| graph | K | jepa.cpp f16 | per candidate | PyTorch f32 | per candidate | **speed-up** |
+|---|---:|---:|---:|---:|---:|---|
+| `jepa_ac_predict`, 1 context frame | 1 | 8.96 | 8.96 | 45.07 | 45.07 | **5.0×** |
+| | 16 | 112.7 | 7.04 | 188.8 | 11.80 | **1.68×** |
+| | 64 | 531.8 | 8.31 | 827.5 | 12.93 | **1.56×** |
+| `jepa_ac_rollout`, H = 2 (ms **per step**) | 1 | 11.68 | 11.68 | 45.54 | 45.54 | **3.9×** |
+| | 16 | 177.2 | 11.07 | 293.1 | 18.32 | **1.65×** |
+| | 64 | 791.2 | 12.36 | 1289.5 | 20.15 | **1.63×** |
+
+Two things the shape of that table says. **Batching K candidates is what makes planning affordable**:
+one candidate costs 8.96 ms on its own and 7.04 ms when 16 share the graph, because the predictor is
+256 rows per candidate — far too few to fill the card alone. And **the lead narrows as K grows**
+(5.0× at K = 1, 1.6× at K = 64): at K = 1 jepa.cpp wins on launch overhead, and by K = 64 both
+implementations are simply doing the same GEMMs. A rollout step costs more than a bare predictor call
+at the same K because its context has grown by a frame, so the sequence is 516 rows instead of 258.
+
 ## GPU against PyTorch on the same card
 
 `VJEPA2Model(skip_predictor=True)` / `IJepaModel` / `LeVJEPAModel`, 3 warmup + 7 timed forwards with
