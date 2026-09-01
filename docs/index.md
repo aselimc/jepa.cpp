@@ -1,16 +1,17 @@
 # jepa.cpp
 
-jepa.cpp runs Meta's JEPA vision models — I-JEPA, V-JEPA 2, V-JEPA 2.1 — plus LeJEPA-style ViTs and
-LeWorldModel on a plain CPU, in C/C++ on [ggml](https://github.com/ggml-org/ggml), with an optional
+jepa.cpp runs Meta's JEPA vision models — I-JEPA, V-JEPA 2, V-JEPA 2.1 — plus LeJEPA-style ViTs,
+LeVJEPA and LeWorldModel on a plain CPU, in C/C++ on [ggml](https://github.com/ggml-org/ggml), with an optional
 CUDA backend. Each checkpoint is converted once into a single [GGUF](gguf-schema.md) file that carries
 the weights *and* everything needed to run them — dimensions, positional-encoding scheme,
 preprocessing recipe, class labels — so at run time the requirement is one binary and one file. There
 is no Python in the inference path and no per-model C++ code: a new checkpoint of a known family is a
 converter run, because the loader builds the graph from the file's metadata.
 
-Six model bundles ship today: I-JEPA ViT-H/14, LeJEPA ViT-S/16, LeWorldModel Push-T, V-JEPA 2 ViT-L/16
-(encoder + masked predictor), V-JEPA 2 ViT-L SSv2 (174-class video classifier) and V-JEPA 2.1 ViT-B/16
-at 384 px (image *and* video, with a predictor for both). They expose image and video embedding, video
+Seven model bundles ship today: I-JEPA ViT-H/14, LeJEPA ViT-S/16, LeWorldModel Push-T, V-JEPA 2
+ViT-L/16 (encoder + masked predictor), V-JEPA 2 ViT-L SSv2 (174-class video classifier), V-JEPA 2.1
+ViT-B/16 at 384 px (image *and* video, with a predictor for both) and LeVJEPA ViT-L/16 (a video encoder
+with block-causal attention and a CLS readout). They expose image and video embedding, video
 classification, latent-space prediction and action-conditioned world-model rollout, through four
 command-line tools and one C header.
 

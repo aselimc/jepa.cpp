@@ -15,7 +15,7 @@ The graph is **built from that metadata, not from per-model code**. `jepa_model_
 hyperparameters and the tensor table; `jepa_context_new` allocates a compute arena; `jepa_encode`
 builds a ggml graph for the requested shape and runs it on the context's backend. A new checkpoint of
 a known family therefore needs no C++ change — the converter writes the metadata and the loader picks
-the branches, which is why six models of five families share one builder.
+the branches, which is why seven models of six families share one builder.
 
 Around that sit four layers: preprocessing (pixels to a normalised tensor, host-side), the shared ViT
 graph, the optional heads, and pooling. The public surface is one C header, `include/jepa.h`
@@ -50,6 +50,7 @@ SSv2, the masked predictor for V-JEPA 2 / 2.1, and the action-conditioned predic
 | `vjepa2_1` | 2×16×16 tubelet **and** 1×16×16 image embed | `rope3d`, interleaved layout, plus `interpolate_rope` | modality vectors; per-hierarchy-layer norms (inference uses the last); 8 mask tokens |
 | `hfvit` | 2-D patch | `learned`, with CLS and optional registers | DINOv2-style; optional layer-scale; the LeJEPA community checkpoint and the LeWM encoder |
 | `lewm` | `hfvit` encoder (ViT-Ti/14) | inherited from `hfvit` | predictor 192-d / 6 L over 3 frames plus an action embedding (10 → 192); BatchNorm MLPs folded at conversion |
+| `levjepa` | 1×16×16 tubelet (one token per frame per patch) | `rope3d`, tiled layout; CLS gets none | CLS token, block-causal attention mask; no predictor, no head |
 
 ## 3-D RoPE
 
@@ -95,6 +96,32 @@ costs **+4.8 % on the CPU** at the ViT-L 16-frame encoder shape (790.6 → 828.3
 keeps the chain resident on a GPU. The older form emitted a `ggml_roll` over a strided view of the
 fused qkv tensor, which no CUDA kernel accepts — see the graph-validation paragraph under
 [GPU backend](#gpu-backend) for what a backend does with such a node when nothing checks.
+
+## Block-causal attention
+
+`jepa.enc.attn_mode` selects how the encoder's attention is masked. Every family but one leaves it at
+`full`, where the key is absent from the graph. LeVJEPA sets `block_causal`, and for that family the
+mask is part of the model, not a tuning knob: run the same weights unmasked and the CLS feature drops
+to cosine 0.945 against the reference with a worst patch token of 0.834.
+
+The rule is one line — a patch query may attend a patch key iff `frame_id(query) >= frame_id(key)`,
+where `frame_id` of a token is `id // (gh·gw)` — so attention is bidirectional inside a temporal slot
+and causal across slots. The CLS prefix is a read-only sink: its row is open (it reads the whole clip)
+and its column is closed to every patch query, which is what stops layer *l* information about the last
+frame from reaching a first-frame token at layer *l+1*. At the released 16-frame 224² shape that leaves
+53.1 % of the 3137 × 3137 grid open.
+
+`jepa_block_causal_mask_f16` builds it host-side as an additive F16 `[N, N]` buffer of zeros and
+`-INFINITY`, once per context and shape rather than per layer, and passes it through
+`jepa_attn_opts::mask`. F16 serves both consumers — `ggml_flash_attn_ext` requires it and
+`ggml_soft_max_ext` accepts it — so one buffer covers the flash path, the `--no-flash` path and both
+backends. No padding is needed at this ggml commit: the CUDA MMA kernel wraps mask rows with
+`fastmodulo(j0 + j, ne01)` and clamps the key axis of its final tile, so an unpadded 3137-row buffer is
+read correctly there too (measured in [parity](parity.md#results-encoders-on-cuda0)).
+
+A CLS token in a RoPE model raises a second question, and the reference answers it: `RoPEAttention`
+rotates `q/k[..., 1:, :]` only. The runtime therefore prepends an identity row (cos 1, sin 0) to the
+host cos/sin tables for every prefix token, and `jepa_rope3d_apply` is untouched.
 
 ## Preprocessing
 
@@ -263,7 +290,7 @@ tests/test-parity     replay the golden dumps: cosine / max-abs / top-k, non-zer
 tests/test-predictor  the same for the three predictors, against the reference encoder tokens
 tests/test-batch      batched vs per-item bit-exactness
 tests/test-attn       flash vs naive attention against a double-precision reference; K/V policy; timing
-tests/test-ops        rope3d and friends against tests/vectors/
+tests/test-ops        rope3d against tests/vectors/, and the block-causal mask on both attention paths
 tests/test-backend    GPU graph validation and CPU/GPU agreement; skips cleanly without a GPU
 
 scripts/convert.py          HF safetensors / torch.hub .pt -> GGUF
@@ -322,7 +349,9 @@ tier roughly half as sensitive to weight-level errors as the CPU one — the f32
 sensitive configuration for any real investigation.
 
 **What else the tests cover.** `test-batch` checks batched-versus-per-item bit-exactness, `test-ops`
-the RoPE tables against generated vectors, `test-attn` flash attention against a double-precision
+the RoPE tables against generated vectors and the block-causal mask (entry by entry, then through
+`jepa_build_attention` on both attention paths against a double-precision masked softmax, with an
+unmasked control that must disagree), `test-attn` flash attention against a double-precision
 reference including the K/V dtype policy, and `test-backend` the GPU graph validation plus CPU/GPU
 agreement. `test-predictor` adds structural checks the reference cannot provide: causal-prefix
 equality and rollout-versus-predict identity on LeWorldModel, which are bit-exact on both backends.

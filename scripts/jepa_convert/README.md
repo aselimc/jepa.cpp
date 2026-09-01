@@ -11,6 +11,7 @@ scripts/jepa_convert/hfvit.py   OK-AI/lejepa-*, DINOv2-style (timm layout safete
 scripts/jepa_convert/lewm.py    quentinll/lewm-*             (weights.pt: HF ViT encoder + adaLN predictor)
 scripts/jepa_convert/selftest.py numpy forward straight from a GGUF vs. the PyTorch reference
 scripts/jepa_convert/vjepa2.py, vjepa2_1.py   standalone video-family converters (separate owner)
+scripts/jepa_convert/levjepa.py galilai-group/LeVJEPA-*      (custom HF architecture; reuses vjepa2.py's writer)
 ```
 
 ## Usage
@@ -20,6 +21,8 @@ PY=.venv/bin/python
 $PY scripts/convert.py --family ijepa --src models/facebook/ijepa_vith14_1k            --ftype f16
 $PY scripts/convert.py --family hfvit --src models/OK-AI/lejepa-vits16-pretrain-in1k    --ftype f32
 $PY scripts/convert.py --family lewm  --src models/quentinll/lewm-pusht                 --ftype f16
+$PY scripts/convert.py --family levjepa --src models/galilai-group/LeVJEPA-VideoMix-Large \
+                       --out models/gguf/levjepa-vitl16-f32.gguf --ftype f32
 # default output: models/gguf/<basename of --src>-<ftype>.gguf ; override with --out
 # --name overrides general.name ; --allow-unmapped tolerates unknown source tensors (default: hard error)
 ```
@@ -39,12 +42,13 @@ $PY scripts/jepa_convert/selftest.py --gguf models/gguf/lejepa-vits16-pretrain-i
 $PY scripts/jepa_convert/selftest.py --gguf models/gguf/lewm-pusht-f32.gguf --src models/quentinll/lewm-pusht \
       --lewm-src tmp/<branch>/stable-worldmodel      # git clone --depth 1 https://github.com/galilai-group/stable-worldmodel
 $PY scripts/jepa_convert/selftest.py --gguf models/gguf/ijepa_vith14_1k-f16.gguf --src models/facebook/ijepa_vith14_1k --n-images 2
+$PY scripts/jepa_convert/selftest.py --gguf models/gguf/levjepa-vitl16-f32.gguf --src models/galilai-group/LeVJEPA-VideoMix-Large --n-images 1
 ```
 
 It reads only the GGUF (tensors + `jepa.*` keys), runs the architecture.md graph in numpy on
 fixture images, and compares against timm / transformers / stable-worldmodel. The numpy code in
-`selftest.py` (`encoder_forward`, `lewm_predictor_forward`) is the executable spec of what the
-C++ graph builder has to do. Observed: f32 files agree to ~1e-6 relative, f16 to cosine ≥ 0.99999.
+`selftest.py` (`encoder_forward`, `lewm_predictor_forward`, `levjepa_encoder_forward`) is the
+executable spec of what the C++ graph builder has to do. Observed: f32 files agree to ~1e-6 relative, f16 to cosine ≥ 0.99999.
 
 ## common.py
 
@@ -139,3 +143,34 @@ The non-affine adaLN LayerNorms (`norm1/norm2`, eps 1e-6, `jepa.pred.adaln_eps`)
 Full inference graph: see the `lewm` subsection of `docs/gguf-schema.md` and
 `lewm_predictor_forward` in `selftest.py`. Preprocessing (training pipeline): ImageNet mean/std,
 bilinear resize to 224 (PushT renders are square).
+
+## Family: `levjepa` (galilai-group/LeVJEPA-VideoMix-Large)
+
+`model.safetensors` is the EMA copy of the encoder and nothing else: 293 tensors, all F32, no
+predictor, no head, no projector. The architecture is custom and ships with the weights
+(`modeling_levjepa.py` + `configuration_levjepa.py`), so `trust_remote_code=True` is what loads the
+reference — and `levjepa.py` reuses the writer, the safetensors reader and the dtype policy of
+`vjepa2.py`, since the rules are identical.
+
+| source | GGUF | note |
+|---|---|---|
+| `encoder.patch_embed.proj.weight` `[1024,3,1,16,16]` | `enc.patch_embed.weight` `[1024,768]` | Conv3d with **tubelet 1**, flattened C-T-H-W like the other video families |
+| `encoder.patch_embed.proj.bias` | `enc.patch_embed.bias` | |
+| `encoder.cls_token` `[1,1,1024]` | `enc.cls_token` `[1024]` | prepended after the patch embedding; no pos-embed row and no RoPE |
+| `encoder.blocks.{i}.norm1/norm2.*` | `enc.blk.{i}.ln1/ln2.*` | LN eps **1e-6** (hard-coded in `LeVJEPAModel`, not in the config) |
+| `encoder.blocks.{i}.attn.qkv.*` `[3072,1024]` | `enc.blk.{i}.attn_qkv.*` | already fused as `[q; k; v]`, nothing to concatenate |
+| `encoder.blocks.{i}.attn.proj.*` | `enc.blk.{i}.attn_out.*` | |
+| `encoder.blocks.{i}.mlp.fc1/fc2.*` | `enc.blk.{i}.ffn_up/ffn_down.*` | `[4096,1024]` / `[1024,4096]` |
+| `encoder.norm.*` | `enc.norm.*` | |
+
+Two config keys carry into the graph and one does not. `attn_mode = "block_causal"` becomes
+`jepa.enc.attn_mode` and is mandatory — the same weights under full attention give CLS cosine 0.945
+against the reference. `use_rope = True` selects the tiled 3-D RoPE of `vjepa2`
+(`rotate_queries_or_keys` uses Meta's `repeat(1, 1, 1, 2)` expansion verbatim). `token_drop_rate` is a
+training-time regulariser that `eval()` disables, so it is not converted; the converter refuses
+`use_rope=False` and `qkv_bias=False` rather than guessing.
+
+There is no `preprocessor_config.json`, so `jepa.pre.*` comes from the model card: ImageNet mean/std,
+short side → 224, centre crop 224, **bicubic**, rescale 1/255. `general.license = cc-by-nc-4.0`.
+Full inference graph: the `levjepa` section of `docs/gguf-schema.md` and `levjepa_encoder_forward` in
+`selftest.py`.

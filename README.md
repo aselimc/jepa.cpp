@@ -3,7 +3,7 @@
 **Run Meta's JEPA vision models on a plain CPU, from a single file, with no Python.**
 
 JEPA (Joint-Embedding Predictive Architecture) is the family of self-supervised vision models behind
-Meta's I-JEPA, V-JEPA 2 and V-JEPA 2.1, and the research line around LeJEPA and LeWorldModel. They are
+Meta's I-JEPA, V-JEPA 2 and V-JEPA 2.1, and the research line around LeJEPA, LeVJEPA and LeWorldModel. They are
 excellent general-purpose feature extractors for images and video — but the official code needs PyTorch,
 a GPU-sized dependency stack, and a different repo per model.
 
@@ -49,6 +49,7 @@ the GPU tables of [docs/performance.md](docs/performance.md), measured on a 96-c
 | [V-JEPA 2 ViT-L/16](https://huggingface.co/facebook/vjepa2-vitl-fpc64-256) | 326 M | video features (16–64 frames) + masked predictor | MIT |
 | [V-JEPA 2 ViT-L SSv2](https://huggingface.co/facebook/vjepa2-vitl-fpc16-256-ssv2) | 375 M | video action classification, 174 classes | MIT |
 | [V-JEPA 2.1 ViT-B/16 @384](https://dl.fbaipublicfiles.com/vjepa2/vjepa2_1_vitb_dist_vitG_384.pt) | 110 M | image *and* video features + predictor (both modalities) | MIT |
+| [LeVJEPA ViT-L/16](https://huggingface.co/galilai-group/LeVJEPA-VideoMix-Large) (community) | 303 M | video features, block-causal attention; a still image is a repeated frame | CC-BY-NC-4.0 (non-commercial) |
 
 A new checkpoint of a known family needs **no C++ change** — the converter writes the metadata and the
 loader builds the graph from it.
@@ -68,13 +69,15 @@ features plus nearest neighbours, so any backend error would show up directly as
 | LeWorldModel | 9.8 ms + 0.9 ms per rollout step | 16.8 ms | world-model outputs match to cosine 1.0000000 |
 | V-JEPA 2 ViT-L (SSv2, 16-frame clip, end-to-end) | 922 ms / clip (631 ms @ 96 threads) | 1051 ms | UCF-101 k-NN **89.5 %** vs **88.6 %**; SSv2 top-5 identical on fixtures |
 | V-JEPA 2.1 ViT-B @384 | 60 ms / image · 853 ms / 16-frame clip | 110 ms · 908 ms | UCF-101 k-NN predictions identical at f32; **89.5 %** vs **88.6 %** at f16 |
+| LeVJEPA ViT-L/16 | 1480 ms / 16-frame clip (882 ms @ 96 threads) | 1752 ms | UCF-101 k-NN **81.9 %** vs **81.9 %**; every prediction identical at f32, f16 *and* q8_0 |
 
-*(Threadripper 7995WX, ggml `36da5713`, `GGML_LLAMAFILE=ON`, idle box, 2026-08-31. Every number is
+*(Threadripper 7995WX, ggml `36da5713`, `GGML_LLAMAFILE=ON`, idle box, 2026-08-31 and 2026-09-01. Every number is
 copied from a committed, regenerable artifact — sources, more shapes, 96-thread rows, memory tables and
 the fine print are in [docs/performance.md](docs/performance.md).)*
 
 An optional CUDA build is **9–21× faster than those 32-thread numbers** on one RTX 4500 Ada — I-JEPA
-15.5 ms, the 16-frame V-JEPA 2 ViT-L clip 46.5 ms, the 64-frame one 306 ms — at 38–62 % of PyTorch's
+15.5 ms, the 16-frame V-JEPA 2 ViT-L clip 46.5 ms, the 64-frame one 306 ms, the LeVJEPA clip
+87.2 ms — at 38–67 % of PyTorch's
 throughput on the same card; see the GPU paragraph below and
 [docs/performance.md](docs/performance.md#gpu-encoder).
 
@@ -143,12 +146,13 @@ types. Load a model, make a context, `jepa_encode`, then pool or predict. The fu
 
 ## How it works, in one paragraph
 
-All six families run one shared ViT graph: patchify (a host-side rearrangement plus one matmul), add
+All seven families run one shared ViT graph: patchify (a host-side rearrangement plus one matmul), add
 positions, pre-LayerNorm transformer blocks with flash attention, final norm. Families differ only in
 the tokenizer (2-D patches vs video tubelets), the positional scheme (sincos tables vs 3-D RoPE —
 including a faithful reproduction of V-JEPA 2's *tiled* RoPE, a quirk Meta keeps for checkpoint
-compatibility, without which every token lands at cosine 0.63), and the optional heads (masked
-predictor, attentive-pool classifier, world-model predictor). Preprocessing is a bit-exact port of
+compatibility, without which every token lands at cosine 0.63), the attention mask (LeVJEPA is
+block-causal: bidirectional inside a frame, causal across frames, with its CLS token a read-only
+sink), and the optional heads (masked predictor, attentive-pool classifier, world-model predictor). Preprocessing is a bit-exact port of
 torchvision's antialiased uint8 resize, so the tensor entering the network is byte-identical to the
 reference pipeline's. The deeper story — architecture, GGUF schema, RoPE derivation, flash-attention
 policy, parity thresholds — is on the [documentation site](https://aselimc.github.io/jepa.cpp/).
@@ -156,7 +160,7 @@ policy, parity thresholds — is on the [documentation site](https://aselimc.git
 ## Testing
 
 ```bash
-ctest --test-dir build        # 9 suites: parity, predictors, batching, RoPE vectors, attention, backend
+ctest --test-dir build        # 10 suites: parity, predictors, batching, RoPE vectors + the block-causal mask, attention, backend
 ```
 
 `test-parity` replays PyTorch golden dumps through the engine and gates per-token cosine, pooled

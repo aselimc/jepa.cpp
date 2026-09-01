@@ -77,6 +77,7 @@ DTYPES = ("f32", "f16", "q8_0", "q4_0", "q4_k")
 PRETTY = {
     "ijepavith14": "I-JEPA ViT-H/14",
     "lejepavits16": "LeJEPA ViT-S/16",
+    "levjepavitl16": "LeVJEPA ViT-L/16",
     "lewm": "LeWM ViT-Ti/14",
     "vjepa2vitlfpc16256ssv2": "V-JEPA 2 ViT-L SSv2",
     "vjepa2vitlfpc64": "V-JEPA 2 ViT-L fpc64",

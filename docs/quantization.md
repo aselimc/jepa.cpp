@@ -85,10 +85,12 @@ ever buy accuracy, never bytes.
 | vjepa2_1-vitb-384 (ViT-B/16 + predictor) | f16 210 MiB | — | 113 (0.54x) | — | — | — | — | — | 62 | 62 (0.30x) |
 | vjepa2-vitl-fpc64-256 (ViT-L/16 + predictor) | f16 623 MiB | — | 333 (0.53x) | — | — | — | — | — | 178 | 178 (0.29x) |
 | vjepa2-vitl-fpc16-256-ssv2 (ViT-L/16 + attentive head) | f16 717 MiB | — | 383 (0.53x) | — | — | — | — | — | 205 | 205 (0.29x) |
+| levjepa-vitl16 (ViT-L/16, encoder only) | f32 1156 MiB | 578.7 | 310.3 (0.27x) | — | — | — | — | — | 166.3 | 166.3 (0.14x) |
 
 The non-quantized remainder (patch embeddings, norms, biases, position tables) is 1.6 MiB for ViT-S, 6 MiB for ViT-H,
-0.8-1.7 MiB for the V-JEPA 2 files, i.e. q8_0 is 0.53x of f16 and q4 is 0.29x, as expected from 8.5 / 4.5 bits per
-weight (LeWM has a larger f32 remainder: adaLN, action embedder, position tables, 4 %).
+0.8-1.7 MiB for the V-JEPA 2 files and 4.2 MiB for LeVJEPA, i.e. q8_0 is 0.53x of f16 and q4 is 0.29x, as expected from
+8.5 / 4.5 bits per weight (LeWM has a larger f32 remainder: adaLN, action embedder, position tables, 4 %). The LeVJEPA
+row is quantized from its f32 file rather than its f16 one, so its ratios are halved against the rest of the column.
 
 ## How the accuracy was measured
 
@@ -98,7 +100,8 @@ scripts/gguf_dequant_selftest.py --gguf models/gguf/<model>-<type>.gguf --ref te
 
 reads the GGUF with the python `gguf` package, dequantizes every tensor (`gguf.quants.dequantize`), runs the numpy
 graph of `scripts/jepa_convert/selftest.py` (`ijepa`, `hfvit`, `lewm`: encoder, LeWM projector / action embedder /
-adaLN predictor) or of `scripts/jepa_convert/vjepa2_numpy_ref.py` (`vjepa2`, `vjepa2_1`: encoder with 3-D RoPE,
+adaLN predictor; `levjepa`: the video encoder with its CLS row and block-causal mask) or of
+`scripts/jepa_convert/vjepa2_numpy_ref.py` (`vjepa2`, `vjepa2_1`: encoder with 3-D RoPE,
 attentive-pool head, full-context predictor) on the **stored `input` tensors** of the reference set
 (`tests/fixtures/README.md`, same preprocessed pixels as the PyTorch run) and compares with `scripts/compare.py`
 metrics: per-token cosine (mean and worst token), `rel_max = max|a-b| / max|b|`, `rel_fro = ||a-b|| / ||b||`, and for
@@ -250,6 +253,25 @@ Per tensor, aggregated over the samples: `cos mean` = mean over samples of the m
 | **q4_0** (F16:1,F32:331,Q4_0:164) | 205.1 MiB | last_hidden_state | 2 | 0.915000 | 0.200962 | 8.19e-01 | 4.23e-01 |  |
 |  |  | logits | 2 | 0.988118 | 0.987313 | 1.44e-01 | 1.61e-01 | 2/2 / 0.90 |
 
+### LeVJEPA ViT-L/16 (`levjepa`, source f32, 2 clips x 16 frames + 2 still images)
+
+| type | file size | tensor | n | cos mean | cos min (worst token) | rel_max | rel_fro | top-1 / top-5 |
+|---|---|---|---|---|---|---|---|---|
+| **f16** (F16:97,F32:196) | 578.7 MiB | last_hidden_state | 4 | 1.000000 | 1.000000 | 1.51e-04 | 1.68e-04 |  |
+|  |  | cls | 4 | 1.000000 | 1.000000 | 1.30e-05 | 4.63e-05 |  |
+| **q8_0** (F32:197,Q8_0:96) | 310.3 MiB | last_hidden_state | 4 | 0.999994 | 0.999767 | 3.28e-03 | 3.70e-03 |  |
+|  |  | cls | 4 | 0.999999 | 0.999999 | 3.81e-04 | 1.32e-03 |  |
+| **q4_k** (F32:197,Q4_K:96) | 166.3 MiB | last_hidden_state | 4 | 0.998990 | 0.989952 | 4.70e-02 | 4.97e-02 |  |
+|  |  | cls | 4 | 0.999843 | 0.999808 | 8.84e-03 | 1.96e-02 |  |
+| **q4_0** (F32:197,Q4_0:96) | 166.3 MiB | last_hidden_state | 4 | 0.998424 | 0.984165 | 3.45e-02 | 6.09e-02 |  |
+|  |  | cls | 4 | 0.999715 | 0.999629 | 6.84e-03 | 2.72e-02 |  |
+
+The **least** token-sensitive model in this table: even at q4_k the worst token of 3137 stays at 0.99,
+where V-JEPA 2 ViT-L reaches 0.22 and I-JEPA 0.04. Its rows are all multiples of 256, so the K-quants
+never fall back (`Q4_K:96`, no `Q4_0` companions), and `pooled_mean` tracks `cls` to the fourth digit
+throughout. The f16 row is exact to six digits — this checkpoint has no low-variance token cluster for
+the final LayerNorm to amplify, which is what separates it from every other video encoder here.
+
 ### V-JEPA 2 ViT-L/16 fpc64 (`vjepa2`, source f16, 2 clips x 16 frames, encoder + predictor)
 
 | type | file size | tensor | n | cos mean | cos min (worst token) | rel_max | rel_fro | top-1 / top-5 |
@@ -294,6 +316,11 @@ Per tensor, aggregated over the samples: `cos mean` = mean over samples of the m
   0.9903 vs 0.9884 on V-JEPA 2.1), q6_k sits between q8_0 and q5.
 * **The LeWM world model is the most robust** (192-d, shallow, BatchNorm-folded MLPs): q8_0 `pred_next` cosine
   0.99997, q6_k 0.9998, and even q4 keeps the predicted next-state embedding above 0.99.
+* **LeVJEPA is the most robust of the video encoders**, and the contrast with V-JEPA 2 ViT-L is the point:
+  same depth, same width, same 24 blocks, but at q8_0 its worst token of 3137 is 0.99977 against ViT-L's
+  0.29, and even q4_k keeps it at 0.99. The mechanism above says why — the token that breaks is the one
+  with the smallest pre-final-LayerNorm variance, and this checkpoint has no such cluster. Its CLS
+  feature stays at 0.99981 down to q4_k.
 
 ## Recommendation
 
@@ -328,6 +355,7 @@ for t in q8_0 q6_k q5_k q5_1 q5_0 q4_1 q4_k q4_0; do build/jepa-quantize models/
 for t in q8_0 q6_k q5_0 q4_k q4_0; do build/jepa-quantize models/gguf/lewm-pusht-f32.gguf models/gguf/lewm-pusht-$t.gguf $t -t 32; done
 for t in q8_0 q6_k q5_k q4_k q4_0; do build/jepa-quantize models/gguf/ijepa_vith14_1k-f16.gguf models/gguf/ijepa_vith14_1k-$t.gguf $t -t 32; done
 for m in vjepa2_1-vitb-384 vjepa2-vitl-fpc64-256 vjepa2-vitl-fpc16-256-ssv2; do for t in q8_0 q4_k q4_0; do build/jepa-quantize models/gguf/$m-f16.gguf models/gguf/$m-$t.gguf $t -t 32; done; done
+for t in q8_0 q4_k q4_0; do build/jepa-quantize models/gguf/levjepa-vitl16-f32.gguf models/gguf/levjepa-vitl16-$t.gguf $t -t 32; done
 # accuracy rows (32 numpy threads; ViT-H: 2 images, V-JEPA 2 ViT-L: the 16-frame clips)
 $PY scripts/gguf_dequant_selftest.py --gguf models/gguf/lejepa-vits16-pretrain-in1k-q8_0.gguf --ref tests/fixtures/ref/lejepa-vits16 --threads 32
 $PY scripts/gguf_dequant_selftest.py --gguf models/gguf/lewm-pusht-q8_0.gguf --ref tests/fixtures/ref/lewm-pusht --threads 32
@@ -335,6 +363,7 @@ $PY scripts/gguf_dequant_selftest.py --gguf models/gguf/ijepa_vith14_1k-q8_0.ggu
 $PY scripts/gguf_dequant_selftest.py --gguf models/gguf/vjepa2_1-vitb-384-q8_0.gguf --ref tests/fixtures/ref/vjepa2_1-vitb-384 --threads 32
 $PY scripts/gguf_dequant_selftest.py --gguf models/gguf/vjepa2-vitl-fpc16-256-ssv2-q8_0.gguf --ref tests/fixtures/ref/vjepa2-vitl-fpc16-256-ssv2 --threads 32
 $PY scripts/gguf_dequant_selftest.py --gguf models/gguf/vjepa2-vitl-fpc64-256-q8_0.gguf --ref tests/fixtures/ref/vjepa2-vitl-fpc64-256 --samples archery_f16,bowling_f16 --threads 32
+$PY scripts/gguf_dequant_selftest.py --gguf models/gguf/levjepa-vitl16-q8_0.gguf --ref tests/fixtures/ref/levjepa-vitl16 --threads 32
 # V-JEPA 2.1 q8_0 against the Meta PyTorch model on random inputs (the converter's own reference script also dequantizes)
 $PY scripts/jepa_convert/vjepa2_numpy_ref.py --gguf models/gguf/vjepa2_1-vitb-384-q8_0.gguf --meta models/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt --vjepa2-src tmp/vjepa2-src
 ```

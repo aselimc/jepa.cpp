@@ -70,11 +70,11 @@ by the reference-dump scripts; `gguf` and `numpy` are the minimum for conversion
 ## Download and convert
 
 `scripts/download_models.sh` fetches the reference checkpoints into `models/` (git-ignored).
-`small` takes LeJEPA, LeWorldModel and V-JEPA 2.1 (~1.8 GB); `all` adds I-JEPA and both V-JEPA 2
-files (~7 GB); a single name fetches one.
+`small` takes LeJEPA, LeWorldModel and V-JEPA 2.1 (~1.8 GB); `all` adds I-JEPA, both V-JEPA 2 files and
+LeVJEPA (~8 GB); a single name fetches one.
 
 ```bash
-scripts/download_models.sh small     # or: all | ijepa | vjepa2 | vjepa2-ssv2 | vjepa21 | lewm | lejepa
+scripts/download_models.sh small     # or: all | ijepa | vjepa2 | vjepa2-ssv2 | vjepa21 | levjepa | lewm | lejepa
 scripts/download_fixtures.sh         # a few test images and clips, for the parity tests
 ```
 
@@ -91,9 +91,10 @@ position tables, tokens) as F32; `--ftype f32` stores everything as F32. Quantiz
 | I-JEPA ViT-H/14 | `ijepa` | `python scripts/convert.py --family ijepa --src models/facebook/ijepa_vith14_1k --ftype f16` |
 | V-JEPA 2 ViT-L/16 (fpc64) | `vjepa2` | `python scripts/convert.py --family vjepa2 --src models/facebook/vjepa2-vitl-fpc64-256 --ftype f16` |
 | V-JEPA 2 ViT-L SSv2 | `vjepa2-ssv2` | `python scripts/convert.py --family vjepa2 --src models/facebook/vjepa2-vitl-fpc16-256-ssv2 --ftype f16` |
+| LeVJEPA ViT-L/16 | `levjepa` | `python scripts/convert.py --family levjepa --src models/galilai-group/LeVJEPA-VideoMix-Large --out models/gguf/levjepa-vitl16-f16.gguf --ftype f16` |
 
-I-JEPA is CC-BY-NC-4.0 (non-commercial); the other five are MIT or Apache-2.0. The licence travels
-inside the GGUF as `general.license`.
+I-JEPA and LeVJEPA are CC-BY-NC-4.0 (non-commercial); the other five are MIT or Apache-2.0. The licence
+travels inside the GGUF as `general.license`.
 
 ## Running the tools
 
@@ -122,6 +123,10 @@ build/jepa-embed -m models/gguf/vjepa2_1-vitb-384-f16.gguf \
 
 # frames given as images, in order
 build/jepa-embed -m models/gguf/vjepa2_1-vitb-384-f16.gguf --as-video -i f0.jpg -i f1.jpg -t 32
+
+# LeVJEPA reads a clip through its CLS token; a still image is repeated to the model's 16 frames,
+# which is how its model card feeds one, and jepa-embed says so on stderr when it does
+build/jepa-embed -m models/gguf/levjepa-vitl16-f16.gguf -i cat.jpg --pool cls -t 32
 
 # a whole list of clips, one model load, output [n_clips, D] in list order
 build/jepa-embed -m models/gguf/vjepa2-vitl-fpc64-256-f16.gguf \

@@ -45,6 +45,7 @@ small-N models where per-launch overhead is a real fraction of the forward.
 | V-JEPA 2.1 ViT-B/384 | 384² | 576 | 70.0 | 60.3 | 58.5 | 52.7 | 110 | **1.82×** (2.09× @96) |
 | V-JEPA 2.1 ViT-B/384 | 16 f 384² | 4 608 | 826 | 853 | 914 | 636 | 908 | **1.06×** |
 | V-JEPA 2.1 ViT-B/384 | 64 f 384² | 18 432 | 9050 | 9036 | 9487 | 5040 | – | – |
+| LeVJEPA ViT-L/16 | 16 f 224² | 3 137 | 1512 | 1480 | 1508 | 882 | 1752 | **1.18×** (1.99× @96) |
 
 ᵃ the SSv2 reference forward is encoder + attentive pooler + classifier; the like-for-like comparison
 is the end-to-end table below.
@@ -58,8 +59,8 @@ a cold first sample where that first sample is ≥ 1.2× the median of the rest 
 against a steady 250; LeJEPA: 72.2 against 15.4).
 
 *Source: [benchmarks.md](benchmarks.md#encoder), `tools/jepa-bench` on synthetic deterministic input,
-1 warmup + 3 measured runs, 32-thread session 2026-08-31 11:32 UTC and 96-thread session 11:44 UTC,
-both starting on an idle box; PyTorch column from the fixture manifests'
+1 warmup + 3 measured runs, 32-thread sessions 2026-08-31 11:32 and 23:02 UTC and 96-thread sessions
+11:44 and 23:05 UTC, all starting on an idle box; PyTorch column from the fixture manifests'
 `timing_s.forward_s`. Machine-readable twin: `tests/results/benchmarks.json`.*
 
 ## GPU encoder
@@ -78,9 +79,10 @@ encoder table above, i.e. 96 Zen 4 cores' worth of machine against one workstati
 | V-JEPA 2.1 ViT-B/384 | 384² | 576 | – | **4.4** | – | 3.5 | 60.3 | **13.7×** |
 | V-JEPA 2.1 ViT-B/384 | 16 f 384² | 4 608 | – | **43.0** | – | 37.3 | 853 | **19.8×** |
 | V-JEPA 2.1 ViT-B/384 | 64 f 384² | 18 432 | – | **424** | – | – | 9036 | **21.3×** |
+| LeVJEPA ViT-L/16 | 16 f 224² | 3 137 | 85.4 | 87.2 | **70.8** | 71.2 | 1480 | **17.0×** |
 
 Against 96 CPU threads the same rows read 7.3× (I-JEPA), 12.2× and 13.2× (V-JEPA 2 ViT-L at 16 and 64
-frames), 12.0×, 14.8× and 11.9× (V-JEPA 2.1 at 576, 4 608 and 18 432 tokens).
+frames), 12.0×, 14.8× and 11.9× (V-JEPA 2.1 at 576, 4 608 and 18 432 tokens) and 10.1× (LeVJEPA).
 
 The ratio grows with the sequence, and two effects separate the ends of it. The long clips keep the
 card busy. The small image models are held back both by launch overhead — LeJEPA's whole forward is
@@ -124,7 +126,7 @@ the predictor and LeWM rows; `jepa-bench --gpu 0` / `jepa-classify --time` for t
 
 ## GPU against PyTorch on the same card
 
-`VJEPA2Model(skip_predictor=True)` / `IJepaModel`, 3 warmup + 7 timed forwards with
+`VJEPA2Model(skip_predictor=True)` / `IJepaModel` / `LeVJEPAModel`, 3 warmup + 7 timed forwards with
 `cuda.synchronize()` around each.
 
 | shape | jepa.cpp CPU t=32 | **jepa.cpp CUDA** | with `--gpu-prec f16` | torch fp16 | torch fp32 | ggml / torch fp16 |
@@ -132,9 +134,12 @@ the predictor and LeWM rows; `jepa-bench --gpu 0` / `jepa-classify --time` for t
 | I-JEPA ViT-H, 224² | 147.0 | **15.5** | 8.8 | 5.91 | 24.26 | 2.6× / 1.5× |
 | V-JEPA 2 ViT-L, 16 f | 820.7 | **46.5** | 37.4 | 28.74 | 115.62 | 1.6× / 1.3× |
 | V-JEPA 2 ViT-L, 64 f | 6388.1 | **306** | 304 | 147.5 | 838.38 | 2.1× / 2.1× |
+| LeVJEPA ViT-L, 16 f | 1480 | **87.2** | 82.9 | 58.51 | 222.64 | 1.5× / 1.4× |
 
-jepa.cpp-CUDA lands at **38–62 % of PyTorch's throughput on the same GPU** at its default precision
-and 48–77 % with `--gpu-prec f16`, while being 9–21× faster than the CPU engine. `--gpu-prec f16` is
+jepa.cpp-CUDA lands at **38–67 % of PyTorch's throughput on the same GPU** at its default precision
+and 48–77 % with `--gpu-prec f16`, while being 9–21× faster than the CPU engine. LeVJEPA is the closest
+of the four (67 % / 71 %), and the mask is why: its explicit attention mask disqualifies PyTorch's flash
+SDPA kernel, which its own model card warns about, so the reference gives up more than jepa.cpp does. `--gpu-prec f16` is
 bench-only — it is not exposed in the runtime tools and is not parity-gated, so those cells are a
 measured upper bound rather than a shipping configuration.
 
@@ -150,8 +155,9 @@ ViT-L forward (ggml-CUDA fuses `{RMS_NORM, MUL, ADD}` but has no `{NORM, MUL, AD
 use LayerNorm), `gelu_erf` over the FFN hidden twice per layer, and the per-layer F32→F16 K/V casts.
 At the 64-frame shape the component rates account for 182 ms of the 306 measured.
 
-Memory on the card: torch's fp16 peak GPU memory is 1.19 GiB (I-JEPA at 256 tokens) and 0.67 GiB
-(ViT-L at 2 048), against 0.83 GiB at 8 192.
+Memory on the card: torch's fp16 peak GPU memory is 1.19 GiB (I-JEPA at 256 tokens), 0.67 GiB
+(ViT-L at 2 048) and 1.15 GiB (LeVJEPA at 3 137, where the `3137²` mask is 20 MiB per layer input on
+its own), against 0.83 GiB at 8 192.
 
 *Source: the torch-GPU baseline as re-measured after the port. Every row reproduced to within 3 % of
 the earlier session except I-JEPA fp16, which moved +6.1 % — jitter at that scale, since the row has
@@ -231,9 +237,10 @@ has the per-split throughput rows.*
 | V-JEPA 2 ViT-L SSv2 | 1432 | 717 | 383 | 205 | 808 (2 048 tok) |
 | V-JEPA 2 ViT-L fpc64 | 1243 | 622 | 333 | 178 | 1034 (8 192 tok) |
 | V-JEPA 2.1 ViT-B/384 | 419 | 210 | 113 | 62 | 948 (18 432 tok) |
+| LeVJEPA ViT-L/16 | 1156 | 579 | 310 | 166 | 816 (3 137 tok) |
 
 Weights resident, MiB (`jepa_model_n_bytes()`); peak RSS additionally covers the graph arena, the
-host-side patch buffer and the output rows, so it grows with the token count. Across these six
+host-side patch buffer and the output rows, so it grows with the token count. Across these seven
 models q8_0 holds **0.53–0.61×** the resident f16 weights and q4 **0.29–0.40×** (LeWM is the high end
 of both, because a larger share of its file is the F32 remainder — adaLN, action embedder, position
 tables — that no type touches). The clean 0.53× / 0.29× ratios quoted for *file* sizes, from the 8.5
@@ -254,6 +261,7 @@ and 4.5 bits per stored weight, are in [quantization.md](quantization.md#file-si
 | V-JEPA 2.1 ViT-B/384 | encoder | 16 f 384² | 4 608 | 853 | 636 | 1.34× |
 | V-JEPA 2.1 ViT-B/384 | encoder | 64 f 384² | 18 432 | 9036 | 5040 | 1.79× |
 | V-JEPA 2.1 ViT-B/384 | predictor | 16 f 384² | 4 608 | 1304 | 854 | 1.53× |
+| LeVJEPA ViT-L/16 | encoder | 16 f 224² | 3 137 | 1480 | 882 | 1.68× |
 
 All rows f16. Tripling the threads never triples the throughput: the 32-thread runs already saturate a
 good part of the memory bandwidth, and both the LayerNorm/GELU passes and the graph launch overhead
@@ -276,6 +284,7 @@ fall back to ggml's generic vector dot product.
 | V-JEPA 2 ViT-L fpc64 | 64 f 256² | 6388 | 6482 | 6616 | 7405 | 622 | 178 |
 | V-JEPA 2.1 ViT-B/384 | 384² | 60.3 | 58.5 | 59.7 | 90.7 | 210 | 62 |
 | V-JEPA 2.1 ViT-B/384 | 16 f 384² | 853 | 914 | 895 | 1148 | 210 | 62 |
+| LeVJEPA ViT-L/16 | 16 f 224² | 1480 | 1508 | 1537 | 1851 | 579 | 166 |
 
 **On CUDA the ordering inverts.** Every type jepa.cpp ships takes `mmq`, a real INT8 tensor-core
 kernel, so q4_k ties q8_0 and both beat f16 — while also being a quarter and a half of the weight
@@ -289,6 +298,7 @@ within 3 % of each other everywhere both were measured.
 | V-JEPA 2 ViT-L, 64 f | 303 | 306 | **281** | 282 | 6388 | 7405 |
 | V-JEPA 2.1 ViT-B, 384² | – | 4.4 | – | **3.5** | 60.3 | 90.7 |
 | V-JEPA 2.1 ViT-B, 16 f | – | 43.0 | – | **37.3** | 853 | 1148 |
+| LeVJEPA ViT-L, 16 f | 85.4 | 87.2 | **70.8** | 71.2 | 1480 | 1851 |
 
 The f32 GPU column is not slower than f16 because ggml's CUDA F32 path is TF32 while the f16 path pays
 for `GGML_PREC_F32` accumulation. Accuracy per type does *not* invert with the backend; see
@@ -325,6 +335,7 @@ cmake -S . -B build-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DJEPA_CUDA=ON && c
 # encoder rows: one invocation per (file, shape), best of 5 after 2 warmups
 build-cuda/jepa-bench -m models/gguf/ijepa_vith14_1k-f16.gguf      --gpu 0 --warmup 2 --repeat 5 --md
 build-cuda/jepa-bench -m models/gguf/vjepa2-vitl-fpc64-256-q8_0.gguf --frames 64 --gpu 0 --warmup 2 --repeat 5 --md
+build-cuda/jepa-bench -m models/gguf/levjepa-vitl16-q8_0.gguf --frames 16 --gpu 0 --warmup 2 --repeat 5 --md
 
 # head and predictor rows
 build-cuda/jepa-bench -m models/gguf/vjepa2-vitl-fpc16-256-ssv2-f16.gguf --mode head      --gpu 0 --md

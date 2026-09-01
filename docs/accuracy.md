@@ -33,17 +33,19 @@ worst sample per model.
 | V-JEPA 2 ViT-L SSv2 | 2 clips × 16 f | 1.000000 | 0.999999 | 7.5e-04 | logits 1.000000, top-1/top-5 exact |
 | V-JEPA 2.1 ViT-B, 4 608 tok | 2 clips × 16 f | 1.000000 | 1.000000 | 8.7e-05 | `pooled_mean` 1.000000 |
 | V-JEPA 2.1 ViT-B, 576 tok | 2 COCO images | 1.000000 | 1.000000 | 6.2e-05 | `pooled_mean` 1.000000 |
+| LeVJEPA ViT-L, 3 137 tok | 2 clips × 16 f + 2 stills | 1.000000 | 1.000000 | 8.3e-06 | `cls`, `pooled_mean` 1.000000 |
 
 Predictors at f32 (`tests/test-predictor`): the V-JEPA 2 ViT-L masked predictor reaches 1.0000000 mean
 and worst with `rel_max` 3.4e-06–3.9e-06 over 2 048 rows; the V-JEPA 2.1 image-modality predictor
 1.0000000 with `rel_max` 7.6e-05; LeWM `pred_next` and `pred_seq` 1.0000000 with `rel_max` 3.5e-07.
 
 So the tubelet patchify, both RoPE table layouts, `interpolate_rope`, the modality vectors, the image
-tokenizer, the attentive pooler and the classifier are bit-faithful. Preprocessing is checked
+tokenizer, the prepended CLS token with its identity RoPE row, the block-causal attention mask, the
+attentive pooler and the classifier are bit-faithful. Preprocessing is checked
 separately and is bit-exact against torchvision's antialiased uint8 resize.
 
 *Source: [parity.md](parity.md#results-image-models-stored-reference-input-encoder-all-fixture-samples)
-and [parity.md](parity.md#results-video-encoders-v-jepa-2-v-jepa-21).*
+and [parity.md](parity.md#results-video-encoders-v-jepa-2-v-jepa-21-levjepa).*
 
 ## f16 and q8_0 on the CPU
 
@@ -61,8 +63,10 @@ and [parity.md](parity.md#results-video-encoders-v-jepa-2-v-jepa-21).*
 | V-JEPA 2 ViT-L SSv2 | q8_0 | 0.966128 | 0.996770 | 0.2305 | pooled 0.996645, logits 0.998501, top-1/top-5 exact |
 | V-JEPA 2.1 ViT-B, 4 608 tok | f16 | 0.999952 | 0.999991 | 0.9697 | `pooled_mean` 1.000000 |
 | V-JEPA 2.1 ViT-B, 4 608 tok | q8_0 | 0.999076 | 0.999578 | 0.8302 | `pooled_mean` 0.999986 |
+| LeVJEPA ViT-L, 3 137 tok | f16 | 0.999998 | 0.999999 | 0.999820 | `cls` 1.000000 |
+| LeVJEPA ViT-L, 3 137 tok | q8_0 | 0.999789 | 0.999937 | 0.991409 | `cls` 0.999989 |
 
-All nine image files and all fifteen video rows pass their family's thresholds, on the stored input
+All nine image files and all twenty-five video rows pass their family's thresholds, on the stored input
 and on jepa.cpp's own preprocessing alike. The image rows report per-file derived values only where
 `parity.md` lists them individually; where it does not, the cell names the bar the file cleared —
 ≥ 0.9995 for the image f16 tier.
@@ -90,7 +94,9 @@ below 0.999).
 Everything downstream is unaffected: at f16 `pooled_mean` stays at 0.999991, the masked predictor at
 0.9999996 and the SSv2 logits at 0.999935 with identical top-1 and top-5. **Use f32 for dense
 per-token work on that model**; f16 is correct everywhere else. V-JEPA 2.1 ViT-B is far more
-forgiving — worst token 0.9697 at f16 and 0.8302 at q8_0.
+forgiving — worst token 0.9697 at f16 and 0.8302 at q8_0 — and LeVJEPA has no tail at all: not one of
+its 3 137 tokens falls below 0.9998 at f16 on any fixture, because its reference row norms sit in a
+narrow band with no low-norm cluster for the rounding to amplify.
 
 The q8_0 rows have a related but distinct cause, and it is spread across the whole network: holding
 any single matrix family at f16 while quantizing the rest still leaves the ViT-L worst token at
@@ -126,8 +132,10 @@ Encoders on CUDA, worst sample per file, stored-input pass:
 | V-JEPA 2 ViT-L SSv2 | q8_0 | 0.967114 | 0.997084 | 0.1938 | 6.5e-01 | pooled 0.996336 |
 | V-JEPA 2.1 ViT-B/384, 4 608 tok | f16 | 0.999951 | 0.999985 | 0.9769 | 5.1e-02 | `pooled_mean` 0.999999 |
 | V-JEPA 2.1 ViT-B/384, 4 608 tok | q8_0 | 0.999073 | 0.999568 | 0.8396 | 1.3e-01 | `pooled_mean` 0.999983 |
+| LeVJEPA ViT-L/16, 3 137 tok | f16 | 0.999996 | 0.999998 | 0.9999 | 4.1e-03 | `cls` 0.999999 |
+| LeVJEPA ViT-L/16, 3 137 tok | q8_0 | 0.999785 | 0.999864 | 0.9914 | 2.3e-02 | `pooled_mean` 0.999982 |
 
-**22 of the 24 encoder files pass**, and all 9 predictor rows do. The two that do not —
+**27 of the 29 encoder files pass**, and all 9 predictor rows do. The two that do not —
 `lejepa-vits16-q4_k` (derived `cls` 0.9851 against the low-bit tier's 0.99) and
 `vjepa2-vitl-fpc16-256-ssv2-q4_k` (logits 0.9781, pooled 0.9807) — fail identically on the CPU: q4_k
 is below 8 bits per weight and is not a parity configuration for those two models. Every other q4_k
@@ -144,6 +152,11 @@ Two properties of this table are worth stating plainly.
 - **The V-JEPA 2 ViT-L f32 file on CUDA behaves like its f16 file**: worst token 0.3549 against
   0.3557, where on the CPU the same f32 file is exact. That is the "no f32 tier" statement measured
   end to end.
+- **LeVJEPA is the one family whose GPU rows read better than its CPU ones** at f32/f16 — worst token
+  0.9999 against 0.99982 — and the one place a backend difference is visible at q4_k: 0.8844 on the
+  GPU against 0.9575 on the CPU, with the CLS feature still at 0.9993. Its block-causal mask is the
+  first the CUDA *flash* kernel has run here, and it needs no padding at this ggml commit: the MMA
+  kernel wraps mask rows and clamps the key axis of its final tile.
 
 Predictors on CUDA take the naive attention path at `head_dim` 32 and are *more* accurate than a flash
 kernel would be — genuinely F32 end to end, `rel_max` 1.7e-03–2.8e-03 against the PyTorch dump, the
@@ -188,8 +201,8 @@ alternated inside one 87-minute sweep on an idle box. Machine-readable twin:
 ## UCF-101 k-NN
 
 10 classes, gallery 300 clips, 105 val+test query clips, 16 frames per clip decoded once with PyAV and
-read by both backends, so they see identical pixels. Same protocol: frozen pooled features, k = 20
-cosine k-NN and a nearest-centroid vote.
+read by both backends, so they see identical pixels. Same protocol: frozen features — the token mean,
+or the CLS token for LeVJEPA — with a k = 20 cosine k-NN and a nearest-centroid vote.
 
 | model | backend | dtype | kNN top-1 % | centroid top-1 % | kNN agree % | centroid agree % | feat cos |
 |---|---|---|---:|---:|---:|---:|---:|
@@ -200,8 +213,14 @@ cosine k-NN and a nearest-centroid vote.
 | | jepa.cpp | f32 | 88.6 | 86.7 | **100.0** | **100.0** | 1.000000 |
 | | jepa.cpp | f16 | 89.5 | 86.7 | 99.0 | **100.0** | 1.000000 |
 | | jepa.cpp | q8_0 | 89.5 | 86.7 | 99.0 | **100.0** | 0.999988 |
+| LeVJEPA ViT-L/16 (`cls`) | PyTorch | f32 | 81.9 | 81.0 | — | — | — |
+| | jepa.cpp | f32 | 81.9 | 81.0 | **100.0** | **100.0** | 1.000000 |
+| | jepa.cpp | f16 | 81.9 | 81.0 | **100.0** | **100.0** | 1.000000 |
+| | jepa.cpp | q8_0 | 81.9 | 81.0 | **100.0** | **100.0** | 0.999995 |
 
 Where a jepa.cpp row reads *higher* than PyTorch — 89.5 against 88.6 % — that is one clip out of 105.
+LeVJEPA reproduces every single prediction at every dtype, k-NN and centroid alike, which is the only
+model here for which that holds down to q8_0.
 
 Every k-NN disagreement is a tie in the neighbour set: the two backends agree on 19 of the 20 nearest
 gallery clips and the 20th and 21st are separated by *less* cosine than the two backends' similarities
@@ -212,7 +231,9 @@ dtype**. Over all 405 clips the worst single clip at any dtype still matches PyT
 
 Feature fidelity over all 405 clips: V-JEPA 2.1 ViT-B at f32 reaches mean cosine 1.0000000 with the
 largest single-component difference at 7.13e-05; at f16 0.9999999; at q8_0 0.9999874. V-JEPA 2 ViT-L
-reaches 0.9999946 at f16 and 0.9998754 at q8_0.
+reaches 0.9999946 at f16 and 0.9998754 at q8_0. LeVJEPA reaches 1.0000000 at f32 (worst clip
+1.0000000, largest component difference 1.72e-05) and f16, and 0.9999943 at q8_0 (worst clip
+0.9999677).
 
 *Source: [accuracy-video.md](accuracy-video.md), 32 threads, PyTorch and jepa.cpp stages alternated in
 one sweep on an idle box. Machine-readable twin: `tests/results/accuracy-video.json`.*
