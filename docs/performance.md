@@ -237,7 +237,7 @@ has the per-split throughput rows.*
 | V-JEPA 2 ViT-L SSv2 | 1432 | 717 | 383 | 205 | 808 (2 048 tok) |
 | V-JEPA 2 ViT-L fpc64 | 1243 | 622 | 333 | 178 | 1034 (8 192 tok) |
 | V-JEPA 2.1 ViT-B/384 | 419 | 210 | 113 | 62 | 948 (18 432 tok) |
-| LeVJEPA ViT-L/16 | 1156 | 579 | 310 | 166 | 816 (3 137 tok) |
+| LeVJEPA ViT-L/16 | 1156 | 579 | 310 | 166 | 779 (3 137 tok) |
 
 Weights resident, MiB (`jepa_model_n_bytes()`); peak RSS additionally covers the graph arena, the
 host-side patch buffer and the output rows, so it grows with the token count. Across these seven
