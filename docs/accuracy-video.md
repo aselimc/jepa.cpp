@@ -1,6 +1,8 @@
-# Accuracy — video k-NN on the UCF101 subset (PyTorch vs jepa.cpp)
+# Accuracy — video: UCF-101 k-NN and SSv2 classification (PyTorch vs jepa.cpp)
 
 *Raw measurement report — the curated view is [Benchmarks → Accuracy](accuracy.md).*
+
+Two benchmarks live here: a frozen-feature k-NN over a UCF-101 subset, which every video encoder is scored on, and the real [Something-Something-v2 validation accuracy](#ssv2-validation-accuracy-the-real-task) of the SSv2 classifier, which is a trained head on the task it was trained for.
 
 Frozen-feature evaluation, 2026-09-01. **Inference only** — nothing is trained: the encoders are frozen and both metrics are look-ups over their pooled clip features.
 
@@ -101,6 +103,65 @@ Feature fidelity over **all** 405 clips (gallery + queries), against the PyTorch
 
 `top-5 overlap` is the mean size of the intersection of the two top-5 label sets divided by 5.
 
+## SSv2 validation accuracy — the real task
+
+The same checkpoint scored on the task it was trained for: the **full 24 777-clip Something-Something-v2 validation split**, 174 classes, measured 2026-09-01. This is a task accuracy, not an agreement measure — the table above runs the same head on UCF clips, where an SSv2 label means nothing.
+
+- **Dataset** `data/ssv2` — 24 777 clips decoded, 0 decode failures, 0 clips skipped.
+- **Views** single view, no test-time augmentation: 1 temporal clip x 1 spatial crop.
+- **Clip** 16 frames, idx = round(linspace(0, T_total-1, n)) over all PyAV-decoded rgb24 frames, decoded once into a THWC uint8 `.npy` every backend reads.
+- **Preprocessing** shortest edge -> 292 (bilinear), centre crop 256, /255, mean (0.485,0.456,0.406) / std (0.229,0.224,0.225) — the checkpoint's own video_preprocessor_config.json, applied by each backend to the same THWC uint8 frames.
+- **Labels** the class index is `id2label` of the checkpoint; validation.json `template` is a verbatim id2label value, and labels.json id == id2label index for all 174 classes after removing the '[' ']' placeholder brackets. The GGUFs' own `jepa.head.labels` are f16: identical to id2label order, f32: identical to id2label order, q4_k: identical to id2label order, q8_0: identical to id2label order.
+- **Reference** transformers VJEPA2ForVideoClassification, torch.no_grad, float32, TF32 disabled on both matmul and cuDNN.
+- **Scopes** `full` = all validation clips; `sub10` = every 10th clip of the validation order; `sub100` = every 100th clip of the validation order.
+
+### Full validation split (24 777 clips)
+
+| backend | device | dtype | top-1 % | top-5 % | top-1 agreement % | logit cos mean | logit cos min | max abs logit diff | clips/s |
+|---|---|---|--:|--:|--:|--:|--:|--:|--:|
+| pytorch | cuda:1 | f32 | **72.39** | 94.11 | ref | ref | ref | ref | 7.20 |
+| jepa.cpp | cuda:1 | f32 | **72.39** | 94.10 | 99.66 | 0.999963 | 0.985862 | 1.060 | 14.17 |
+| jepa.cpp | cuda:1 | f16 | **72.39** | 94.11 | 99.66 | 0.999963 | 0.985599 | 1.069 | 12.24 |
+| jepa.cpp | cuda:1 | q8_0 | **72.47** | 94.07 | 97.97 | 0.999172 | 0.941882 | 2.601 | 14.79 |
+| jepa.cpp | cuda:1 | q4_k | **72.52** | 94.02 | 94.19 | 0.993067 | 0.794766 | 4.105 | 14.63 |
+
+PyTorch and jepa.cpp read the same `.npy` frames and each applies the checkpoint's own preprocessing to them, so the only difference between the rows is the engine and the weight dtype. In clips rather than percentage points the jepa.cpp rows differ from the reference by f32 +1, f16 +1, q8_0 +19, q4_k +32 of 24 777.
+
+The published figure for this architecture is **73.7 %** top-1 (arXiv:2506.09985 Table 4, V-JEPA 2 ViT-L), measured with 16 frames x 2 temporal crops x 3 spatial crops, logits averaged across the 6 clips against the single view taken here; the model card of the released checkpoint publishes no number of its own.
+
+### CPU against CUDA on the `sub10` subset (2 478 clips)
+
+| backend | device | dtype | top-1 % | top-5 % | top-1 agreement % | logit cos mean | logit cos min | max abs logit diff | clips/s |
+|---|---|---|--:|--:|--:|--:|--:|--:|--:|
+| pytorch | cuda:1 | f32 | **72.84** | 94.35 | ref | ref | ref | ref | — |
+| jepa.cpp | cpu | f32 | **72.84** | 94.35 | 100.00 | 1.000000 | 1.000000 | 0.003 | 0.86 |
+| jepa.cpp | cpu | f16 | **72.92** | 94.39 | 99.72 | 0.999973 | 0.997362 | 0.541 | 1.02 |
+| jepa.cpp | cuda:1 | f32 | **72.96** | 94.27 | 99.76 | 0.999964 | 0.998010 | 0.668 | — |
+| jepa.cpp | cuda:1 | f16 | **72.92** | 94.27 | 99.68 | 0.999965 | 0.997951 | 0.552 | — |
+| jepa.cpp | cuda:1 | q8_0 | **73.12** | 94.27 | 97.42 | 0.999134 | 0.964694 | 2.541 | — |
+| jepa.cpp | cuda:1 | q4_k | **72.80** | 94.15 | 93.87 | 0.992863 | 0.923997 | 2.919 | — |
+
+Every row is scored against the same PyTorch reference logits sliced to the same clips, so a CPU row and a CUDA row of the same dtype are directly comparable. The CUDA and PyTorch rows here are the full-split runs scored on this subset rather than separate passes — identical inputs produce identical logits, so re-running them would only cost GPU time. That is why they carry no `clips/s`.
+
+The same rows read against each other rather than against PyTorch, which is the comparison that isolates the backend with the engine and the GGUF held fixed:
+
+| dtype | clips | argmax agreement % | logit cos mean | logit cos min | max abs logit diff |
+|---|--:|--:|--:|--:|--:|
+| f32 | 2478 | 99.76 | 0.999964 | 0.998011 | 0.668 |
+| f16 | 2478 | 99.96 | 0.999986 | 0.998767 | 0.484 |
+
+A CUDA build has no f32 tier — its "F32" matmul is TF32 and its flash kernel converts K/V to F16 — and the two rows measure exactly that: the f32 GGUF agrees with itself across the two backends *less* often than the f16 GGUF does, because on the CPU the f32 file is exact and on the GPU it is not.
+
+### The f32 anchor — both engines on the CPU (248 clips)
+
+| run | clips | top-1 agreement % | mean 1 − cos | worst clip 1 − cos | max abs logit diff |
+|---|--:|--:|--:|--:|--:|
+| `cpp-cpu-f16-sub10` | 248 | 100.00 | 2.48e-05 | 4.22e-04 | 3.99e-01 |
+| `cpp-cpu-f32-sub10` | 248 | 100.00 | 1.02e-10 | 1.14e-08 | 7.98e-04 |
+| `pytorch-cuda (control)` | 248 | 100.00 | 7.48e-11 | 1.70e-09 | 4.74e-04 |
+
+The reference here is `transformers` on the **CPU** at f32 (torch 2.13.0+cpu), not the GPU rows above: it is the one comparison in which both sides run the same arithmetic on the same hardware, so it is the one that can be read as an exactness claim rather than a fidelity one. The last row is the control that gives the others a scale — PyTorch's *own* fp32 CUDA logits against its fp32 CPU logits on the same clips, which is what changing backend costs before changing engine is considered at all.
+
 ## What the numbers say
 
 **The f32 anchor is exact end to end.** On all 405 clips, LeVJEPA ViT-L/16 (VideoMix) at f32 reproduces the PyTorch feature vector to cosine 1.0000000 (worst clip 1.0000000, largest single-component difference 1.7e-05) and every k-NN and centroid prediction is identical. That covers the *whole* pipeline, not just the encoder: jepa.cpp decodes nothing, but it does its own resize, centre crop and normalisation from the same uint8 frames, so the match confirms `jepa.pre.*` reproduces the reference pipeline's pixels as well as the graph reproduces the weights. `docs/parity.md` shows the same at token level on two fixture clips; this is 405 real clips of pooled output.
@@ -118,7 +179,9 @@ Feature fidelity over **all** 405 clips (gallery + queries), against the PyTorch
 
 In each case the two backends agree on 19 of the 20 nearest gallery clips and differ only at the last one — and the final columns say why: the 20th- and 21st-ranked gallery clips are separated by *less* cosine than the two backends' similarities to that query differ, by 2.2x to 36x, so which of the two lands inside the neighbourhood is decided by round-off. That last neighbour is not a rounding term in the vote: its `exp(sim / 0.07)` weight is 0.18 and 0.61 of the top neighbour's, so one swap moves the leading class total by 4–16 %, which is enough to decide a vote that was already a 1.003 / 1.102 near-tie. The tell is the parameter-free metric: **nearest-class-centroid agreement is 100 % for every model and every dtype** — with no k and no neighbour set, there is nothing for a 1e-6 perturbation to reshuffle. Read the k-NN agreement column as a property of k-NN at k = 20 on a 300-clip gallery, not as a fidelity measure of the backend; `feat cos` and the centroid column are the fidelity measures.
 
-**The SSv2 head is where q8_0 finally costs something.** f16 reaches the same 174-way argmax as PyTorch on 99.0 % of the 105 clips (logit cosine 0.999970); q8_0 drops to 94.3 % (6 clips of 105) with logit cosine 0.998922 and a largest logit error of 1.04. The PyTorch top-1 stays inside the jepa.cpp top-5 on 100.0 % of clips at both dtypes, so the ranking is intact and only near-ties at the top move. This is the sharpest measurement in the document: an argmax over 174 classes has no averaging to hide behind, unlike a pooled 1024-vector whose cosine stays at 0.9999 — which is exactly why `docs/parity.md`'s advice to prefer f16 over q8_0 for head/classifier work, and q8_0 only for pooled retrieval features, holds up on 105 real clips.
+**The SSv2 head is where q8_0 finally costs something.** f16 reaches the same 174-way argmax as PyTorch on 99.0 % of the 105 clips (logit cosine 0.999970); q8_0 drops to 94.3 % (6 clips of 105) with logit cosine 0.998922 and a largest logit error of 1.04. The PyTorch top-1 stays inside the jepa.cpp top-5 on 100.0 % of clips at both dtypes, so the ranking is intact and only near-ties at the top move. An argmax over 174 classes has no averaging to hide behind, unlike a pooled 1024-vector whose cosine stays at 0.9999 — which is exactly why `docs/parity.md`'s advice to prefer f16 over q8_0 for head/classifier work, and q8_0 only for pooled retrieval features, holds up on 105 real clips.
+
+What 105 clips cannot say is what those moved argmaxes cost as *accuracy*, and the SSv2 validation section answers that on a scale that resolves it: over 24 777 clips q8_0 moves 502 top-1 decisions, and top-1 ends at 72.47 % against PyTorch's 72.39 %. The moved decisions are near-ties in both directions, so they cancel; prefer f16 because the argmaxes are the reference's, not because the score is.
 
 **Throughput.** jepa.cpp is faster than PyTorch on the same 32 threads in every configuration measured here: V-JEPA 2 ViT-L/16 (fpc64-256) 1.13–1.15 clips/s over f16/q8_0 against PyTorch's 0.84 (1.34–1.37x); V-JEPA 2.1 ViT-B/16 @384 1.07–1.13 clips/s over f32/f16/q8_0 against PyTorch's 1.02 (1.05–1.11x); LeVJEPA ViT-L/16 (VideoMix) 0.58–0.62 clips/s over f32/f16/q8_0 against PyTorch's 0.52 (1.11–1.20x). **Neither side is charged a per-clip model load, and neither batches.** The PyTorch loop keeps one `VJEPA2Model` resident and starts its timer after `from_pretrained` returns; `jepa-embed --frames-list` mmaps the GGUF once and then walks the whole 405-clip list inside that one process. Both do their own preprocessing per clip, and both run one clip per forward: a V-JEPA 2 clip is already 2048-18432 tokens, so jepa.cpp keeps one graph per clip there and batches only the image families.
 
