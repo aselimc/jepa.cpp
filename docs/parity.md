@@ -564,21 +564,30 @@ path — fully F32, one graph split, and a 0.75 GiB score matrix at these row co
 
 | model | ftype | check | rows | cos mean | cos min | rel_max | ms (GPU) | ms (CPU t=32) |
 |---|---|---|---:|---|---|---|---:|---:|
-| vjepa2-vitl-fpc64-256 | f32 | archery | 2048 | 0.9999996 | 0.9999886 | 2.8e-03 | 164 | 409 |
+| vjepa2-vitl-fpc64-256 | f32 | archery | 2048 | 0.9999996 | 0.9999886 | 2.8e-03 | 152 | 409 |
 | vjepa2-vitl-fpc64-256 | f32 | bowling | 2048 | 0.9999995 | 0.9999955 | 1.7e-03 | 113 | 329 |
-| vjepa2-vitl-fpc64-256 | f16 | archery | 2048 | 0.9999996 | 0.9999904 | 2.5e-03 | 169 | 452 |
+| vjepa2-vitl-fpc64-256 | f16 | archery | 2048 | 0.9999996 | 0.9999904 | 2.5e-03 | 154 | 452 |
 | vjepa2-vitl-fpc64-256 | f16 | bowling | 2048 | 0.9999995 | 0.9999959 | 1.7e-03 | 113 | 326 |
-| vjepa2-vitl-fpc64-256 | q8_0 | archery | 2048 | 0.9998456 | 0.9967527 | 5.1e-02 | 174 | 388 |
+| vjepa2-vitl-fpc64-256 | q8_0 | archery | 2048 | 0.9998456 | 0.9967527 | 5.1e-02 | 158 | 388 |
 | vjepa2-vitl-fpc64-256 | q8_0 | bowling | 2048 | 0.9998407 | 0.9987917 | 2.6e-02 | 112 | 290 |
-| lewm-pusht | f32 | `pred_next` / `pred_seq` | 1 / 3 | 1.0000000 | 1.0000000 | 3.1e-05 | 0.49 / 0.74 | 0.66 / 1.23 |
-| lewm-pusht | f16 | `pred_next` / `pred_seq` | 1 / 3 | 0.9999999 | 0.9999999 | 4.6e-04 | 0.53 / 3.80 | 0.65 / 1.22 |
-| lewm-pusht | q8_0 | `pred_next` / `pred_seq` | 1 / 3 | 0.9999340 | 0.9999340 | 1.3e-02 | 0.52 / 0.71 | 0.65 / 0.99 |
+| lewm-pusht | f32 | `pred_next` / `pred_seq` | 1 / 3 | 1.0000000 | 1.0000000 | 3.1e-05 | 0.45 / 0.57 | 0.66 / 1.23 |
+| lewm-pusht | f16 | `pred_next` / `pred_seq` | 1 / 3 | 0.9999999 | 0.9999999 | 4.6e-04 | 0.41 / 3.22 | 0.65 / 1.22 |
+| lewm-pusht | q8_0 | `pred_next` / `pred_seq` | 1 / 3 | 0.9999340 | 0.9999340 | 1.3e-02 | 0.45 / 0.57 | 0.65 / 0.99 |
+
+`ms (GPU)` is the median of three `test-predictor --gpu 0` launches per file, re-measured on
+2026-09-01 with the sweep behind `tests/results/benchmarks-gpu.json` (raw log in
+`tmp/bench-gpu/test-predictor-gpu.log`); it replaces an earlier session's single-launch column,
+which read 8–30 % higher on the *archery* and LeWM rows and within half a per cent on *bowling*.
+Those are the rows a single launch measures worst: *archery* is the first sample of its run and
+carries the first-touch page-in, and the LeWM graphs are sub-millisecond and launch-bound.
+Every cosine and `rel_max` above reproduced to the digit, so what moved is timing, not numerics.
+`ms (CPU t=32)` is unchanged.
 
 Every predictor row **PASSES**, and the naive path is *more* accurate than flash would be: it is
 genuinely F32 end to end, so the f32 and f16 files land at `rel_max` 1.7e-03–2.8e-03 against the
 PyTorch dump — the same order as the CPU's 1.3e-03–1.7e-03, not the 5e-03–1.5e-02 a CUDA flash
-kernel costs. The 3.0× speed-up (rather than the encoders' 20×) is the price of that path running
-at ~3 TFLOP/s instead of flash's 50–70.
+kernel costs. The 2.5–2.9× speed-up (rather than the encoders' 20×) is the price of that path
+running at ~3 TFLOP/s instead of flash's 50–70.
 
 LeWM's structural self-consistency checks (causal-prefix equality, rollout-vs-predict) are
 **bit-identical on the GPU too**: `max|d| 0.000e+00` for every T ≥ 2 prefix and both rollout steps,

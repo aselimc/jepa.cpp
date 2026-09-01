@@ -2,9 +2,10 @@
 
 Speed and memory, measured. Every figure on this page is copied from a measurement artifact, and
 each table names its source. The CPU tables have a committed machine-readable twin,
-`tests/results/benchmarks.json`; **the GPU tables do not** — `scripts/gen_benchmarks_md.py` drops
-`--gpu` runs, because [benchmarks.md](benchmarks.md) is keyed by thread count, so this page is the
-document of record for them and the reproduce block below is how to regenerate them.
+`tests/results/benchmarks.json`, and the GPU tables have one of their own,
+`tests/results/benchmarks-gpu.json`: a GPU row is keyed by device and accumulation precision rather
+than by thread count, so `scripts/bench_gpu.sh` sweeps and writes it separately and
+[benchmarks.md](benchmarks.md#gpu-cuda) renders it as its own section of the raw report.
 
 ## Environment
 
@@ -79,7 +80,7 @@ encoder table above, i.e. 96 Zen 4 cores' worth of machine against one workstati
 |---|---|---:|---:|---:|---:|---:|---:|---|
 | I-JEPA ViT-H/14 | 224² | 256 | 11.8 | 15.5 | 8.0 | **7.8** | 147 | **9.5×** |
 | LeJEPA ViT-S/16 | 224² | 197 | – | **1.1** | – | – | 12.8 | **11.6×** |
-| LeWM ViT-Ti/14 | 224² | 257 | – | **0.8** | – | – | 9.8 | **12.3×** |
+| LeWM ViT-Ti/14 | 224² | 257 | – | **0.9** | – | – | 9.8 | **11.5×** |
 | V-JEPA 2 ViT-L fpc64 | 16 f 256² | 2 048 | 44.3 | 46.5 | **34.4** | 34.8 | 821 | **17.6×** |
 | V-JEPA 2 ViT-L fpc64 | 64 f 256² | 8 192 | 303 | 306 | **281** | 282 | 6388 | **20.9×** |
 | V-JEPA 2.1 ViT-B/384 | 384² | 576 | – | **4.4** | – | 3.5 | 60.3 | **13.7×** |
@@ -93,11 +94,15 @@ frames), 12.0×, 14.8× and 11.9× (V-JEPA 2.1 at 576, 4 608 and 18 432 tokens) 
 The ratio grows with the sequence, and two effects separate the ends of it. The long clips keep the
 card busy. The small image models are held back both by launch overhead — LeJEPA's whole forward is
 1.1 ms — and, more than that, by `GGML_PREC_F32`, which costs 1.76× at I-JEPA's 256 tokens against
-1.06× at 8 192; that is why the image models land at 9.5–13.7× rather than in the long clips'
+1.01× at 8 192; that is why the image models land at 9.5–13.7× rather than in the long clips'
 twenties.
 
-*Source: `tools/jepa-bench --gpu 0` on the box above, `GGML_PREC_F32` on. No committed
-machine-readable twin exists for these rows — see the reproduce block at the foot of the page.*
+*Source: `tools/jepa-bench --gpu 0` on the box above, `GGML_PREC_F32` on. Machine-readable twin:
+`tests/results/benchmarks-gpu.json`, whose rows carry the run-to-run σ, the host peak RSS and the
+32-thread CPU figure each speed-up divides; [benchmarks.md](benchmarks.md#gpu-encoder) prints them.
+A fresh sweep of the whole grid on 2026-09-01 reproduces every cell in this table to within 1.7 %.
+The one cell it moved is LeWM's, measured at 0.856 ms against the 0.8 this page rounded to before —
+a 0.05 ms difference that is 7 % of a number this small, and its speed-up moved 12.3× → 11.5× with it.*
 
 ![Milliseconds per image or clip, one row per model and shape, four bars each: PyTorch on 32 CPU
 threads, jepa.cpp on 32 CPU threads, PyTorch on one GPU and jepa.cpp on one GPU, on a log
@@ -114,17 +119,18 @@ with their own shapes and sources.
 
 | graph | shape | CUDA f16 | CPU f16 t=32 | ratio |
 |---|---|---:|---:|---|
-| V-JEPA 2 ViT-L masked predictor, *archery* | 4 096 rows (2 048 context + 2 048 mask) | 169 | 452 | 2.7× |
+| V-JEPA 2 ViT-L masked predictor, *archery* | 4 096 rows (2 048 context + 2 048 mask) | 154 | 452 | 2.9× |
 | V-JEPA 2 ViT-L masked predictor, *bowling* | 4 096 rows | 113 | 326 | 2.9× |
 | SSv2 attentive-pool head | 2 048 tokens | 5.7 | 96 ᵈ | 16.8× |
-| LeWM predictor, `pred_next` | 1 row | 0.53 | 0.65 | 1.2× |
-| LeWM predictor, `pred_seq` | 3 rows | 3.80 | 1.22 | **0.3× — slower on the GPU** |
+| LeWM predictor, `pred_next` | 1 row | 0.41 | 0.65 | 1.6× |
+| LeWM predictor, `pred_seq` | 3 rows | 3.22 | 1.22 | **0.4× — slower on the GPU** |
 
-The masked-predictor and LeWM rows come from one `test-predictor` run per backend on the same fixture
-clips, so each line is like-for-like; *archery* carries the first-touch page-in of its run, which is
-why *bowling* is faster at the same shape on both backends.
+The masked-predictor and LeWM rows come from `test-predictor` on the same fixture clips — the CUDA
+column the median of three launches, the CPU column one run — so each line is like-for-like;
+*archery* carries the first-touch page-in of its run, which is why *bowling* is faster at the same
+shape on both backends.
 
-The masked predictor gains **2.7–2.9×, where the ViT-L encoder on the very same clip gains 17.6×**,
+The masked predictor gains **2.9×, where the ViT-L encoder on the very same clip gains 17.6×**,
 and that is the price of the naive attention path it takes at `head_dim` 32 — accurate, genuinely
 F32, and ~3 TFLOP/s against flash's 50–70. The LeWM predictor is the one graph that is *slower* on a GPU at its real shape: three
 rows of 192 dimensions is far below the size at which a launch pays for itself.
@@ -132,11 +138,13 @@ rows of 192 dimensions is far below the size at which a launch pays for itself.
 ᵈ 96 ms is `jepa-classify --time` on the fixture clip; the synthetic `head` mode of `jepa-bench`
 measures the same graph at 99.0 ms (see the end-to-end table below). `jepa-bench --mode lewm-step`
 likewise reads 0.918 ms for the full 3-frame window against `test-predictor`'s 1.22 ms, on synthetic
-rather than reference state.
+rather than reference state; on the card the same two read 0.45 and 3.22 ms.
 
 *Source: [parity.md](parity.md#results-predictors-on-cuda0) and
 [parity.md](parity.md#v-jepa-2-vit-l-masked-predictor-ctx-tgt-all-2048-tokens-of-a-16-frame-clip) for
-the predictor and LeWM rows; `jepa-bench --gpu 0` / `jepa-classify --time` for the head row.*
+the predictor and LeWM rows, whose GPU column was re-measured with the 2026-09-01 sweep (median of
+three `test-predictor --gpu 0` launches per file); `jepa-bench --gpu 0` for the head row, which is a
+row of `tests/results/benchmarks-gpu.json`, and `jepa-classify --time` for its CPU cell.*
 
 ## GPU against PyTorch on the same card
 
@@ -145,13 +153,13 @@ the predictor and LeWM rows; `jepa-bench --gpu 0` / `jepa-classify --time` for t
 
 | shape | jepa.cpp CPU t=32 | **jepa.cpp CUDA** | with `--gpu-prec f16` | torch fp16 | torch fp32 | ggml / torch fp16 |
 |---|---:|---:|---:|---:|---:|---:|
-| I-JEPA ViT-H, 224² | 147.0 | **15.5** | 8.8 | 5.91 | 24.26 | 2.6× / 1.5× |
+| I-JEPA ViT-H, 224² | 147.0 | **15.5** | 8.8 | 5.51 | 24.26 | 2.8× / 1.6× |
 | V-JEPA 2 ViT-L, 16 f | 820.7 | **46.5** | 37.4 | 28.74 | 115.62 | 1.6× / 1.3× |
 | V-JEPA 2 ViT-L, 64 f | 6388.1 | **306** | 304 | 147.5 | 838.38 | 2.1× / 2.1× |
 | LeVJEPA ViT-L, 16 f | 1480 | **87.2** | 82.9 | 58.51 | 222.64 | 1.5× / 1.4× |
 
-jepa.cpp-CUDA lands at **38–67 % of PyTorch's throughput on the same GPU** at its default precision
-and 48–77 % with `--gpu-prec f16`, while being 9–21× faster than the CPU engine. LeVJEPA is the closest
+jepa.cpp-CUDA lands at **36–67 % of PyTorch's throughput on the same GPU** at its default precision
+and 49–77 % with `--gpu-prec f16`, while being 9–21× faster than the CPU engine. LeVJEPA is the closest
 of the four (67 % / 71 %), and the mask is why: its explicit attention mask disqualifies PyTorch's flash
 SDPA kernel, which its own model card warns about, so the reference gives up more than jepa.cpp does. `--gpu-prec f16` is
 bench-only — it is not exposed in the runtime tools and is not parity-gated, so those cells are a
@@ -170,13 +178,20 @@ use LayerNorm), `gelu_erf` over the FFN hidden twice per layer, and the per-laye
 At the 64-frame shape the component rates account for 182 ms of the 306 measured.
 
 Memory on the card: torch's fp16 peak GPU memory is 1.19 GiB (I-JEPA at 256 tokens), 0.67 GiB
-(ViT-L at 2 048) and 1.15 GiB (LeVJEPA at 3 137, where the `3137²` mask is 20 MiB per layer input on
-its own), against 0.83 GiB at 8 192.
+(ViT-L at 2 048) and 0.68 GiB (LeVJEPA at 3 137, of which the `3137²` F16 mask is 20 MiB), against
+0.83 GiB at 8 192. Each is `max_memory_allocated` after the warmups with one model per precision on
+the device, so it is that precision's own footprint and nothing else.
 
-*Source: the torch-GPU baseline as re-measured after the port. Every row reproduced to within 3 % of
-the earlier session except I-JEPA fp16, which moved +6.1 % — jitter at that scale, since the row has
-a 0.34 ms run-to-run σ at 5.91 ms and its minimum, 5.62 ms, is within 1 % of the earlier
-figure.*
+*Source: `scripts/torch_gpu_baseline.py --device 0`, recorded under `pytorch_gpu` in
+`tests/results/benchmarks-gpu.json` and printed in
+[benchmarks.md](benchmarks.md#pytorch-on-the-same-card). The 2026-09-01 re-run reproduces every
+timing on this page to within 2 % except the two I-JEPA rows, the smallest forward of the four:
+fp16 reads 5.51 ms (mean over 7 forwards, σ 0.04, minimum 5.46) against the 5.91 ms this page used
+to quote — a row whose earlier σ was 0.34 ms at that scale, so the tighter figure replaces it — and
+fp32 reads 23.39 ms against 24.26, which is inside the 5 % this page treats as reproduction and is
+kept. The LeVJEPA fp16 peak moved from 1.15 GiB for a reason of method rather than machine: the
+earlier session reused one module for both precisions, so its fp16 peak still carried the fp32 copy
+of the weights.*
 
 ## End-to-end video classification
 
@@ -324,7 +339,9 @@ for `GGML_PREC_F32` accumulation. Accuracy per type does *not* invert with the b
 [Accuracy → which dtype to ship](accuracy.md#which-dtype-to-ship).
 
 *Source: CPU rows from [benchmarks.md](benchmarks.md#sub-8-bit-weights-what-q4-costs-and-what-it-buys-encoder-t32)
-and its dtype table; GPU rows from the same `jepa-bench --gpu 0` sweep as the GPU encoder table.*
+and its dtype table; GPU rows from the same `jepa-bench --gpu 0` sweep as the GPU encoder table, i.e.
+`tests/results/benchmarks-gpu.json` and
+[benchmarks.md](benchmarks.md#effect-of-the-weight-dtype-on-a-gpu-encoder).*
 
 ![Two small charts, one per model: latency against the same backend's f16 file, on the CPU and on
 CUDA, over the resident weights of each dtype, with the PyTorch CPU and PyTorch CUDA
@@ -354,22 +371,34 @@ build/jepa-bench -m models/gguf/vjepa2-vitl-fpc64-256-f16.gguf --frames 64 --thr
 `bench_all.sh` writes one JSON per (file, mode, shape) plus a `meta.json`; `tmp/bench/` is
 git-ignored and `tests/results/benchmarks.json` is the committed twin.
 
-The GPU tables are produced one configuration at a time — `bench_all.sh` has no `--gpu` mode and
-`gen_benchmarks_md.py` drops `--gpu` runs, so nothing aggregates them into a committed JSON:
+The GPU tables have their own sweep, `scripts/bench_gpu.sh`, which is the same shape: one
+`jepa-bench` process per configuration into `tmp/bench-gpu/`, then the same generator, then
+`tests/results/benchmarks-gpu.json`. The configurations are the ones this page tabulates and they
+live in `scripts/bench_gpu.grid`, one line per (model, mode, shape, dtypes), so filling in a cell
+printed as `–` above is a line in that file rather than a new command.
 
 ```bash
 cmake -S . -B build-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DJEPA_CUDA=ON && cmake --build build-cuda -j 16
 
-# encoder rows: one invocation per (file, shape), best of 5 after 2 warmups
-build-cuda/jepa-bench -m models/gguf/ijepa_vith14_1k-f16.gguf      --gpu 0 --warmup 2 --repeat 5 --md
-build-cuda/jepa-bench -m models/gguf/vjepa2-vitl-fpc64-256-q8_0.gguf --frames 64 --gpu 0 --warmup 2 --repeat 5 --md
-build-cuda/jepa-bench -m models/gguf/levjepa-vitl16-q8_0.gguf --frames 16 --gpu 0 --warmup 2 --repeat 5 --md
+# the PyTorch baseline of the "GPU against PyTorch" table (needs a CUDA-enabled torch)
+python scripts/torch_gpu_baseline.py --device 0 -o tmp/bench-gpu/torch-gpu.json
 
-# head and predictor rows
-build-cuda/jepa-bench -m models/gguf/vjepa2-vitl-fpc16-256-ssv2-f16.gguf --mode head      --gpu 0 --md
-build-cuda/test-predictor --vjepa2 models/gguf/vjepa2-vitl-fpc64-256-f16.gguf \
-    --ref tests/fixtures/ref/vjepa2-vitl-fpc64-256 --samples archery_f16,bowling_f16 --gpu 0
+# the whole GPU matrix on device 0, best of 5 after 2 warmups, then the raw report and the artifact
+scripts/bench_gpu.sh 0
+
+# one GPU configuration by hand
+build-cuda/jepa-bench -m models/gguf/vjepa2-vitl-fpc64-256-q8_0.gguf --frames 64 --gpu 0 \
+    --warmup 2 --repeat 5 --md
 
 # the precision opt-out behind the --gpu-prec f16 column (bench-only, not parity-gated)
 build-cuda/jepa-bench -m models/gguf/ijepa_vith14_1k-f16.gguf --gpu 0 --gpu-prec f16 --md
+
+# the predictor and LeWM rows, which are test-predictor on the real fixture clips (docs/parity.md)
+build-cuda/test-predictor --vjepa2 models/gguf/vjepa2-vitl-fpc64-256-f16.gguf \
+    --ref tests/fixtures/ref/vjepa2-vitl-fpc64-256 --samples archery_f16,bowling_f16 --gpu 0
+build-cuda/test-predictor --lewm models/gguf/lewm-pusht-f16.gguf \
+    --ref tests/fixtures/ref/lewm-pusht --gpu 0
 ```
+
+Rebuilding the document without re-running the card works too: with no `--gpu-dir`,
+`gen_benchmarks_md.py` renders the GPU tables straight out of the committed artifact.
