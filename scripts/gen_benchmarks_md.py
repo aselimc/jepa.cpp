@@ -2,6 +2,7 @@
 """Merge the JSONs written by tools/jepa-bench into docs/benchmarks.md.
 
     scripts/gen_benchmarks_md.py --bench-dir tmp/bench --ref-dir tests/fixtures/ref -o docs/benchmarks.md
+    scripts/gen_benchmarks_md.py --bench-dir tmp/bench --check      # exit 1 if the document is stale
 
 Reads every ``*.json`` in ``--bench-dir`` (``meta.json`` carries the box/toolchain description written
 by ``scripts/bench_all.sh``), the PyTorch golden-dump manifests in ``--ref-dir`` for the two baseline
@@ -320,6 +321,10 @@ def main() -> int:
                          "(only with --gpu-dir; otherwise the artifact's own copy is used)")
     ap.add_argument("--no-doc", action="store_true",
                     help="write the JSON summaries but not the document")
+    ap.add_argument("--check", action="store_true",
+                    help="exit 1 if --out is stale instead of writing it (and write no JSON "
+                         "either). Needs the same --bench-dir the document was built from, so it "
+                         "is a local gate: the sweep directory is git-ignored and absent in CI.")
     a = ap.parse_args()
 
     runs, meta, skipped = load_runs(Path(a.bench_dir))
@@ -842,7 +847,7 @@ def main() -> int:
                 print(f"warning: cannot read {a.torch_gpu}: {e}", file=sys.stderr)
         gpu_blob = build_gpu_results(gpu_runs, gpu_meta, torch_gpu, runs, gpu_skipped,
                                      show_path(a.out), show_path(a.gpu_dir))
-        if gpu_json:
+        if gpu_json and not a.check:
             gpu_json.parent.mkdir(parents=True, exist_ok=True)
             gpu_json.write_text(json.dumps(gpu_blob, indent=1, sort_keys=False) + "\n")
             print(f"wrote {gpu_json} ({len(gpu_blob['rows'])} rows, "
@@ -894,10 +899,21 @@ def main() -> int:
                     "not in these tables:** " + "; ".join(f"`{s}`" for s in skipped) + ".")
     A(trailer)
 
+    rendered = "\n".join(L) + "\n"
+
+    if a.check:
+        out = Path(a.out)
+        if not out.exists() or out.read_text() != rendered:
+            print(f"{a.out} is stale — re-run scripts/gen_benchmarks_md.py without --check",
+                  file=sys.stderr)
+            return 1
+        print(f"{a.out} is up to date ({len(runs)} runs)")
+        return 0
+
     if not a.no_doc:
         out = Path(a.out)
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text("\n".join(L) + "\n")
+        out.write_text(rendered)
         print(f"wrote {out} ({len(runs)} runs, {os.path.getsize(out)} bytes"
               + (f", {len(skipped)} unreadable JSON(s) skipped" if skipped else "") + ")")
 

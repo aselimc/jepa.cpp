@@ -32,13 +32,14 @@ numbers instead (docs/assets/hero.svg, scripts/gen_hero_figure.py).
     python scripts/gen_results_figure.py --check          # exit 1 if any of the four is stale
 
 matplotlib is the only dependency, and the figure is the only thing in the repository that needs it,
-so it is deliberately absent from docs/requirements.txt and from CI:
+so it stays out of docs/requirements.txt:
 
     uv pip install --python .venv/bin/python matplotlib
 
 The committed SVG was written with matplotlib 3.11.1.  Output is byte-identical across runs — no
 timestamp, a fixed hash salt for the generated element ids, glyphs as paths — but another matplotlib
-may re-emit those paths and make --check report drift.
+may re-emit those paths and make --check report drift, which is why the CI job that runs --check
+installs that exact version (.github/workflows/ci.yml, `checks`).
 
 A missing or unreadable artifact drops the series it feeds, with a warning on stderr, rather than
 failing the run.

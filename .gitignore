@@ -1,6 +1,7 @@
 # scratch & build
 /tmp/
 /build*/
+/dist/
 /.venv/
 __pycache__/
 *.pyc
