@@ -313,16 +313,16 @@ over the six clips. This page's 72.39 % is one clip and one crop, so the 1.3 pp 
 price of the single view rather than a fidelity gap; the released checkpoint's model card publishes
 no number of its own.
 
+*Source: [accuracy-video.md](accuracy-video.md#ssv2-validation-accuracy-the-real-task), 2026-09-01.
+Machine-readable twin: `tests/results/accuracy-ssv2.json`, which carries the clip order, the true
+labels and every run's per-clip top-1 prediction.*
+
 ![One row per model and dtype: a dot at the jepa.cpp top-1 minus PyTorch's, in percentage points,
 against a vertical line at the PyTorch baseline, for Imagenette images, UCF-101 clips and the SSv2
 validation split](assets/results-accuracy.svg)
 
 *All three benchmarks on one scale: the line is PyTorch's own top-1 and each dot is a jepa.cpp file
 against it, labelled with its absolute top-1. `scripts/gen_results_figure.py --split` redraws it.*
-
-*Source: [accuracy-video.md](accuracy-video.md#ssv2-validation-accuracy-the-real-task), 2026-09-01.
-Machine-readable twin: `tests/results/accuracy-ssv2.json`, which carries the clip order, the true
-labels and every run's per-clip top-1 prediction.*
 
 ## SSv2 head agreement on out-of-distribution clips
 
