@@ -1,0 +1,265 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# One run per ref; a new push supersedes the one in flight.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Build and run the suites that need no weights. On a checkout with no GGUFs the CMake asset gates
+  # register exactly two: `ops` (3-D RoPE against generated vectors plus the block-causal mask) and
+  # `attn` (flash vs naive attention against a double-precision reference). Everything else needs a
+  # model file and belongs to the `parity` job below.
+  build-test-linux:
+    name: linux ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # CMAKE_BUILD_RPATH=$ORIGIN is only for the artifact below: it lets the staged tools find the
+      # ggml shared objects sitting next to them instead of in the build tree they came from.
+      - name: configure
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_LLAMAFILE=ON \
+                -DCMAKE_BUILD_RPATH='$ORIGIN'
+
+      - name: build
+        run: cmake --build build -j "$(nproc)"
+
+      - name: ctest
+        run: ctest --test-dir build --output-on-failure
+
+      - name: stage the tools
+        run: |
+          mkdir -p dist
+          cp build/jepa-embed build/jepa-classify build/jepa-quantize \
+             build/jepa-bench build/jepa-info build/jepa-worldmodel dist/
+          cp -a build/ggml/src/libggml*.so* dist/
+          dist/jepa-info --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jepa-tools-${{ matrix.os }}-x86_64
+          path: dist
+          retention-days: 14
+
+  # macOS arm64. ggml turns GGML_METAL on by default on Apple, so the first build is deliberately
+  # -DGGML_METAL=OFF: that is the CPU-only engine this project documents, and the one whose suites
+  # are meaningful without a device. The Metal build follows as a separate, build-only step.
+  build-macos:
+    name: macos-14 arm64
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: configure (CPU only)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_LLAMAFILE=ON -DGGML_METAL=OFF
+
+      - name: build
+        run: cmake --build build -j "$(sysctl -n hw.logicalcpu)"
+
+      - name: ctest
+        run: ctest --test-dir build --output-on-failure
+
+      # Build only, and no continue-on-error: compiling the Metal backend and its shader library is
+      # the part that can break on a source change, and it either succeeds or the job fails. Running
+      # anything on the device would need a converted GGUF and a Metal parity tier, neither of which
+      # exists yet — jepa.cpp's own GPU path is CUDA (docs/architecture.md "GPU backend").
+      - name: build with Metal
+        run: |
+          cmake -S . -B build-metal -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON
+          cmake --build build-metal -j "$(sysctl -n hw.logicalcpu)"
+
+  # MSVC, configure + build only: the runner has no weights and the suites worth running here are
+  # the same two the Linux job already runs. Portability fixes this job depends on: /bigobj for the
+  # translation units that include third_party/json.hpp, /utf-8 for the sources, and the _WIN32
+  # branches in tests/test-attn.cpp (getrusage) and tests/test-ops.cpp (setenv).
+  build-windows:
+    name: windows msvc
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DGGML_LLAMAFILE=ON
+
+      - name: build
+        run: cmake --build build --config Release -j 4
+
+      - name: version
+        run: build\Release\jepa-info.exe --version
+
+  # ASAN + UBSAN over the same two model-free suites. OpenMP is off here on purpose: libgomp's
+  # thread pool is still allocated at exit and LeakSanitizer reports it, which would force either a
+  # suppression file or detect_leaks=0 — turning it off keeps detect_leaks=1 meaningful. ggml then
+  # uses its own threadpool, which is the path the sanitizers should cover anyway.
+  sanitizers:
+    name: asan + ubsan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: configure
+        run: |
+          cmake -S . -B build-asan \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DGGML_LLAMAFILE=ON \
+            -DGGML_OPENMP=OFF \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: build
+        run: cmake --build build-asan -j "$(nproc)"
+
+      - name: ctest
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build-asan --output-on-failure
+
+  # The generated artifacts have to match their sources. matplotlib and numpy are pinned because the
+  # figure scripts compare committed SVGs byte for byte and another matplotlib re-emits glyph paths
+  # differently (scripts/gen_results_figure.py explains this at the top of the file).
+  checks:
+    name: generated docs and scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r docs/requirements.txt
+          pip install "numpy==2.5.2" "matplotlib==3.11.1"
+
+      - name: docs/api.md matches include/jepa.h
+        run: python scripts/gen_api_md.py --check
+
+      - name: the results figures match their artifacts
+        run: |
+          python scripts/gen_results_figure.py --check
+          python scripts/gen_hero_figure.py --check
+
+      # docs/benchmarks.md has no CI gate: scripts/gen_benchmarks_md.py rebuilds it from the sweep
+      # directory tmp/bench, which is git-ignored and measured on a known-idle box. Its `--check`
+      # flag is the local gate. What CI can prove is that tests/results/benchmarks{,-gpu}.json still
+      # render the same figures, which the step above does.
+      - name: the accuracy tables match tests/results/accuracy-image.json
+        run: python scripts/render_accuracy_md.py --check
+
+      - name: the site builds
+        run: mkdocs build --strict
+
+      - name: shellcheck
+        run: shellcheck -S warning scripts/*.sh
+
+  # The suites that need weights. The GGUFs and the PyTorch reference dumps live on the Hugging Face
+  # hub; while they are not published the job reports that and stops, rather than failing every pull
+  # request. Once the files resolve it runs for real with no change here.
+  parity:
+    name: parity (hub models)
+    runs-on: ubuntu-24.04
+    env:
+      HUB: https://huggingface.co
+      DATASET: jepacpp/jepa.cpp-fixtures
+      # f32 for the two parity suites, the LeWM predictor and the batch bit-exactness check (all
+      # keyed on the -f32 filenames in CMakeLists.txt), f16 for the backend suite. ~205 MB total.
+      GGUFS: >-
+        jepacpp/lejepa-vits16-pretrain-in1k-GGUF/lejepa-vits16-pretrain-in1k-f32.gguf
+        jepacpp/lejepa-vits16-pretrain-in1k-GGUF/lejepa-vits16-pretrain-in1k-f16.gguf
+        jepacpp/lewm-pusht-GGUF/lewm-pusht-f32.gguf
+      REFS: lejepa-vits16 lewm-pusht
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # 401/404 means "not published yet" and skips the rest of the job; any other status is a real
+      # failure (a broken URL, a rename, the hub down) and is reported as one.
+      - name: is the hub set published?
+        id: hub
+        run: |
+          url="$HUB/jepacpp/lewm-pusht-GGUF/resolve/main/lewm-pusht-f32.gguf"
+          code=$(curl -sSL -I -o /dev/null -w '%{http_code}' "$url" || echo 000)
+          case "$code" in
+            200|206) echo "ready=true" >> "$GITHUB_OUTPUT" ;;
+            401|404) echo "ready=false" >> "$GITHUB_OUTPUT"
+                     echo "The hub model set is not published yet (HTTP $code for $url); the parity suites were not run." >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "unexpected HTTP $code for $url" >&2; exit 1 ;;
+          esac
+
+      - name: cache the models and reference dumps
+        if: steps.hub.outputs.ready == 'true'
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            models/gguf
+            tests/fixtures/ref
+          key: hub-lejepa-vits16-f32-f16--lewm-pusht-f32--ref-lejepa-vits16-lewm-pusht-v1
+
+      - name: download
+        if: steps.hub.outputs.ready == 'true' && steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p models/gguf tests/fixtures/ref
+          for spec in $GGUFS; do
+            repo=${spec%/*}; file=${spec##*/}
+            curl -sSL --retry 5 --retry-delay 3 --fail \
+                 -o "models/gguf/$file" "$HUB/$repo/resolve/main/$file"
+          done
+          # The reference dumps are a directory per model; the listing API names the files, so the
+          # set stays whatever the dataset holds instead of a list that goes stale here.
+          for ref in $REFS; do
+            mkdir -p "tests/fixtures/ref/$ref"
+            curl -sSL --fail "$HUB/api/datasets/$DATASET/tree/main/ref/$ref" \
+              | python3 -c 'import json,sys; [print(e["path"]) for e in json.load(sys.stdin) if e["type"]=="file"]' \
+              | while read -r path; do
+                  curl -sSL --retry 5 --retry-delay 3 --fail \
+                       -o "tests/fixtures/ref/${path#ref/}" "$HUB/datasets/$DATASET/resolve/main/$path"
+                done
+          done
+          du -sh models/gguf tests/fixtures/ref
+
+      # Configure after the download: the parity, predictor, batch and backend suites are registered
+      # at configure time from the files that exist (CMakeLists.txt).
+      - name: configure
+        if: steps.hub.outputs.ready == 'true'
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_LLAMAFILE=ON
+
+      - name: build
+        if: steps.hub.outputs.ready == 'true'
+        run: cmake --build build -j "$(nproc)"
+
+      - name: ctest
+        if: steps.hub.outputs.ready == 'true'
+        run: |
+          ctest --test-dir build --output-on-failure
+          ctest --test-dir build --show-only=json-v1 \
+            | python3 -c 'import json,sys; print("suites run:", ", ".join(t["name"] for t in json.load(sys.stdin)["tests"]))'
