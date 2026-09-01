@@ -19,6 +19,15 @@ binaries. `ffmpeg` and `ffprobe` on the `PATH` are optional: `jepa-embed` and `j
 them to decode a `--video` clip, and without them that one flag reports how to install them while
 everything else — including the `--frames-npy` route into the same models — works unchanged.
 
+An x86-64-v3 binary takes ggml's AVX2 kernels where a build from source on an AVX-512 machine takes
+the AVX-512 ones, and the two accumulate in a different order. The outputs agree to round-off, not
+bit for bit: on the LeJEPA CLS vector of one fixture image the prebuilt `jepa-embed` and a native
+build differ by 4.9e-4 at a vector norm of 9.05, i.e. 5e-5 relative, well inside the f16 tier the
+parity suite judges with. The CI `parity` job runs this same generic configuration against the
+golden dumps on every push. The bit-exact f32 figures on the [Accuracy](accuracy.md) and
+[Performance](performance.md) pages come from a native build (`-DJEPA_NATIVE=ON`, the default when
+building from source), which is also the faster one on an AVX-512 CPU.
+
 No GPU archive ships yet: `libggml-cuda.so` is 45 MB per GPU architecture and GitHub-hosted runners
 have no NVIDIA device to test it on. Build one from source with `-DJEPA_CUDA=ON`
 ([CUDA build](getting-started.md#cuda-build)).
