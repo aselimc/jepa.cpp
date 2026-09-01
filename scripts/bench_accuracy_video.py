@@ -10,6 +10,7 @@ Stages (run in this order; each writes into <work>/ and can be re-run on its own
     scripts/bench_accuracy_video.py lists   --index tmp/frames/index.json
     scripts/bench_accuracy_video.py torch   --model vjepa2-vitl-fpc64-256
     scripts/bench_accuracy_video.py torch   --model vjepa2_1-vitb-384
+    scripts/bench_accuracy_video.py torch   --model levjepa-vitl16
     scripts/bench_accuracy_video.py cpp     --model vjepa2-vitl-fpc64-256 --dtype f16
     scripts/bench_accuracy_video.py ssv2-torch
     scripts/bench_accuracy_video.py ssv2-cpp --dtype f16
@@ -49,6 +50,13 @@ MODELS = {
         "kind": "meta", "ckpt": "models/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt", "crop": 384,
         "hub": "vjepa2_1_vit_base_384", "gguf": "vjepa2_1-vitb-384-{dtype}.gguf",
         "label": "V-JEPA 2.1 ViT-B/16 @384"},
+    # The only model here whose feature is the CLS token rather than the token mean, and the only
+    # one with no processor of its own: the pipeline is the model card's (short side to 224,
+    # bicubic, centre crop 224, ImageNet statistics), the same one dump_reference.py applies.
+    "levjepa-vitl16": {
+        "kind": "levjepa", "hf_dir": "models/galilai-group/LeVJEPA-VideoMix-Large", "crop": 224,
+        "gguf": "levjepa-vitl16-{dtype}.gguf", "pool": "cls",
+        "label": "LeVJEPA ViT-L/16 (VideoMix)"},
 }
 SSV2_MODEL = "vjepa2-vitl-fpc16-256-ssv2"
 SSV2_HF_DIR = "models/facebook/vjepa2-vitl-fpc16-256-ssv2"
@@ -190,6 +198,34 @@ def _load_meta_encoder(name):
     return fwd
 
 
+def _load_levjepa_encoder(name):
+    """LeVJEPA through the modeling file that ships with the weights; feature = the CLS token.
+
+    No processor ships with the checkpoint, so the model card's pipeline is applied here and is the
+    same one scripts/dump_reference.py uses for the fixtures: per frame, short side to `crop` with
+    torchvision's antialiased BICUBIC on the uint8 tensor, centre crop, /255, ImageNet statistics.
+    """
+    import torch
+    import torchvision.transforms.v2.functional as F
+    from transformers import AutoModel
+
+    crop = MODELS[name]["crop"]
+    model = AutoModel.from_pretrained(shared(MODELS[name]["hf_dir"]), trust_remote_code=True,
+                                      dtype=torch.float32).eval()
+    mean = torch.tensor([0.485, 0.456, 0.406])[None, :, None, None]
+    std = torch.tensor([0.229, 0.224, 0.225])[None, :, None, None]
+
+    def fwd(frames):                                   # frames: THWC uint8
+        t = torch.from_numpy(np.ascontiguousarray(frames)).permute(0, 3, 1, 2)
+        t = F.resize(t, [crop], interpolation=F.InterpolationMode.BICUBIC, antialias=True)
+        t = F.center_crop(t, [crop, crop])
+        x = ((t.float() / 255.0) - mean) / std
+        x = x.permute(1, 0, 2, 3)[None].contiguous()   # 1 C T H W
+        with torch.inference_mode():
+            return model(pixel_values=x).last_hidden_state[0, 0].numpy()   # CLS = pooler_output
+    return fwd
+
+
 def stage_torch(a) -> None:
     _torch_setup()
     work = Path(a.work)
@@ -199,7 +235,9 @@ def stage_torch(a) -> None:
     tag = a.tag or ("torch" if skip else "torchpred")
     clips = cj["clips"][:a.limit] if a.limit else cj["clips"]
     t0 = time.time()
-    fwd = (_load_hf_encoder(name, skip_predictor=skip) if MODELS[name]["kind"] == "hf"
+    kind = MODELS[name]["kind"]
+    fwd = (_load_hf_encoder(name, skip_predictor=skip) if kind == "hf"
+           else _load_levjepa_encoder(name) if kind == "levjepa"
            else _load_meta_encoder(name))
     load_s = time.time() - t0
     la0 = loadavg()
@@ -245,8 +283,9 @@ def stage_cpp(a) -> None:
     if not gguf.exists():
         sys.exit(f"missing {gguf}")
     out = work / f"{name}-{dt}.npy"
+    pool = MODELS[name].get("pool", "mean")   # levjepa is read through its CLS token
     cmd = [str(ROOT / "build" / "jepa-embed"), "-m", str(gguf), "--batch", "1", "--frames-list", str(work / "clips.txt"),
-           "-o", str(out), "--pool", "mean", "-t", str(THREADS), "--json", str(work / f"{name}-{dt}.json")]
+           "-o", str(out), "--pool", pool, "-t", str(THREADS), "--json", str(work / f"{name}-{dt}.json")]
     print(" ".join(cmd), flush=True)
     t0, la0, occ = time.time(), loadavg(), Occupancy()
     subprocess.run(cmd, check=True)
@@ -526,7 +565,10 @@ def stage_report(a) -> None:
                                 for sp in cj["queries"]},
                     "decode_s": _decode_s(work),
                     "frame_sampling": "idx = round(linspace(0, T_total-1, 16)) over all PyAV rgb24 frames"},
-        "protocol": {"impl": KNN_IMPL, "feature": "mean over encoder tokens (pooled_mean), L2-normalized",
+        "protocol": {"impl": KNN_IMPL,
+                     "feature": "mean over encoder tokens (pooled_mean), L2-normalized — except "
+                                "levjepa-vitl16, which is read through its CLS token (pooler_output), "
+                                "also L2-normalized",
                      "knn": {"k": k, "similarity": "cosine", "weight": "exp(sim / 0.07)"},
                      "centroid": "nearest L2-normalized class mean of the gallery",
                      "training": "none — frozen features, look-up only"},
@@ -708,11 +750,11 @@ def render_md(p: dict, cj: dict) -> str:
         _n, lbl, b = anchor
         ac = b["agreement"]["all_clips"]
         A(f"**The f32 anchor is exact end to end.** On all {ac['n']} clips, {lbl} at f32 reproduces the "
-          f"PyTorch pooled vector to cosine {ac['feat_cos']:.7f} (worst clip {ac['feat_cos_min']:.7f}, "
+          f"PyTorch feature vector to cosine {ac['feat_cos']:.7f} (worst clip {ac['feat_cos_min']:.7f}, "
           f"largest single-component difference {ac['feat_max_abs_diff']:.1e}) and every k-NN and "
           "centroid prediction is identical. That covers the *whole* pipeline, not just the encoder: "
           "jepa.cpp decodes nothing, but it does its own resize, centre crop and normalisation from the "
-          "same uint8 frames, so the match confirms `jepa.pre.*` reproduces the HF video processor's "
+          "same uint8 frames, so the match confirms `jepa.pre.*` reproduces the reference pipeline's "
           "pixels as well as the graph reproduces the weights. `docs/parity.md` shows the same at "
           "token level on two fixture clips; this is 405 real clips of pooled output.\n")
 
@@ -721,7 +763,7 @@ def render_md(p: dict, cj: dict) -> str:
                      if dt not in ("torch", "f32") and "all_clips" in b.get("agreement", {})),
                     key=lambda t: t[2], default=None)
     if worst_cos:
-        A(f"**f16 and q8_0 do not move the accuracy.** Across both models and every query split the "
+        A(f"**f16 and q8_0 do not move the accuracy.** Across every model and every query split the "
           f"k-NN and centroid top-1 numbers are within one clip of the PyTorch row, and the single worst "
           f"clip out of all 405 at any quantisation tested here still matches the PyTorch pooled vector "
           f"to cosine {worst_cos[2]:.6f} (`{worst_cos[0]}` {worst_cos[1]}). Where a jepa.cpp row reads *higher* than "
@@ -856,6 +898,10 @@ def render_md(p: dict, cj: dict) -> str:
     A("$B cpp   --model vjepa2-vitl-fpc64-256 --dtype q8_0")
     A("$B cpp   --model vjepa2_1-vitb-384     --dtype f16")
     A("$B cpp   --model vjepa2_1-vitb-384     --dtype q8_0")
+    A("$B torch --model levjepa-vitl16                       # PyTorch ViT-L  (trust_remote_code)")
+    A("$B cpp   --model levjepa-vitl16        --dtype f32")
+    A("$B cpp   --model levjepa-vitl16        --dtype f16")
+    A("$B cpp   --model levjepa-vitl16        --dtype q8_0")
     A("$B ssv2-torch")
     A("$B ssv2-cpp --dtype f16")
     A("$B ssv2-cpp --dtype q8_0")
