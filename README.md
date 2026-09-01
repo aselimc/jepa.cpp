@@ -36,7 +36,7 @@ much faster on one GPU, and half the weights at q8_0, over a bar chart of one im
 through V-JEPA 2.1 ViT-B on PyTorch, on jepa.cpp's CPU engine and on its CUDA engine](docs/assets/hero.svg)
 
 *Every number on it is read from `tests/results/*.json` and the GPU tables of
-[docs/performance.md](docs/performance.md), measured on a 96-core Threadripper 7995WX and one RTX
+[docs/performance.md](docs/performance.md), measured on a 96-core Threadripper 7995WX and two RTX
 4500 Ada; the [full results figure](https://aselimc.github.io/jepa.cpp/#the-full-results-figure)
 carries the per-model detail.*
 
@@ -59,16 +59,18 @@ loader builds the graph from it.
 
 Short version: on a many-core CPU, jepa.cpp is **1.1–2.2× faster than PyTorch** on the models that
 matter, uses **half to a quarter of the memory** at f16/q8_0, and its predictions are **statistically
-indistinguishable from PyTorch's** on real datasets. We checked the last claim the hard way — k-NN
+indistinguishable from PyTorch's** on real datasets. The last claim is checked the hard way — k-NN
 classification on Imagenette (images) and a UCF-101 subset (video), where the "classifier" is frozen
-features plus nearest neighbours, so any backend error would show up directly as lost accuracy. It doesn't:
+features plus nearest neighbours, and the full 24 777-clip Something-Something-v2 validation split
+through the shipped SSv2 classifier, where the score is the task's own top-1. Any backend error would
+show up directly as lost accuracy. It doesn't:
 
 | model | jepa.cpp f16, 32 threads | PyTorch f32, 32 threads | real-task check (jepa.cpp vs PyTorch) |
 |---|---|---|---|
 | I-JEPA ViT-H/14 | 147 ms / image | 250 ms | Imagenette k-NN **95.31 %** vs **95.36 %** |
 | LeJEPA ViT-S/16 | 12.8 ms / image | 15.4 ms | Imagenette k-NN **94.55 %** vs **94.45 %** |
 | LeWorldModel | 9.8 ms + 0.9 ms per rollout step | 16.8 ms | world-model outputs match to cosine 1.0000000 |
-| V-JEPA 2 ViT-L (SSv2, 16-frame clip, end-to-end) | 922 ms / clip (631 ms @ 96 threads) | 1051 ms | UCF-101 k-NN **89.5 %** vs **88.6 %**; SSv2 top-5 identical on fixtures |
+| V-JEPA 2 ViT-L (SSv2, 16-frame clip, end-to-end) | 922 ms / clip (631 ms @ 96 threads) | 1051 ms | SSv2 val top-1 **72.39 %** vs **72.39 %**, top-5 **94.11 %** vs **94.11 %**, on all 24 777 clips |
 | V-JEPA 2.1 ViT-B @384 | 60 ms / image · 853 ms / 16-frame clip | 110 ms · 908 ms | UCF-101 k-NN predictions identical at f32; **89.5 %** vs **88.6 %** at f16 |
 | LeVJEPA ViT-L/16 | 1480 ms / 16-frame clip (882 ms @ 96 threads) | 1752 ms | UCF-101 k-NN **81.9 %** vs **81.9 %**; every prediction identical at f32, f16 *and* q8_0 |
 
@@ -88,7 +90,7 @@ Which file should you actually ship? The quantization study boils down to:
 |---|---|---|
 | the default | **f16** | half of f32, outputs ≥ 0.9998 cosine everywhere |
 | pooled features, retrieval, k-NN, world-model rollouts | **q8_0** | half of f16 again; within 0.05 pp of PyTorch on Imagenette |
-| classification with the SSv2 head | **f16** | 99.0 % argmax agreement with PyTorch vs 94.3 % at q8_0 |
+| classification with the SSv2 head | **f16** | one clip of 24 777 from PyTorch's SSv2 top-1, 99.7 % of argmaxes identical; q8_0 moves 2.0 % of them |
 | dense per-token features from V-JEPA 2 ViT-L | **f32** | that checkpoint scatters individual tokens under f16 rounding |
 | the smallest possible file | **q4_k** | 0.29× f16 — fine for pooled use, *slower* than q8_0, below our parity bars |
 
@@ -198,8 +200,9 @@ are the *fastest* GPU path), and the CPU when you need f32 exactness. The design
   range, reproduced in numpy — not an engine bug); use f32 for dense per-token work on that one model.
 - **Not converted yet:** V-JEPA 1, V-JEPA 2-AC (the schema and kernels exist), the larger V-JEPA 2 /
   2.1 and I-JEPA sizes, audio and VL variants.
-- **Real SSv2 accuracy is unmeasured** (the dataset is licence-gated); we report agreement with
-  PyTorch on independent clips instead.
+- **The SSv2 validation figure is single-view**: one 16-frame clip and one centre crop, where the
+  published 73.7 % averages logits over two temporal and three spatial crops. Reproducing it needs
+  the licence-gated dataset, which `scripts/download_datasets.sh` points at but does not fetch.
 
 ## Docs, acknowledgements, licence
 
