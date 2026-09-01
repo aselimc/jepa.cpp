@@ -150,8 +150,39 @@ the same decoded pixels ([measured](parity.md#preprocessing-parity)).
 
 The caveat is decoding, not resizing. jepa.cpp decodes JPEGs with `stb_image`, which differs from
 PIL/libjpeg by ±1–2 levels on about 2 % of pixels. That decoder floor is `1 − cos` of 6.3e-6 to
-1.7e-5 on the final features — larger than what f16 weights add. Video frames are decoded outside the
-engine and handed in as uint8, so the video path has no decoder floor at all.
+1.7e-5 on the final features — larger than what f16 weights add.
+
+**Video ingest.** The library is frames-in: `jepa_encode()` takes an NCTHW tensor and nothing in
+`src/` opens a container. Turning a `.mp4` into frames is the *tools'* job, and `tools/video-decode.cpp`
+does it by running `ffmpeg` as a subprocess —
+
+```
+ffmpeg -nostdin -v error -noautorotate -i CLIP -map 0:v:0 -an -sn -dn \
+       -fps_mode passthrough -f rawvideo -pix_fmt rgb24 -
+```
+
+— and keeping `n` of the frames it writes, sampled uniformly over the whole clip with the formula the
+PyTorch side uses, `idx = round(linspace(0, T_total − 1, n))` (numpy's ties-to-even rounding and its
+pinned last sample included; a clip shorter than `n` repeats frames rather than failing). `T_total`
+comes from `ffprobe` — the container's `nb_frames` where it has one, a `-count_frames` decode pass
+otherwise — and is re-checked against the frames the decode actually produced, so a container that
+lies about its length is resampled rather than mis-sampled.
+
+Three details of that command line carry the parity. `-fps_mode passthrough` turns off ffmpeg's
+constant-frame-rate conversion, which would otherwise duplicate frames of a variable-rate file (a
+5-frame Something-Something-v2 `.webm` comes out as 59 frames without it) and sample entirely
+different pixels; `-noautorotate` keeps ffmpeg from applying a display matrix PyAV's `to_ndarray()`
+ignores; and **no** `-sws_flags` is passed, because libswscale's default yuv420p → rgb24 conversion is
+already bit-identical to PyAV's reformatter (nothing is scaled on either side) while forcing
+`full_chroma_int+accurate_rnd` changes 86 % of pixels by up to 44 levels. `ffmpeg` older than 5.1 gets
+`-vsync 0` instead, decided once per process by asking the binary.
+
+The result is that `jepa-embed --video clip.mp4` and `jepa-embed --frames-npy` on
+`scripts/video_frames.py`'s output of the same clip build the **same uint8 tensor, byte for byte** —
+so the video path has no decoder floor at all, the way it did when frames could only arrive as a
+`.npy`. `tests/test-video.cpp` (`ctest -R video`) checks that against every video sample of the
+reference dumps; it was also measured over the six fixture clips and 40 SSv2 clips, 20 of them shorter
+than the requested 16 frames.
 
 ## Attention and precision
 
@@ -298,6 +329,7 @@ third_party/          nlohmann/json 3.12 (manifests, hparam dumps); stb_image*.h
 tools/jepa-info       print GGUF hparams/tensors, list devices
 tools/jepa-embed      image/video -> features (.npy / text)
 tools/jepa-classify   video -> top-k labels (attentive-pool head)
+tools/video-decode.*  --video: an ffmpeg subprocess -> sampled THWC uint8 frames (tools only)
 tools/jepa-worldmodel LeWM: image -> state -> K-step action rollout; --ref-check against fixtures
 tools/jepa-quantize   f32/f16 GGUF -> q8_0 / q4_k / ...
 tools/jepa-bench      timing: encoder / head / predictor / lewm-step / lewm-rollout, --md / --json
@@ -308,6 +340,7 @@ tests/test-batch      batched vs per-item bit-exactness
 tests/test-attn       flash vs naive attention against a double-precision reference; K/V policy; timing
 tests/test-ops        rope3d against tests/vectors/, and the block-causal mask on both attention paths
 tests/test-backend    GPU graph validation and CPU/GPU agreement; skips cleanly without a GPU
+tests/test-video      --video decode+sampling vs the reference dumps' PyAV frames; skips without ffmpeg
 
 scripts/convert.py          HF safetensors / torch.hub .pt -> GGUF
 scripts/dump_reference.py   PyTorch golden outputs -> tests/fixtures/ref/<model>/

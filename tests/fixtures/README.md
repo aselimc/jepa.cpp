@@ -85,7 +85,10 @@ re-implementation to 2.4e-7, whereas PIL resampling differs by up to 1.8e-2 (1-2
 | `levjepa-vitl16` | no processor ships with the checkpoint: per frame, short side -> 224, **bicubic**; center crop 224; x/255; ImageNet mean/std; output [B,3,T,H,W]. The model card's notebook uses PIL BICUBIC instead of the torchvision resampler used here — measured on `archery_f16`, 99.599 % of the normalised values are bit-identical, the largest difference is 2.02 uint8 levels and exactly 1 value of 2 408 448 is off by more than one level, worth a worst-token cosine of 0.999984 (median 1.000000, CLS 1.000000) through the encoder |
 
 Frame sampling for clips: all frames decoded with PyAV (`rgb24`), then `idx = round(linspace(0, T_total-1, n))`; the indices are
-stored per sample so the C++ side can be fed `frames_u8` directly (there is no video decoder in jepa.cpp).
+stored per sample so the C++ side can be fed `frames_u8` directly (the *library* has no video decoder — `jepa_encode` is
+frames-in). `tests/test-video.cpp` (`ctest -R video`) replays each of those samples through the tools' own ffmpeg ingest,
+`tools/video-decode.cpp`, and requires the same total frame count, the same indices and byte-identical pixels — which is
+what makes `jepa-embed --video archery.mp4 --frames 16` interchangeable with `--frames-npy archery_f16.frames_u8.npy`.
 
 The parity test feeds the stored `input` tensor first (bypassing preprocessing) and only then runs our own preprocessor,
 so a preprocessing mismatch shows up separately from a graph bug.

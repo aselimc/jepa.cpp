@@ -6,6 +6,8 @@ that converts checkpoints, convert a model, run a tool.
 ## Build
 
 Requirements: CMake ≥ 3.16, Ninja, a C++17 compiler. ggml is a submodule, so clone recursively.
+Nothing else is needed to build; `ffmpeg` on the `PATH` is an optional **run-time** extra that lets
+`jepa-embed` and `jepa-classify` take a video file directly (`--video`, below).
 
 ```bash
 git clone --recursive https://github.com/aselimc/jepa.cpp && cd jepa.cpp
@@ -117,7 +119,11 @@ build/jepa-embed -m models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf \
 build/jepa-embed -m models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf \
     -i a.jpg -i b.jpg -i c.jpg --batch 32 -o feats.npy -t 32
 
-# a 16-frame clip from a THWC uint8 .npy -> pooled feature
+# a video file -> pooled feature: 16 frames sampled uniformly over the whole clip
+build/jepa-embed -m models/gguf/vjepa2_1-vitb-384-f16.gguf \
+    --video tests/fixtures/media/archery.mp4 --frames 16 --pool mean -t 32
+
+# the same clip from a THWC uint8 .npy that scripts/video_frames.py wrote (identical output)
 build/jepa-embed -m models/gguf/vjepa2_1-vitb-384-f16.gguf \
     --frames-npy tests/fixtures/ref/vjepa2_1-vitb-384/archery_f16.frames_u8.npy --pool mean -t 32
 
@@ -132,19 +138,38 @@ build/jepa-embed -m models/gguf/levjepa-vitl16-f16.gguf -i cat.jpg --pool cls -t
 
 # a whole list of clips, one model load, output [n_clips, D] in list order
 build/jepa-embed -m models/gguf/vjepa2-vitl-fpc64-256-f16.gguf \
-    --frames-list clips.txt -o feats.npy -t 32
+    --video-list clips.txt -o feats.npy -t 32       # or --frames-list for .npy clips
 ```
 
 `--pool` selects `mean` (mean of the patch tokens), `cls`, `lewm` (the world-model state projection)
-or `none` (the full `[N, D]` token map). `scripts/video_frames.py` writes the THWC uint8 `.npy` clips
-that `--frames-npy` and `--frames-list` read. Clip frames may have different source sizes: each is
-resized and centre-cropped on its own before the planes are concatenated.
+or `none` (the full `[N, D]` token map). Clip frames may have different source sizes: each is resized
+and centre-cropped on its own before the planes are concatenated.
+
+#### Where the frames come from
+
+There are two routes into a video model, and they produce the same tensor:
+
+* **`--video clip.mp4`** (also `--video-list list.txt`) decodes the container by running `ffmpeg`
+  and keeps `--frames` frames sampled uniformly over the whole clip, endpoints included —
+  `idx = round(linspace(0, T_total - 1, n))`. `--frames` defaults to the model's own
+  `jepa.enc.n_frames`. Any container ffmpeg can read works (mp4, webm, mkv, avi, mov …).
+* **`--frames-npy clip.npy`** (also `--frames-list list.txt`) reads a THWC uint8 array that
+  `scripts/video_frames.py` wrote — the scripted route the accuracy harnesses use, because they want
+  one decode shared by both backends and a cached, indexed frame set.
+
+`ffmpeg` is a **run-time** dependency of `jepa-embed` and `jepa-classify` only: nothing links against
+it, the build never looks for it, and a checkout without it loses `--video` and nothing else (the
+error names the binary and how to install it). Both routes decode with libswscale and sample with the
+same formula, so `--video clip.mp4` and `--frames-npy` on that script's output of the same clip agree
+**byte for byte** — measured over the fixture clips and 40 Something-Something-v2 clips, `ctest -R
+video`. `--dump-frames out.npy` writes the sampled frames in that same THWC uint8 layout if you want
+to diff the two yourself.
 
 ### `jepa-classify` — a clip to labels
 
 ```bash
 build/jepa-classify -m models/gguf/vjepa2-vitl-fpc16-256-ssv2-f16.gguf \
-    --frames-npy tests/fixtures/ref/vjepa2-vitl-fpc16-256-ssv2/archery_f16.frames_u8.npy -k 5 -t 32 --time
+    --video tests/fixtures/media/archery.mp4 -k 5 -t 32 --time     # or --frames-npy clip.npy
 ```
 
 ```
