@@ -60,7 +60,7 @@ a cold first sample where that first sample is ≥ 1.2× the median of the rest 
 against a steady 250; LeJEPA: 72.2 against 15.4).
 
 Those samples are single-shot forwards, which is the noisier of the two ways to time a reference.
-[parity.md](parity.md#levjepa-vitl16--cls-block-causal-attention-tubelet-1) divides by a **warm loop**
+[parity.md](parity.md#levjepa-vitl16-cls-block-causal-attention-tubelet-1) divides by a **warm loop**
 instead — 1 warmup then 5 forwards on one clip — and for LeVJEPA the two differ by 8 %: 1752 ms here
 against 1904 ms median (1883 ms minimum) there, so the same f16 file reads 1.18× on this page and 1.2×
 on that one. The column keeps the single-shot rule so that every row divides by the same thing.
