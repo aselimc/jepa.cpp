@@ -13,8 +13,10 @@ which this one imports; the only literals here are layout and wording.
     tests/results/accuracy-ssv2.json   SSv2 validation top-1 of the classifier checkpoint against
                                        PyTorch, when the licence-gated dataset was on the machine —
                                        absent, the figure drops that card and keeps the other three
-    docs/performance.md                the GPU tables, which have no machine-readable twin; they are
-                                       parsed by gen_results_figure.parse_gpu_tables()
+    tests/results/benchmarks-gpu.json  CUDA encoder latency per model / shape / dtype, from
+                                       scripts/bench_gpu.sh; docs/performance.md is the fallback
+                                       when it is absent (gen_results_figure.gpu_series())
+    docs/performance.md                the card named in the source line, and that GPU fallback
 
     python scripts/gen_hero_figure.py                                # writes docs/assets/hero.svg
     python scripts/gen_hero_figure.py --png tmp/h.png --width-px 880 # rasterise at README width
@@ -311,12 +313,13 @@ def build_figure():
         warn(f"{ACC_SSV2_JSON.relative_to(ROOT)} is absent — the accuracy card is dropped")
     perf = R.PERF_MD.read_text() if R.PERF_MD.exists() else ""
     if not perf:
-        warn(f"cannot read {R.PERF_MD.relative_to(ROOT)}: every GPU number is dropped")
+        warn(f"cannot read {R.PERF_MD.relative_to(ROOT)}: the card is dropped from the source line, "
+             "and with it the GPU numbers unless tests/results/benchmarks-gpu.json is present")
 
     groups = R.encoder_groups(bench) if bench else {}
     cpu_f16 = {(g["model"], g["tokens"]): g["cpu"]["f16"][32]
                for g in groups.values() if 32 in g["cpu"].get("f16", {})}
-    gpu = R.parse_gpu_tables(R.PERF_MD, cpu_f16) if perf else {}
+    gpu = R.gpu_series(perf, cpu_f16)
 
     fig = plt.figure(figsize=(W / 100.0, H / 100.0), dpi=100)
     fig.patch.set_facecolor(R.PAGE)

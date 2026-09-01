@@ -81,6 +81,19 @@ FTYPE_ORDER = {"f32": 0, "f16": 1, "q8_0": 2, "q6_k": 3, "q5_k": 4, "q5_1": 5, "
 MODE_ORDER = {"encoder": 0, "head": 1, "predictor": 2, "lewm-step": 3, "lewm-rollout": 4}
 
 
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def show_path(p) -> str:
+    """A path as the document should name it: relative to the repository root wherever it is under
+    it, and unchanged otherwise.  The caller may pass the same directory as `tmp/bench` or as an
+    absolute path (scripts/bench_all.sh and scripts/bench_gpu.sh do the latter), and the document is
+    committed, so the two must not produce different bytes.  Symlinks are deliberately *not*
+    resolved: a `tmp/bench` pointing at a sweep kept elsewhere is still `tmp/bench` here."""
+    rel = os.path.relpath(os.path.abspath(str(p)), ROOT)
+    return str(p) if rel.startswith("..") else rel
+
+
 def mib(n_bytes: float) -> float:
     return n_bytes / (1024.0 * 1024.0)
 
@@ -108,11 +121,42 @@ def load_runs(bench_dir: Path) -> tuple[list[dict], dict, list[str]]:
                 for k in ("model", "ftype", "mode", "threads", "ms_mean"):
                     if k not in r:
                         raise KeyError(k)
-                # docs/benchmarks.md is the CPU document: its rows are keyed by thread count, which
-                # means nothing for a GPU run. GPU numbers live in docs/performance.md "GPU encoder",
-                # so a stray --gpu JSON in the sweep directory is skipped
-                # rather than silently mixed in.
+                # The CPU tables are keyed by thread count, which means nothing for a GPU run: a
+                # stray --gpu JSON in the sweep directory belongs to the GPU half of the document
+                # (--gpu-dir, scripts/bench_gpu.sh) and is skipped here rather than mixed in.
                 if r.get("gpu"):
+                    continue
+                r["_file"] = p.name
+                runs.append(r)
+        except (KeyError, TypeError) as e:
+            print(f"warning: skipping {p.name}: malformed run ({e})", file=sys.stderr)
+            skipped.append(f"{p.name}: malformed run ({e})")
+    return runs, meta, skipped
+
+
+def load_gpu_runs(gpu_dir: Path) -> tuple[list[dict], dict, list[str]]:
+    """The same, for the `--gpu` half of the sweep (scripts/bench_gpu.sh).  A CPU run found in the
+    GPU directory is skipped for the mirror-image reason: these tables are keyed by device and
+    accumulation precision, and a thread count says nothing there."""
+    meta, runs, skipped = {}, [], []
+    for p in sorted(gpu_dir.glob("*.json")):
+        if p.name == "torch-gpu.json":
+            continue                      # the PyTorch baseline, read separately via --torch-gpu
+        try:
+            blob = json.loads(p.read_text())
+        except (OSError, ValueError) as e:
+            print(f"warning: skipping {p.name}: {e}", file=sys.stderr)
+            skipped.append(f"{p.name}: {e}")
+            continue
+        if p.name == "meta.json":
+            meta = blob
+            continue
+        try:
+            for r in blob["runs"]:
+                for k in ("model", "ftype", "mode", "device", "ms_mean"):
+                    if k not in r:
+                        raise KeyError(k)
+                if not r.get("gpu"):
                     continue
                 r["_file"] = p.name
                 runs.append(r)
@@ -265,6 +309,17 @@ def main() -> int:
     ap.add_argument("-o", "--out", default="docs/benchmarks.md")
     ap.add_argument("--results-json", default=None,
                     help="also write a compact machine-readable summary (tests/results/benchmarks.json)")
+    ap.add_argument("--gpu-dir", default=None,
+                    help="raw per-run JSONs of a scripts/bench_gpu.sh sweep; with this the GPU "
+                         "tables are rebuilt from the sweep and --results-json-gpu is rewritten")
+    ap.add_argument("--results-json-gpu", default="tests/results/benchmarks-gpu.json",
+                    help="the machine-readable twin of the GPU tables: written when --gpu-dir is "
+                         "given, read to render them when it is not")
+    ap.add_argument("--torch-gpu", default=None,
+                    help="scripts/torch_gpu_baseline.py output, folded into the GPU artifact "
+                         "(only with --gpu-dir; otherwise the artifact's own copy is used)")
+    ap.add_argument("--no-doc", action="store_true",
+                    help="write the JSON summaries but not the document")
     a = ap.parse_args()
 
     runs, meta, skipped = load_runs(Path(a.bench_dir))
@@ -672,7 +727,7 @@ def main() -> int:
           f"noise: every row below agrees to within ±{math.ceil(max(xdeltas))} %, and the two rows where "
           "`docs/parity.md` was itself re-measured on this idle box (the f32 fpc64 clips) to within "
           "3.3 %. The right-hand column "
-          f"is **parsed** out of `{a.parity}` (its `ms/item t=N` / `ms/clip t=N` columns), so the two "
+          f"is **parsed** out of `{show_path(a.parity)}` (its `ms/item t=N` / `ms/clip t=N` columns), so the two "
           "documents cannot drift apart without this table saying so.")
         A("")
         A(table(xrows, ["model", "ftype", "shape", "threads", "bench ms min", "parity.md ms", "delta"],
@@ -767,6 +822,40 @@ def main() -> int:
           "world-model state.")
         A("")
 
+    # ---- the GPU half ---------------------------------------------------------------------
+    # Built from the sweep when --gpu-dir names one, and from the committed artifact otherwise, so
+    # the document can be rebuilt long after tmp/bench-gpu/ is gone. Either way the tables are
+    # rendered from the artifact's own structure, which is what makes it a twin rather than a
+    # second, separately-formatted copy of the same numbers.
+    gpu_blob = None
+    gpu_json = Path(a.results_json_gpu) if a.results_json_gpu else None
+    if a.gpu_dir:
+        gpu_runs, gpu_meta, gpu_skipped = load_gpu_runs(Path(a.gpu_dir))
+        if not gpu_runs:
+            print(f"no GPU bench JSONs in {a.gpu_dir}", file=sys.stderr)
+            return 1
+        torch_gpu = None
+        if a.torch_gpu:
+            try:
+                torch_gpu = json.loads(Path(a.torch_gpu).read_text())
+            except (OSError, ValueError) as e:
+                print(f"warning: cannot read {a.torch_gpu}: {e}", file=sys.stderr)
+        gpu_blob = build_gpu_results(gpu_runs, gpu_meta, torch_gpu, runs, gpu_skipped,
+                                     show_path(a.out), show_path(a.gpu_dir))
+        if gpu_json:
+            gpu_json.parent.mkdir(parents=True, exist_ok=True)
+            gpu_json.write_text(json.dumps(gpu_blob, indent=1, sort_keys=False) + "\n")
+            print(f"wrote {gpu_json} ({len(gpu_blob['rows'])} rows, "
+                  f"{os.path.getsize(gpu_json)} bytes)")
+    elif gpu_json and gpu_json.exists():
+        try:
+            gpu_blob = json.loads(gpu_json.read_text())
+        except (OSError, ValueError) as e:
+            print(f"warning: cannot read {gpu_json}: {e} — the GPU tables are dropped",
+                  file=sys.stderr)
+    if gpu_blob:
+        render_gpu(A, gpu_blob)
+
     # ---- footnotes ------------------------------------------------------------------------
     fns = []
     if "fpc64" in used_fn:
@@ -792,27 +881,28 @@ def main() -> int:
 
     A("---")
     A("")
-    root = Path(__file__).resolve().parent.parent
-    try:
-        bench_shown = Path(a.bench_dir).resolve().relative_to(root)
-    except ValueError:
-        bench_shown = Path(a.bench_dir)
+    bench_shown = show_path(a.bench_dir)
     trailer = (f"Generated by `scripts/gen_benchmarks_md.py` from {len(runs)} runs in "
-               f"`{bench_shown}`. Cross-check against `docs/parity.md` (same graphs, real fixture "
-               "inputs) and `docs/quantization.md` (accuracy per dtype).")
+               f"`{bench_shown}`")
+    if gpu_blob:
+        trailer += (f" and {len(gpu_blob['rows'])} GPU runs in "
+                    f"`{gpu_blob.get('generated_from_dir', 'tmp/bench-gpu')}`")
+    trailer += (". Cross-check against `docs/parity.md` (same graphs, real fixture "
+                "inputs) and `docs/quantization.md` (accuracy per dtype).")
     if skipped:
         trailer += (f" **{len(skipped)} JSON file(s) in `{bench_shown}` could not be read and are "
                     "not in these tables:** " + "; ".join(f"`{s}`" for s in skipped) + ".")
     A(trailer)
 
-    out = Path(a.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(L) + "\n")
-    print(f"wrote {out} ({len(runs)} runs, {os.path.getsize(out)} bytes"
-          + (f", {len(skipped)} unreadable JSON(s) skipped" if skipped else "") + ")")
+    if not a.no_doc:
+        out = Path(a.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("\n".join(L) + "\n")
+        print(f"wrote {out} ({len(runs)} runs, {os.path.getsize(out)} bytes"
+              + (f", {len(skipped)} unreadable JSON(s) skipped" if skipped else "") + ")")
 
     if a.results_json:
-        write_results_json(Path(a.results_json), runs, meta, bl, parity, skipped, str(out))
+        write_results_json(Path(a.results_json), runs, meta, bl, parity, skipped, show_path(a.out))
     return 0
 
 
@@ -893,6 +983,330 @@ def write_results_json(path: Path, runs, meta, bl, parity, skipped, doc) -> None
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(blob, indent=1, sort_keys=False) + "\n")
     print(f"wrote {path} ({len(blob['rows'])} rows, {os.path.getsize(path)} bytes)")
+
+
+# ---- the GPU half: tests/results/benchmarks-gpu.json and the tables it feeds -----------------------
+
+def gpu_prec(r: dict) -> str:
+    """"f32" when GGML_PREC_F32 accumulates every mul_mat (the default on a GPU), "f16" for the
+    --gpu-prec f16 opt-out.  The two are different measurements of the same file and never share a
+    column."""
+    return "f32" if r.get("mul_mat_prec_f32", True) else "f16"
+
+
+def gpu_sort_key(r: dict):
+    return (MODE_ORDER.get(r["mode"], 9), r["model"], r.get("frames", 0),
+            FTYPE_ORDER.get(r["ftype"], 99), gpu_prec(r) != "f32")
+
+
+def build_gpu_results(runs, meta, torch_gpu, cpu_runs, skipped, doc, sweep_dir) -> dict:
+    """The machine-readable twin of the GPU tables: one flat row per measured configuration, plus
+    the card, the driver and the sessions behind them.
+
+    Each row carries its own CPU counterpart — the f16 32-thread run of the same graph and shape
+    out of the CPU sweep — because that ratio is the only reason most of these numbers are quoted,
+    and a reader should not have to join two artifacts by hand to get it.
+    """
+    cpu32 = {(r["model"], r["mode"], r["shape"]): r["ms_mean"]
+             for r in cpu_runs if r["ftype"] == "f16" and r["threads"] == 32}
+    blob = {
+        "task": "jepa.cpp inference timing and memory on one CUDA device, tools/jepa-bench --gpu "
+                "on synthetic deterministic input",
+        "generated_from": doc,
+        "generated_from_dir": sweep_dir,
+        "protocol": {
+            "ms": "wall time of ggml_backend_graph_compute for the named graph "
+                  "(jepa_context_last_compute_ms); model load, graph build/alloc, the host-side "
+                  "patchify and the output copy — PCIe transfers on this backend — are excluded",
+            "wall_ms": "the full public-API call, including all of the above",
+            "ms_mean/ms_min/ms_std": "over `repeat` measured runs after `warmup` unmeasured ones; "
+                                     "ggml's CUDA backend captures a CUDA graph once it has seen "
+                                     "the same topology and tensor addresses twice, so warmup >= 2 "
+                                     "is what makes the measured runs the captured path",
+            "gpu_prec": "f32 = GGML_PREC_F32 accumulation in every mul_mat (the default on a GPU); "
+                        "f16 = the bench-only --gpu-prec f16 opt-out, which is not parity-gated",
+            "kv": "K/V dtype in flash attention; auto is F32 for f32 files and F16 otherwise",
+            "encoder_ms": "head/predictor rows only: the faster of two warm encoder passes that "
+                          "produced this row's input (a third, cold one runs first and is discarded)",
+            "tokens_per_s": "tokens / ms_mean; for lewm-rollout ms is per step and tokens is 1, so "
+                            "the rate is steps/s",
+            "peak_rss_mib": "process VmHWM after the run — host memory, not device memory",
+            "ftype": "the type requested at conversion time (the GGUF filename suffix)",
+            "cpu_f16_t32_ms": "ms_mean of the same graph and shape at f16 on 32 CPU threads, from "
+                              "tests/results/benchmarks.json",
+            "grid": "the configurations docs/performance.md tabulates (scripts/bench_gpu.grid); a "
+                    "cell printed as a dash there is one nobody has asked for, not one that failed",
+        },
+        "box": {k: meta.get(k) for k in
+                ("device", "device_index", "device_memory", "compute_cap", "power_limit", "driver",
+                 "cuda_driver_api", "nvcc", "kernel", "compiler", "ggml_commit", "git_commit",
+                 "ggml_llamafile")},
+        "sessions": meta.get("sessions", []),
+        "skipped_files": skipped,
+        "rows": [],
+    }
+    for r in sorted(runs, key=gpu_sort_key):
+        row = {
+            "model": r["model"], "ftype": r["ftype"], "ftype_gguf": r.get("ftype_gguf"),
+            "family": r.get("family"), "mode": r["mode"], "shape": shape_label(r),
+            "frames": r.get("frames", 0), "height": r.get("height", 0), "width": r.get("width", 0),
+            "batch": r.get("batch", 1), "steps": r.get("steps", 0),
+            "device": r["device"], "gpu": True, "gpu_prec": gpu_prec(r),
+            "tokens": r["tokens"], "repeat": r.get("repeat"), "warmup": r.get("warmup"),
+            "kv": r.get("kv"), "flash": r.get("flash"),
+            "ms_mean": round(r["ms_mean"], 3), "ms_min": round(r["ms_min"], 3),
+            "ms_max": round(r.get("ms_max", 0.0), 3), "ms_std": round(r.get("ms_std", 0.0), 3),
+            "wall_ms_mean": round(r.get("wall_ms_mean", 0.0), 3),
+            "tokens_per_s": round(1000.0 * r["tokens"] / r["ms_mean"], 1) if r["ms_mean"] else None,
+            "weights_mib": round(mib(r.get("weight_bytes", 0)), 1),
+            "peak_rss_mib": round(mib(r.get("peak_rss_bytes", 0)), 1),
+            "load_ms": round(r.get("load_ms", 0.0), 1),
+            "source_json": r.get("_file"),
+        }
+        if r["mode"] in ("head", "predictor"):
+            row["encoder_ms"] = round(r.get("encoder_ms", 0.0), 3)
+        cpu = cpu32.get((r["model"], r["mode"], r["shape"]))
+        if cpu:
+            row["cpu_f16_t32_ms"] = round(cpu, 3)
+            if r["ms_mean"]:
+                row["speedup_vs_cpu_f16_t32"] = round(cpu / r["ms_mean"], 2)
+        blob["rows"].append(row)
+    if torch_gpu:
+        blob["pytorch_gpu"] = {k: torch_gpu[k] for k in ("task", "protocol", "box", "rows")
+                               if k in torch_gpu}
+    return blob
+
+
+def sd_str(v: float) -> str:
+    """A GPU row's spread is often a few microseconds; two decimals would print half the column as
+    0.00 and hide the one row that is genuinely noisy."""
+    return f"{v:.3f}" if v < 1.0 else f"{v:.2f}"
+
+
+def torch_ms(v: float) -> str:
+    """PyTorch's GPU rows are quoted to the hundredth below 100 ms — at 5.5 ms a tenth is 2 % of
+    the number — and to the tenth above it."""
+    return f"{v:.2f}" if v < 100 else f"{v:.1f}"
+
+
+def render_gpu(A, blob: dict) -> None:
+    """The GPU tables of docs/benchmarks.md, rendered from the artifact rather than from the sweep,
+    so the document and `tests/results/benchmarks-gpu.json` cannot say different things."""
+    rows = blob.get("rows", [])
+    if not rows:
+        return
+    box = blob.get("box", {})
+    enc = [r for r in rows if r["mode"] == "encoder"]
+    default_prec = [r for r in enc if r["gpu_prec"] == "f32"]
+
+    A("## GPU (CUDA)")
+    A("")
+    A("The same `tools/jepa-bench`, the same synthetic input, one CUDA device instead of the CPU "
+      "backend (`-DJEPA_CUDA=ON`, then `--gpu N`). These tables are keyed by device and "
+      "accumulation precision where the ones above are keyed by thread count, which is why they "
+      "have an artifact of their own: `tests/results/benchmarks-gpu.json`, written by "
+      "`scripts/bench_gpu.sh` and read back by this generator.")
+    A("")
+    reps = sorted({(r.get("warmup"), r.get("repeat")) for r in rows})
+    if len(reps) == 1 and reps[0][0] is not None:
+        w, rp = reps[0]
+        A(f"Every row is the best of {rp} runs after {w} warmups, and the warmups are not a "
+          "formality: ggml's CUDA backend captures a CUDA graph once it has seen the same topology "
+          "and the same tensor addresses twice in a row, so from the third call the encoder is one "
+          "graph launch instead of hundreds of kernel launches. `ms sd` is the spread of the "
+          "measured runs and is the width to read a difference between two rows against.")
+        A("")
+    A("```bash")
+    A("cmake -S . -B build-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DJEPA_CUDA=ON \\")
+    A("  && cmake --build build-cuda -j 32")
+    A("")
+    A("# the PyTorch baseline of the last table (needs a CUDA-enabled torch)")
+    A("python scripts/torch_gpu_baseline.py --device 0 -o tmp/bench-gpu/torch-gpu.json")
+    A("")
+    A("# every configuration in scripts/bench_gpu.grid on device 0, then this section and its JSON")
+    A("scripts/bench_gpu.sh 0")
+    A("```")
+    A("")
+    A("The configurations live in `scripts/bench_gpu.grid`, one line per (model, mode, shape, "
+      "dtypes), and are the ones [performance.md](performance.md) publishes. Without `--gpu-dir` "
+      "the generator rebuilds this section straight out of `tests/results/benchmarks-gpu.json`, so "
+      "the document survives the loss of `tmp/bench-gpu/` — which is git-ignored — without the card.")
+    A("")
+
+    A("### Card and build")
+    A("")
+    cardrows = [
+        ["GPU", f"{box.get('device', '?')}, {box.get('device_memory', '?')}, compute "
+                f"{box.get('compute_cap', '?')}, {box.get('power_limit', '?')} board limit"],
+        ["Device", f"index {box.get('device_index', '?')} — every run below has the card to itself"],
+        ["Driver", f"{box.get('driver', '?')} (CUDA {box.get('cuda_driver_api', '?')} driver API)"],
+        ["Toolkit", f"`nvcc` {box.get('nvcc', '?')}"],
+        ["Kernel", box.get("kernel", "?")],
+        ["Host compiler", box.get("compiler", "?")],
+        ["ggml", f"`{box.get('ggml_commit', '?')}`, **`GGML_LLAMAFILE={box.get('ggml_llamafile', '?')}`** "
+                 "(a host-side path, unused here)"],
+        ["jepa.cpp", f"`{box.get('git_commit', '?')}`"],
+        ["Precision", "`GGML_PREC_F32` on every `mul_mat` unless a row says `--gpu-prec f16`; "
+                      "K/V F16 in flash attention for every file but f32"],
+    ]
+    A(table(cardrows, ["setting", "value"], "ll"))
+    A("")
+    sessions = blob.get("sessions", [])
+    if sessions:
+        A("Measurement sessions (one `bench_gpu.sh` invocation each):")
+        A("")
+        A(table([[s.get("device", "?"), f"{s.get('warmup', '?')} + {s.get('repeat', '?')}",
+                  s.get("start_utc", "?"), s.get("end_utc", "?"),
+                  f"{s.get('loadavg_start', '?')} → {s.get('loadavg_end', '?')}",
+                  f"{s.get('foreign_cores', '?')}", s.get("note", "") or "—"] for s in sessions],
+                ["device", "warmup + measured", "start", "end", "1-min load avg",
+                 "foreign cores", "note"], "lllllrl"))
+        A("")
+        # A GPU sweep barely moves the load average, so the load average is the weaker of the two
+        # idleness statements here; foreign_cores is the one that would catch a second agent.
+        foreign = [s["foreign_cores"] for s in sessions if isinstance(s.get("foreign_cores"), (int, float))]
+        A("`foreign cores` is the CPU time the whole machine spent out of idle over the session "
+          "minus the CPU time this sweep's own processes spent, divided by the wall clock: how much "
+          "of the box belonged to somebody else while the card was timed"
+          + (f". The highest here is **{max(foreign):.2f}** of one core out of "
+             f"{os.cpu_count()}, i.e. an idle box." if foreign else ".")
+          + " A GPU row is host-idle by construction, so the load average alone would not have "
+            "caught a second tenant.")
+        A("")
+
+    if default_prec:
+        A("### GPU encoder")
+        A("")
+        erows = [[r["model"], r["ftype"], r["shape"], f"{r['tokens']:,}".replace(",", " "),
+                  r["device"], f"{r['ms_mean']:.2f}", f"{r['ms_min']:.2f}", sd_str(r["ms_std"]),
+                  f"{r['tokens_per_s']:.0f}" if r["tokens_per_s"] else "–",
+                  f"{r['peak_rss_mib']:.0f}",
+                  f"{r['cpu_f16_t32_ms']:.1f}" if r.get("cpu_f16_t32_ms") else "–",
+                  f"{r['speedup_vs_cpu_f16_t32']:.1f}x" if r.get("speedup_vs_cpu_f16_t32") else "–"]
+                 for r in default_prec]
+        A(table(erows, ["model", "ftype", "shape", "tokens", "device", "ms mean", "ms min", "ms sd",
+                        "tokens/s", "peak RSS MiB", "CPU f16 t=32 ms", "vs CPU f16 t=32"],
+                "lllrlrrrrrrr"))
+        A("")
+        A("`peak RSS` is **host** memory (the process `VmHWM`), not device memory: the weights are "
+          "uploaded and the host copy is released, so it says little beyond the size of the graph "
+          "arena and the patch buffer. The speed-up column divides the 32-thread f16 run of the "
+          "same graph and shape — from the Encoder table above, i.e. 96 Zen 4 cores' worth of "
+          "machine against one workstation card — by this row, whatever this row's dtype is.")
+        A("")
+
+        # ---- dtype on a GPU ----------------------------------------------------------------
+        cfgs: dict[tuple, dict[str, dict]] = {}
+        for r in default_prec:
+            cfgs.setdefault((r["model"], r["shape"], r["tokens"]), {})[r["ftype"]] = r
+        drows = []
+        for (model, shape, tokens), d in cfgs.items():
+            if "f16" not in d or len(d) < 2:
+                continue
+            f16 = d["f16"]
+            drows.append([model, shape, f"{tokens:,}".replace(",", " ")]
+                         + [ms_str(d[t]["ms_mean"]) if t in d else "–"
+                            for t in ("f32", "f16", "q8_0", "q4_k")]
+                         + [f"{f16['ms_mean'] / d[t]['ms_mean']:.2f}x" if t in d else "–"
+                            for t in ("q8_0", "q4_k")])
+        if drows:
+            A("### Effect of the weight dtype on a GPU (encoder)")
+            A("")
+            A(table(drows, ["model", "shape", "tokens", "f32 ms", "f16 ms", "q8_0 ms", "q4_k ms",
+                            "f16 → q8_0", "f16 → q4_k"], "llrrrrrrr"))
+            A("")
+            A("**The CPU ordering inverts here.** Every type jepa.cpp ships takes `mmq`, a real "
+              "INT8 tensor-core kernel, so q8_0 and q4_k both beat f16 while being half and a "
+              "quarter of the weight bytes — where on the CPU the k-quants fall off llamafile's "
+              "accelerated sgemm and lose. The f32 column is not slower than f16 because ggml's "
+              "CUDA F32 path is TF32, while the f16 path pays for `GGML_PREC_F32` accumulation. "
+              "Accuracy per type does not invert with the backend: `docs/parity.md` "
+              "*Results — encoders on CUDA0* has the cosines.")
+            A("")
+
+    # ---- GGML_PREC_F32 against --gpu-prec f16 -----------------------------------------------
+    prec_pairs = []
+    by_prec: dict[tuple, dict[str, dict]] = {}
+    for r in enc:
+        by_prec.setdefault((r["model"], r["ftype"], r["shape"], r["tokens"]), {})[r["gpu_prec"]] = r
+    for (model, ftype, shape, tokens), d in by_prec.items():
+        if "f32" in d and "f16" in d:
+            prec_pairs.append([model, ftype, shape, f"{tokens:,}".replace(",", " "),
+                               ms_str(d["f32"]["ms_mean"]), ms_str(d["f16"]["ms_mean"]),
+                               f"{d['f32']['ms_mean'] / d['f16']['ms_mean']:.2f}x"])
+    if prec_pairs:
+        A("### What `GGML_PREC_F32` costs (`--gpu-prec f16`)")
+        A("")
+        A(table(prec_pairs, ["model", "ftype", "shape", "tokens", "`GGML_PREC_F32` ms",
+                             "`--gpu-prec f16` ms", "cost of F32 accumulation"], "lllrrrr"))
+        A("")
+        A("`--gpu-prec f16` hands the `mul_mat`s cuBLAS' own f16 compute type instead of forcing "
+          "F32 accumulation. It is **bench-only**: it is not exposed in the runtime tools and not "
+          "parity-gated (`docs/parity.md` measures a 177x wider f16 error with it), so these "
+          "milliseconds are a measured upper bound rather than a shipping configuration. The cost "
+          "is a strong function of the sequence — it is what holds the small image models back "
+          "against the long clips' twenties in the speed-up column above.")
+        A("")
+
+    other = [r for r in rows if r["mode"] != "encoder"]
+    if other:
+        A("### Predictor, head and world model on a GPU")
+        A("")
+        orows = [[r["model"], r["ftype"], r["mode"], r["shape"],
+                  f"{r['tokens']:,}".replace(",", " "),
+                  f"{r['ms_mean']:.3f}", f"{r['ms_min']:.3f}", sd_str(r["ms_std"]),
+                  f"{r['encoder_ms']:.1f}" if r.get("encoder_ms") else "–",
+                  f"{r['cpu_f16_t32_ms']:.2f}" if r.get("cpu_f16_t32_ms") else "–",
+                  f"{r['speedup_vs_cpu_f16_t32']:.2f}x" if r.get("speedup_vs_cpu_f16_t32") else "–"]
+                 for r in other]
+        A(table(orows, ["model", "ftype", "mode", "shape", "tokens", "ms mean", "ms min", "ms sd",
+                        "encoder ms", "CPU f16 t=32 ms", "vs CPU f16 t=32"], "llllrrrrrrr"))
+        A("")
+        A("These are the synthetic-input graphs of the *Masked predictor*, *Attentive-pool head* "
+          "and *LeWM world model* tables above, run on the card. The masked predictor is the one "
+          "encoder-sized graph that does **not** gain twentyfold: at `head_dim` 32 no CUDA "
+          "flash-attention kernel exists, so it takes the naive `mul_mat + soft_max_ext` path — "
+          "genuinely F32, and about 3 TFLOP/s against flash's 50–70 "
+          "(`docs/architecture.md` \"GPU backend\"). The LeWM graphs are the opposite end: three "
+          "rows of 192 dimensions is far below the size at which a kernel launch pays for itself, "
+          "and `docs/parity.md` *Results — predictors on CUDA0* times the same two graphs on the "
+          "real fixture state.")
+        A("")
+
+    tg = blob.get("pytorch_gpu")
+    if tg and tg.get("rows"):
+        cuda_f16 = {(r["model"], r["tokens"]): r["ms_mean"]
+                    for r in enc if r["ftype"] == "f16" and r["gpu_prec"] == "f32"}
+        by_key: dict[tuple, dict[str, dict]] = {}
+        for r in tg["rows"]:
+            by_key.setdefault((r["model"], r["tokens"], r["shape"]), {})[r["precision"]] = r
+        trows = []
+        for (model, tokens, shape), d in by_key.items():
+            ours = cuda_f16.get((model, tokens))
+            fp16, fp32 = d.get("fp16"), d.get("fp32")
+            trows.append([model, shape, f"{tokens:,}".replace(",", " "),
+                          ms_str(ours) if ours else "–",
+                          torch_ms(fp16["ms_mean"]) if fp16 else "–",
+                          torch_ms(fp32["ms_mean"]) if fp32 else "–",
+                          f"{ours / fp16['ms_mean']:.1f}x" if ours and fp16 else "–",
+                          f"{fp16['peak_gib']:.2f}" if fp16 else "–"])
+        if trows:
+            box_t = tg.get("box", {})
+            A("### PyTorch on the same card")
+            A("")
+            A(table(trows, ["model", "shape", "tokens", "jepa.cpp CUDA f16 ms", "torch fp16 ms",
+                            "torch fp32 ms", "ggml / torch fp16", "torch fp16 peak GiB"],
+                    "llrrrrrr"))
+            A("")
+            A(f"`scripts/torch_gpu_baseline.py` on the same device: torch {box_t.get('torch', '?')}"
+              + (f", transformers {box_t.get('transformers', '?')}" if box_t.get("transformers") else "")
+              + f", batch 1, TF32 off, {tg.get('protocol', {}).get('timing', '?')}, on the stored "
+                "preprocessed tensor of a reference fixture — the same pixels, not merely the same "
+                "shape. `VJEPA2Model` runs with `skip_predictor=True`, so its forward is the "
+                "encoder alone. `torch fp16 peak GiB` is `max_memory_allocated` after the warmups, "
+                "one model per precision, so it is the steady-state device footprint of that "
+                "precision and nothing else.")
+            A("")
 
 
 if __name__ == "__main__":

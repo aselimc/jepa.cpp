@@ -10,8 +10,11 @@ Every value on the figure is read from a committed artifact; nothing is typed in
     tests/results/accuracy-ssv2.json   SSv2 validation top-1 of the classifier checkpoint, PyTorch
                                        against jepa.cpp per dtype (absent unless the licence-gated
                                        dataset was on the machine)
-    docs/performance.md                the GPU tables, which have no machine-readable twin — they are
-                                       parsed out of the document the way scripts/gen_benchmarks_md.py
+    tests/results/benchmarks-gpu.json  CUDA encoder latency per model / shape / dtype and the
+                                       PyTorch-on-the-same-card baseline, from scripts/bench_gpu.sh
+    docs/performance.md                the fallback for those GPU series, so the figure still builds
+                                       from a checkout without the artifact: the tables are parsed
+                                       out of the document the way scripts/gen_benchmarks_md.py
                                        parses docs/parity.md.  A GPU table is recognised by its
                                        "CPU f16 t=32" (or "jepa.cpp CPU t=32") column, and that column
                                        is also the join key: it repeats the 32-thread f16 millisecond
@@ -59,6 +62,7 @@ from matplotlib.patches import Patch  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BENCH_JSON = ROOT / "tests" / "results" / "benchmarks.json"
+BENCH_GPU_JSON = ROOT / "tests" / "results" / "benchmarks-gpu.json"
 ACC_IMAGE_JSON = ROOT / "tests" / "results" / "accuracy-image.json"
 ACC_VIDEO_JSON = ROOT / "tests" / "results" / "accuracy-video.json"
 ACC_SSV2_JSON = ROOT / "tests" / "results" / "accuracy-ssv2.json"
@@ -227,6 +231,49 @@ def parse_gpu_tables(path: pathlib.Path, cpu_f16: dict) -> dict:
                     warn(f"{path.name}: {key} {kind} {name} appears as {have[1]} and {got[1]}")
                 slot[kind][name] = got
     return out
+
+
+# ---- tests/results/benchmarks-gpu.json ------------------------------------------------------------
+
+def fmt_torch_ms(v: float) -> str:
+    """PyTorch's GPU rows are small enough that a tenth would be a per cent of the number, so
+    docs/performance.md quotes them to the hundredth below 100 ms.  Same rule here."""
+    return f"{v:.2f}" if v < 100 else f"{v:.1f}"
+
+
+def gpu_from_artifact(bench_gpu: dict) -> dict:
+    """The same key → {'cuda', 'torch_gpu'} structure parse_gpu_tables() builds, straight out of
+    the GPU sweep's artifact — no join and no rounding-trip through the document.
+
+    Only the default-precision encoder rows become dtype series: a `--gpu-prec f16` row is the same
+    file measured with a different accumulation and is a separate column on the page, not a dtype.
+    """
+    out: dict = {}
+    for row in (bench_gpu or {}).get("rows", []):
+        if row.get("mode") != "encoder" or row.get("gpu_prec") != "f32":
+            continue
+        ms = float(row["ms_mean"])
+        out.setdefault((row["model"], int(row["tokens"])), {"cuda": {}, "torch_gpu": {}})
+        out[(row["model"], int(row["tokens"]))]["cuda"][row["ftype"]] = (ms, fmt_ms(ms))
+    for row in (bench_gpu or {}).get("pytorch_gpu", {}).get("rows", []):
+        key = (row["model"], int(row["tokens"]))
+        if key not in out:
+            continue                       # a baseline for a shape we did not time ourselves
+        ms = float(row["ms_mean"])
+        out[key]["torch_gpu"][row["precision"]] = (ms, fmt_torch_ms(ms))
+    return out
+
+
+def gpu_series(perf: str, cpu_f16: dict) -> dict:
+    """Every GPU series both figures draw.  The committed artifact is preferred; docs/performance.md
+    is the fallback, so a checkout that has the document but not the JSON still draws the figure."""
+    if BENCH_GPU_JSON.exists():
+        got = gpu_from_artifact(load_json(BENCH_GPU_JSON))
+        if got:
+            return got
+        warn(f"{BENCH_GPU_JSON.relative_to(ROOT)} has no usable GPU encoder rows — "
+             "falling back to the tables in docs/performance.md")
+    return parse_gpu_tables(PERF_MD, cpu_f16) if perf else {}
 
 
 # ---- benchmarks.json ------------------------------------------------------------------------------
@@ -597,7 +644,8 @@ def load_artifacts() -> dict:
     bench = load_json(BENCH_JSON)
     perf = PERF_MD.read_text() if PERF_MD.exists() else ""
     if not perf:
-        warn(f"cannot read {PERF_MD.relative_to(ROOT)}: every GPU series is dropped")
+        warn(f"cannot read {PERF_MD.relative_to(ROOT)}: the card is dropped from the box strip, "
+             "and with it the GPU series unless tests/results/benchmarks-gpu.json is present")
 
     groups = encoder_groups(bench) if bench else {}
     cpu_f16 = {(g["model"], g["tokens"]): g["cpu"]["f16"][32]
@@ -609,7 +657,7 @@ def load_artifacts() -> dict:
         "acc_ssv2": load_json(ACC_SSV2_JSON) if ACC_SSV2_JSON.exists() else None,
         "perf": perf,
         "groups": groups,
-        "gpu": parse_gpu_tables(PERF_MD, cpu_f16) if perf else {},
+        "gpu": gpu_series(perf, cpu_f16),
     }
 
 

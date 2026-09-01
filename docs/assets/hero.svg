@@ -1390,10 +1390,10 @@ z
    </g>
    <g id="patch_12">
     <path d="M 236.88 383.76 
-L 253.084258 383.76 
-Q 255.244258 383.76 255.244258 381.6 
-L 255.244258 361.44 
-Q 255.244258 359.28 253.084258 359.28 
+L 253.00496 383.76 
+Q 255.16496 383.76 255.16496 381.6 
+L 255.16496 361.44 
+Q 255.16496 359.28 253.00496 359.28 
 L 236.88 359.28 
 Q 234.72 359.28 234.72 361.44 
 L 234.72 381.6 
@@ -3398,7 +3398,7 @@ z
    </g>
    <g id="text_30">
     <!-- 4.4 ms -->
-    <g style="fill: #009e73" transform="translate(263.884258 375.67625) scale(0.16 -0.16)">
+    <g style="fill: #009e73" transform="translate(263.80496 375.67625) scale(0.16 -0.16)">
      <use xlink:href="#DejaVuSans-Bold-17"/>
      <use xlink:href="#DejaVuSans-Bold-11" transform="translate(69.578125 0)"/>
      <use xlink:href="#DejaVuSans-Bold-17" transform="translate(107.5625 0)"/>

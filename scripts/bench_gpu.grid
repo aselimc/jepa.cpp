@@ -1,0 +1,37 @@
+# Configuration grid for scripts/bench_gpu.sh — one line per (model, mode, shape) and the dtypes
+# measured for it, pipe-separated:
+#
+#   <gguf label> | <mode> | <arg> | <dtype,dtype,...> | [gpu-prec]
+#
+# <arg> is the frame count for encoder/head/predictor, the rollout step count for lewm-rollout, and
+# the predictor window for lewm-step (a label only — the graph is always jepa.pred.n_frames wide).
+# <gpu-prec> is f32 (the default: GGML_PREC_F32 on every mul_mat) or f16, the bench-only opt-out.
+#
+# The grid is the grid docs/performance.md publishes, so tests/results/benchmarks-gpu.json is a
+# complete twin of that page's GPU tables rather than a superset with rows nothing quotes. A cell
+# printed as "–" there is a configuration nobody has asked for, not one that failed; add it here and
+# re-run to fill it in.
+
+# ---- GPU encoder --------------------------------------------------------------------------------
+ijepa_vith14_1k             | encoder | 1  | f32,f16,q8_0,q4_k
+lejepa-vits16-pretrain-in1k | encoder | 1  | f16
+lewm-pusht                  | encoder | 1  | f16
+vjepa2-vitl-fpc64-256       | encoder | 16 | f32,f16,q8_0,q4_k
+vjepa2-vitl-fpc64-256       | encoder | 64 | f32,f16,q8_0,q4_k
+vjepa2_1-vitb-384           | encoder | 1  | f16,q4_k
+vjepa2_1-vitb-384           | encoder | 16 | f16,q4_k
+vjepa2_1-vitb-384           | encoder | 64 | f16
+levjepa-vitl16              | encoder | 16 | f32,f16,q8_0,q4_k
+
+# ---- predictor, head and world model ------------------------------------------------------------
+vjepa2-vitl-fpc16-256-ssv2  | head         | 16 | f16
+vjepa2-vitl-fpc16-256-ssv2  | predictor    | 16 | f16
+vjepa2-vitl-fpc64-256       | predictor    | 16 | f16
+lewm-pusht                  | lewm-step    | 3  | f16
+lewm-pusht                  | lewm-rollout | 20 | f16
+
+# ---- the --gpu-prec f16 opt-out (bench-only, not parity-gated) -----------------------------------
+ijepa_vith14_1k             | encoder | 1  | f16 | f16
+vjepa2-vitl-fpc64-256       | encoder | 16 | f16 | f16
+vjepa2-vitl-fpc64-256       | encoder | 64 | f16 | f16
+levjepa-vitl16              | encoder | 16 | f16 | f16

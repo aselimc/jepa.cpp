@@ -30,6 +30,10 @@
 #
 # Every jepa-bench process writes one JSON holding one run per thread count; the generator
 # (scripts/gen_benchmarks_md.py) merges every JSON in --out into the document.
+#
+# This is the CPU half. GPU rows are keyed by device and accumulation precision rather than by
+# thread count, so they have their own sweep and their own artifact: scripts/bench_gpu.sh and
+# tests/results/benchmarks-gpu.json.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
