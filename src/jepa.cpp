@@ -145,18 +145,20 @@ int jepa_device_from_env(void) {
 // here; the flash-attention accumulator is set separately and is always GGML_PREC_F32.
 //
 //   ijepa     f32 — f16 accumulation FAILS the image f16 tier (worst token 0.8938 against the 0.90
-//                   bar, rel_max 0.202 against 0.15, on coco_000000039769), for the largest
-//                   speed-up anyone measured here: 15.5 -> 8.8 ms. The gate wins.
-//   vjepa2    f32 — FAILS the video f16 tier (token-map mean 0.9887 against 0.99, rel_max 0.695
-//                   against 0.5). Covers ViT-L, the SSv2 classifier, ViT-g and the 2-AC encoder.
-//   vjepa2_1  f32 — passes every tier, but only its 576-token image shape is faster (4.63 -> 3.58
-//                   ms); its 4 608- and 18 432-token clips lose 3-4 %, and clips are the shapes
+//                   bar, rel_max 0.2021 against 0.15, on coco_000000039769), for the largest
+//                   speed-up in the table: 15.88 -> 8.92 ms. The gate wins.
+//   vjepa2    f32 — FAILS the video f16 tier (token-map mean 0.9887 against 0.99, rel_max 0.6953
+//                   against 0.5, on bowling). Covers ViT-L, the SSv2 classifier, ViT-g and the
+//                   2-AC encoder; 47.54 -> 38.42 ms at 2048 tokens if it had passed.
+//   vjepa2_1  f32 — passes every tier, but only its 576-token image shape is faster (4.55 -> 3.53
+//                   ms); its 4 608- and 18 432-token clips lose 2-4 %, and clips are the shapes
 //                   this family exists for. $JEPA_GPU_PREC=f16 is there for the image case.
-//   lewm      f32 — passes every tier, no speed-up to take (0.85 -> 0.88 ms at 257 tokens).
+//   lewm      f32 — passes every tier with no time to gain: 0.866 against 0.879 ms at 257 tokens,
+//                   over launch-to-launch ranges that overlap.
 //   hfvit     f16 — passes every tier with room (token map 0.999994 -> 0.999988 mean, rel_max
-//                   5.8e-03 -> 6.3e-03) and gains 1.12x.
+//                   5.8e-03 -> 6.3e-03) and gains 1.11x (1.132 -> 1.018 ms).
 //   levjepa   f16 — passes every tier with room (rel_max 4.1e-03 -> 1.6e-02 against a 0.62 bar)
-//                   and gains 1.06x at 3 137 tokens.
+//                   and gains 1.06x (89.85 -> 84.72 ms at 3 137 tokens).
 //   vjepa     f32 — no released weights and no fixtures, so nothing is measured: it keeps the
 //                   conservative setting.
 bool jepa_gpu_prec_f32_default(jepa_family_id fam) {
