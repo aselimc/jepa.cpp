@@ -100,13 +100,16 @@ jobs:
           submodules: recursive
 
       - name: configure
-        run: cmake -S . -B build -A x64 -DGGML_LLAMAFILE=ON
+        run: cmake -S . -B build -A x64 -DGGML_LLAMAFILE=ON -DBUILD_SHARED_LIBS=OFF
 
       - name: build
         run: cmake --build build --config Release -j 4
 
       - name: version
-        run: build\Release\jepa-info.exe --version
+        run: |
+          & build\Release\jepa-info.exe --version
+          Write-Host "exit code: $LASTEXITCODE"
+          exit $LASTEXITCODE
 
   # ASAN + UBSAN over the same two model-free suites. OpenMP is off here on purpose: libgomp's
   # thread pool is still allocated at exit and LeakSanitizer reports it, which would force either a
