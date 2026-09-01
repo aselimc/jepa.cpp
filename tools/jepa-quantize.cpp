@@ -457,7 +457,17 @@ int main(int argc, char ** argv) {
     std::vector<uint8_t> dst;
     std::vector<uint8_t> zeros(alignment, 0);
     size_t written = 0;
+    // The header says how many bytes each tensor has; the file says how many it actually holds.
+    // Check the two agree before resizing to the first number (src/jepa-gguf.cpp does the same, and
+    // for the same reason: a small file can promise terabytes).
+    const int64_t in_size = file_size(in_path);
     for (const plan_item & it : plan) {
+        const uint64_t end = (uint64_t) in_data_offset + it.src_offset + it.src_bytes;
+        if (in_size < 0 || end > (uint64_t) in_size) {
+            fprintf(stderr, "error: %s claims %zu bytes ending at %llu, past the end of %s (%lld bytes)\n",
+                    it.name.c_str(), it.src_bytes, (unsigned long long) end, in_path, (long long) in_size);
+            return 1;
+        }
         src.resize(it.src_bytes);
         if (jq_seek64(fin, in_data_offset + it.src_offset) != 0 || fread(src.data(), 1, it.src_bytes, fin) != it.src_bytes) {
             fprintf(stderr, "error: short read on %s\n", it.name.c_str());
