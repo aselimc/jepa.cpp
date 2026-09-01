@@ -125,7 +125,9 @@ build/jepa-embed -m models/gguf/vjepa2_1-vitb-384-f16.gguf \
 build/jepa-embed -m models/gguf/vjepa2_1-vitb-384-f16.gguf --as-video -i f0.jpg -i f1.jpg -t 32
 
 # LeVJEPA reads a clip through its CLS token; a still image is repeated to the model's 16 frames,
-# which is how its model card feeds one, and jepa-embed says so on stderr when it does
+# which is how its model card feeds one, and jepa-embed says so on stderr when it does. The repeat
+# is jepa-embed's: jepa_encode() itself runs n_frames frames as given, so a library caller passing
+# one frame gets a one-frame clip. Any clip length other than the trained 16 also gets a note.
 build/jepa-embed -m models/gguf/levjepa-vitl16-f16.gguf -i cat.jpg --pool cls -t 32
 
 # a whole list of clips, one model load, output [n_clips, D] in list order

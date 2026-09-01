@@ -107,7 +107,7 @@ uv venv .venv && source .venv/bin/activate
 uv pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
 uv pip install transformers safetensors numpy gguf pillow huggingface_hub av
 
-scripts/download_models.sh small     # LeJEPA, LeWorldModel, V-JEPA 2.1  ("all" adds I-JEPA + V-JEPA 2, ~7 GB)
+scripts/download_models.sh small     # LeJEPA, LeWorldModel, V-JEPA 2.1  ("all" adds I-JEPA, V-JEPA 2, LeVJEPA, ~8 GB)
 scripts/download_fixtures.sh         # a few test images and clips
 
 python scripts/convert.py --family hfvit    --src models/OK-AI/lejepa-vits16-pretrain-in1k --ftype f16
@@ -146,7 +146,7 @@ types. Load a model, make a context, `jepa_encode`, then pool or predict. The fu
 
 ## How it works, in one paragraph
 
-All seven families run one shared ViT graph: patchify (a host-side rearrangement plus one matmul), add
+The seven models of six families run one shared ViT graph: patchify (a host-side rearrangement plus one matmul), add
 positions, pre-LayerNorm transformer blocks with flash attention, final norm. Families differ only in
 the tokenizer (2-D patches vs video tubelets), the positional scheme (sincos tables vs 3-D RoPE —
 including a faithful reproduction of V-JEPA 2's *tiled* RoPE, a quirk Meta keeps for checkpoint

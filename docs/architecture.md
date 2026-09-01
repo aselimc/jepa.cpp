@@ -112,16 +112,32 @@ frame from reaching a first-frame token at layer *l+1*. At the released 16-frame
 53.1 % of the 3137 × 3137 grid open.
 
 `jepa_block_causal_mask_f16` builds it host-side as an additive F16 `[N, N]` buffer of zeros and
-`-INFINITY`, once per context and shape rather than per layer, and passes it through
-`jepa_attn_opts::mask`. F16 serves both consumers — `ggml_flash_attn_ext` requires it and
-`ggml_soft_max_ext` accepts it — so one buffer covers the flash path, the `--no-flash` path and both
-backends. No padding is needed at this ggml commit: the CUDA MMA kernel wraps mask rows with
-`fastmodulo(j0 + j, ne01)` and clamps the key axis of its final tile, so an unpadded 3137-row buffer is
-read correctly there too (measured in [parity](parity.md#results-encoders-on-cuda0)).
+`-INFINITY`, once per `jepa_encode` call — shared by all 24 layers and by every clip of that call, and
+uploaded into each clip's graph — and passes it through `jepa_attn_opts::mask`. F16 serves both
+consumers — `ggml_flash_attn_ext` requires it and `ggml_soft_max_ext` accepts it — so one buffer covers
+the flash path, the `--no-flash` path and both backends. No padding is needed at this ggml commit: the
+CUDA MMA kernel wraps mask rows with `fastmodulo(j0 + j, ne01)` and clamps the key axis of its final
+tile, so an unpadded 3137-row buffer is read correctly there too (measured in
+[parity](parity.md#results-encoders-on-cuda0)).
+
+**The mask is the one term in this graph that grows with N².** Everything else — activations, RoPE
+tables, the patch buffer — is linear in the token count, so the memory of a longer clip is otherwise
+predictable. The mask is `N × N` F16 held twice, once on the host and once in the graph arena: 39 MiB
+at the released 16-frame shape (3137 rows), **600 MiB at 64 frames** (12 545 rows), 2.4 GiB at 128.
+`jepa_encode` therefore budgets a video graph the way it budgets a batched image graph — the
+`$JEPA_MAX_GRAPH_MIB` ceiling of the Runtime switches below, counting the mask — and refuses a clip
+that exceeds it instead of allocating; above 64 MiB of mask it also says so once. There is no batch to
+shrink on the video path, so over-budget is a refusal rather than a smaller graph.
 
 A CLS token in a RoPE model raises a second question, and the reference answers it: `RoPEAttention`
 rotates `q/k[..., 1:, :]` only. The runtime therefore prepends an identity row (cos 1, sin 0) to the
 host cos/sin tables for every prefix token, and `jepa_rope3d_apply` is untouched.
+
+**A one-frame clip is a one-frame clip.** `jepa_encode` runs `in->n_frames` frames as given for every
+video family; it never invents frames. LeVJEPA's model card feeds a still image as that frame repeated
+to `jepa.enc.n_frames`, and `jepa-embed` does the repeat (and says so on stderr) — the library entry
+point does not, so a caller handing it `n_frames = 1` gets a 197-row clip whose mask spans one temporal
+slot. `jepa-embed` also notes any other clip length that differs from the trained one.
 
 ## Preprocessing
 

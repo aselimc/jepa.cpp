@@ -1,5 +1,5 @@
 site_name: jepa.cpp
-site_description: CPU inference for the JEPA family (I-JEPA, V-JEPA 2 / 2.1, LeJEPA, LeWorldModel) in plain C/C++ on ggml
+site_description: CPU inference for the JEPA family (I-JEPA, V-JEPA 2 / 2.1, LeJEPA, LeVJEPA, LeWorldModel) in plain C/C++ on ggml
 site_url: https://aselimc.github.io/jepa.cpp/
 repo_url: https://github.com/aselimc/jepa.cpp
 repo_name: aselimc/jepa.cpp

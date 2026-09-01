@@ -58,6 +58,12 @@ The PyTorch column is the mean over the reference samples of the same frame coun
 a cold first sample where that first sample is ≥ 1.2× the median of the rest (I-JEPA: 331.8 ms first
 against a steady 250; LeJEPA: 72.2 against 15.4).
 
+Those samples are single-shot forwards, which is the noisier of the two ways to time a reference.
+[parity.md](parity.md#levjepa-vitl16--cls-block-causal-attention-tubelet-1) divides by a **warm loop**
+instead — 1 warmup then 5 forwards on one clip — and for LeVJEPA the two differ by 8 %: 1752 ms here
+against 1904 ms median (1883 ms minimum) there, so the same f16 file reads 1.18× on this page and 1.2×
+on that one. The column keeps the single-shot rule so that every row divides by the same thing.
+
 *Source: [benchmarks.md](benchmarks.md#encoder), `tools/jepa-bench` on synthetic deterministic input,
 1 warmup + 3 measured runs, 32-thread sessions 2026-08-31 11:32 and 23:02 UTC and 96-thread sessions
 11:44 and 23:05 UTC, all starting on an idle box; PyTorch column from the fixture manifests'
@@ -240,7 +246,12 @@ has the per-split throughput rows.*
 | LeVJEPA ViT-L/16 | 1156 | 579 | 310 | 166 | 779 (3 137 tok) |
 
 Weights resident, MiB (`jepa_model_n_bytes()`); peak RSS additionally covers the graph arena, the
-host-side patch buffer and the output rows, so it grows with the token count. Across these seven
+host-side patch buffer and the output rows, so it grows with the token count — linearly, with one
+exception. A `block_causal` file (LeVJEPA) also holds an `N × N` F16 attention mask, on the host and
+in the arena: 39 MiB of the 779 above at 3 137 rows, but **600 MiB at 64 frames** (12 545 rows), where
+it becomes the largest single allocation in the process. `$JEPA_MAX_GRAPH_MIB` bounds it and
+`jepa_encode` refuses a clip over that ceiling rather than allocating
+([architecture.md](architecture.md#block-causal-attention)). Across these seven
 models q8_0 holds **0.53–0.61×** the resident f16 weights and q4 **0.29–0.40×** (LeWM is the high end
 of both, because a larger share of its file is the F32 remainder — adaLN, action embedder, position
 tables — that no type touches). The clean 0.53× / 0.29× ratios quoted for *file* sizes, from the 8.5
