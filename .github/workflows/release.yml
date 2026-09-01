@@ -1,0 +1,100 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "existing tag to build and publish"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # Linux x86-64, CPU only. GitHub-hosted runners have no NVIDIA device and libggml-cuda.so is 45 MB
+  # per GPU architecture, so a CUDA archive is a decision for a later release (docs/releases.md).
+  linux-x86_64:
+    name: linux x86-64 (cpu)
+    # The oldest image still supported: it fixes the glibc the binaries need (2.35), so they also run
+    # on everything newer. libstdc++ and libgcc are linked statically; libgomp stays dynamic.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: resolve the version
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          echo "TAG=$tag"          >> "$GITHUB_ENV"
+          echo "VERSION=${tag#v}"  >> "$GITHUB_ENV"
+
+      # JEPA_NATIVE=OFF makes this a portable x86-64-v3 build: ggml then enables SSE4.2, AVX, AVX2,
+      # FMA, F16C and BMI2 rather than -march=native, so the archive runs on any Haswell-or-newer CPU
+      # instead of only on the machine that built it.
+      - name: build
+        run: |
+          cmake -S . -B build-release \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DJEPA_NATIVE=OFF \
+            -DJEPA_BUILD_TESTS=OFF \
+            -DGGML_LLAMAFILE=ON \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++"
+          cmake --build build-release -j "$(nproc)"
+
+      # package_release.sh refuses to package a tree whose jepa-info --version disagrees with the
+      # tag, so a tag ahead of CMakeLists.txt fails here rather than shipping a mislabelled archive.
+      - name: package
+        run: scripts/package_release.sh --version "$VERSION" --build-dir build-release --out-dir dist
+
+      - name: smoke test the archive
+        run: |
+          tar -C "$RUNNER_TEMP" -xzf "dist/jepa-$VERSION-linux-x86_64.tar.gz"
+          d="$RUNNER_TEMP/jepa-$VERSION-linux-x86_64"
+          (cd "$d" && sha256sum -c SHA256SUMS --quiet)
+          test "$("$d/bin/jepa-info" --version)" = "$VERSION"
+          "$d/bin/jepa-info" --devices
+          ldd "$d/bin/jepa-embed"
+
+      - name: release notes from CHANGELOG.md
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { p = 1; next }
+            p && /^## \[/ { exit }
+            p { print }
+          ' CHANGELOG.md > notes.md
+          grep -q '[^[:space:]]' notes.md || {
+            echo "CHANGELOG.md has no '## [$VERSION]' section" >&2; exit 1; }
+          {
+            echo "\`\`\`bash"
+            echo "curl -sSLO https://github.com/${{ github.repository }}/releases/download/$TAG/jepa-$VERSION-linux-x86_64.tar.gz"
+            echo "tar xzf jepa-$VERSION-linux-x86_64.tar.gz && jepa-$VERSION-linux-x86_64/bin/jepa-info --version"
+            echo "\`\`\`"
+            echo
+            echo "Linux x86-64, CPU only, built for x86-64-v3 (AVX2/FMA/F16C/BMI2) against glibc 2.35."
+            echo "\`SHA256SUMS\` next to the archive is its checksum; the copy inside lists every packaged file."
+            echo
+            cat notes.md
+          } > release-notes.md
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets="dist/jepa-$VERSION-linux-x86_64.tar.gz dist/SHA256SUMS"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "jepa.cpp $TAG" --notes-file release-notes.md
+            # shellcheck disable=SC2086
+            gh release upload "$TAG" $assets --clobber
+          else
+            # shellcheck disable=SC2086
+            gh release create "$TAG" --title "jepa.cpp $TAG" --notes-file release-notes.md $assets
+          fi
