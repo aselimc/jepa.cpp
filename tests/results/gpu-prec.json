@@ -1,0 +1,1679 @@
+{
+ "task": "GPU parity of every jepa.cpp family at both mul_mat accumulation precisions \u2014 the measurement behind the per-family GGML_PREC_F32 default in src/jepa.cpp (jepa_gpu_prec_f32_default)",
+ "generated_by": "scripts/gpu_prec_sweep.sh",
+ "protocol": {
+  "runner": "tests/test-parity, one process per (file, precision), all fixture samples unless the grid names a subset",
+  "precision": "$JEPA_GPU_PREC=f32 forces GGML_PREC_F32 on every mul_mat, =f16 hands cuBLAS its own compute type; both override the family default under test",
+  "thresholds": "test-parity's own POLICY[gpu][family class][tier], unchanged \u2014 this sweep chooses which side of them a family lands on and never moves them",
+  "metrics": "worst sample of the run over the stored-input pass: minimum per-token cosine mean/median/min and maximum rel_max, and the same for the worst derived tensor",
+  "affected": "only f16 weights change: a quantized file takes mmq and never reaches cuBLAS, and ggml's f32 CUDA path is TF32 regardless \u2014 the small movements in the quantized rows are the f16/f32 tensors a quantized file still carries",
+  "timing": "not measured here; the speed half of the decision is tests/results/benchmarks-gpu.json (scripts/bench_gpu.grid pairs each family's default row with the setting it does not default to)"
+ },
+ "box": {
+  "device": "NVIDIA RTX 4500 Ada Generation",
+  "device_index": 1,
+  "device_memory": "24570 MiB",
+  "compute_cap": "8.9",
+  "power_limit": "210.00 W",
+  "driver": "580.173.02",
+  "git_commit": "b98cfa1a",
+  "ggml_commit": "36da5713",
+  "kernel": "6.17.0-1032-oem"
+ },
+ "date_utc": "2026-09-01 22:45 UTC",
+ "rows": [
+  {
+   "file": "ijepa_vith14_1k-f16",
+   "family": "ijepa",
+   "ftype": "f16",
+   "ref": "ijepa-vith14-1k",
+   "samples": 8,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.01,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "image",
+    "gate_top5": true,
+    "tier": "f16",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.15,
+     "min_cos_mean": 0.999,
+     "min_cos_med": 0.9999,
+     "min_cos_min": 0.9
+    }
+   },
+   "tokens": 256,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 256,
+    "token_map": {
+     "cos_mean": 0.9997877674523089,
+     "cos_med": 0.9999959600310535,
+     "cos_min": 0.9612681746267402,
+     "rel_max": 0.09062661577097997
+    },
+    "derived": {
+     "cos_mean": 0.9999937731540888,
+     "rel_max": 0.002701409547913913
+    }
+   },
+   "prec_f16": {
+    "pass": false,
+    "tokens": 256,
+    "token_map": {
+     "cos_mean": 0.9992399040149494,
+     "cos_med": 0.9999815218136148,
+     "cos_min": 0.8938247779072946,
+     "rel_max": 0.2021066460784261
+    },
+    "derived": {
+     "cos_mean": 0.9999834008075049,
+     "rel_max": 0.004650796074204553
+    }
+   },
+   "verdict": "f16 accumulation fails a tier the default passes"
+  },
+  {
+   "file": "ijepa_vith14_1k-f32",
+   "family": "ijepa",
+   "ftype": "f32",
+   "ref": "ijepa-vith14-1k",
+   "samples": 8,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.01,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "image",
+    "gate_top5": true,
+    "tier": "f32",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.15,
+     "min_cos_mean": 0.999,
+     "min_cos_med": 0.9999,
+     "min_cos_min": 0.9
+    }
+   },
+   "tokens": 256,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 256,
+    "token_map": {
+     "cos_mean": 0.9998528234063574,
+     "cos_med": 0.9999965589611463,
+     "cos_min": 0.9729958004303042,
+     "rel_max": 0.07388060988147119
+    },
+    "derived": {
+     "cos_mean": 0.9999959907905559,
+     "rel_max": 0.002109389218582832
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 256,
+    "token_map": {
+     "cos_mean": 0.9998528234063574,
+     "cos_med": 0.9999965589611463,
+     "cos_min": 0.9729958004303042,
+     "rel_max": 0.07388060988147119
+    },
+    "derived": {
+     "cos_mean": 0.9999959907905559,
+     "rel_max": 0.002109389218582832
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "ijepa_vith14_1k-q4_k",
+   "family": "ijepa",
+   "ftype": "q4_k",
+   "ref": "ijepa-vith14-1k",
+   "samples": 8,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": true,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": -1.0,
+     "min_cos_mean": 0.99,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "image",
+    "gate_top5": false,
+    "tier": "low-bit",
+    "token_map": {
+     "max_rel_at_2048_tokens": -1.0,
+     "min_cos_mean": -1.0,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 256,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 256,
+    "token_map": {
+     "cos_mean": 0.9075244543419795,
+     "cos_med": 0.9776062191598639,
+     "cos_min": 0.03521715047011237,
+     "rel_max": 1.015552576692642
+    },
+    "derived": {
+     "cos_mean": 0.9921218848124121,
+     "rel_max": 0.11481393849719532
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 256,
+    "token_map": {
+     "cos_mean": 0.9075244543419795,
+     "cos_med": 0.9776062191598639,
+     "cos_min": 0.03521715047011237,
+     "rel_max": 1.015552576692642
+    },
+    "derived": {
+     "cos_mean": 0.9921218848124121,
+     "rel_max": 0.11481393849719532
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "ijepa_vith14_1k-q8_0",
+   "family": "ijepa",
+   "ftype": "q8_0",
+   "ref": "ijepa-vith14-1k",
+   "samples": 8,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.05,
+     "min_cos_mean": 0.999,
+     "min_cos_med": -1.0,
+     "min_cos_min": 0.98
+    },
+    "family_class": "image",
+    "gate_top5": true,
+    "tier": "q8",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.6,
+     "min_cos_mean": 0.98,
+     "min_cos_med": 0.99,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 256,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 256,
+    "token_map": {
+     "cos_mean": 0.9902110711665597,
+     "cos_med": 0.9994429020738479,
+     "cos_min": 0.6453182317036295,
+     "rel_max": 0.38035870492889223
+    },
+    "derived": {
+     "cos_mean": 0.9997249748200705,
+     "rel_max": 0.01585995839039652
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 256,
+    "token_map": {
+     "cos_mean": 0.9902110711665597,
+     "cos_med": 0.9994429020738479,
+     "cos_min": 0.6453182317036295,
+     "rel_max": 0.38035870492889223
+    },
+    "derived": {
+     "cos_mean": 0.9997249748200705,
+     "rel_max": 0.01585995839039652
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "lejepa-vits16-pretrain-in1k-f16",
+   "family": "hfvit",
+   "ftype": "f16",
+   "ref": "lejepa-vits16",
+   "samples": 8,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.01,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "image",
+    "gate_top5": true,
+    "tier": "f16",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.15,
+     "min_cos_mean": 0.999,
+     "min_cos_med": 0.9999,
+     "min_cos_min": 0.9
+    }
+   },
+   "tokens": 197,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 197,
+    "token_map": {
+     "cos_mean": 0.9999939230140042,
+     "cos_med": 0.9999961325920492,
+     "cos_min": 0.9998299810096017,
+     "rel_max": 0.005800628158424597
+    },
+    "derived": {
+     "cos_mean": 0.9999996193110435,
+     "rel_max": 0.0008151748427073014
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 197,
+    "token_map": {
+     "cos_mean": 0.9999878156978215,
+     "cos_med": 0.9999909693449613,
+     "cos_min": 0.9998039233134027,
+     "rel_max": 0.006252383706880088
+    },
+    "derived": {
+     "cos_mean": 0.9999974752458731,
+     "rel_max": 0.0019232805784107708
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "lejepa-vits16-pretrain-in1k-f32",
+   "family": "hfvit",
+   "ftype": "f32",
+   "ref": "lejepa-vits16",
+   "samples": 8,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.01,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "image",
+    "gate_top5": true,
+    "tier": "f32",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.15,
+     "min_cos_mean": 0.999,
+     "min_cos_med": 0.9999,
+     "min_cos_min": 0.9
+    }
+   },
+   "tokens": 197,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 197,
+    "token_map": {
+     "cos_mean": 0.9999939913378444,
+     "cos_med": 0.999995948019145,
+     "cos_min": 0.999827696507348,
+     "rel_max": 0.005960475668474276
+    },
+    "derived": {
+     "cos_mean": 0.9999996263403601,
+     "rel_max": 0.0009586531458696605
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 197,
+    "token_map": {
+     "cos_mean": 0.9999939913378444,
+     "cos_med": 0.999995948019145,
+     "cos_min": 0.999827696507348,
+     "rel_max": 0.005960475668474276
+    },
+    "derived": {
+     "cos_mean": 0.9999996263403601,
+     "rel_max": 0.0009586531458696605
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "lejepa-vits16-pretrain-in1k-q4_k",
+   "family": "hfvit",
+   "ftype": "q4_0",
+   "ref": "lejepa-vits16",
+   "samples": 8,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": true,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": -1.0,
+     "min_cos_mean": 0.99,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "image",
+    "gate_top5": false,
+    "tier": "low-bit",
+    "token_map": {
+     "max_rel_at_2048_tokens": -1.0,
+     "min_cos_mean": -1.0,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 197,
+   "prec_f32": {
+    "pass": false,
+    "tokens": 197,
+    "token_map": {
+     "cos_mean": 0.9640425804920183,
+     "cos_med": 0.9650756598611744,
+     "cos_min": 0.8546801868306504,
+     "rel_max": 0.1744172077978575
+    },
+    "derived": {
+     "cos_mean": 0.9850801764098226,
+     "rel_max": 0.17486789827780325
+    }
+   },
+   "prec_f16": {
+    "pass": false,
+    "tokens": 197,
+    "token_map": {
+     "cos_mean": 0.9640425804920183,
+     "cos_med": 0.9650756598611744,
+     "cos_min": 0.8546801868306504,
+     "rel_max": 0.1744172077978575
+    },
+    "derived": {
+     "cos_mean": 0.9850801764098226,
+     "rel_max": 0.17486789827780325
+    }
+   },
+   "verdict": "neither precision passes (a known non-pass, see docs/parity.md)"
+  },
+  {
+   "file": "lejepa-vits16-pretrain-in1k-q8_0",
+   "family": "hfvit",
+   "ftype": "q8_0",
+   "ref": "lejepa-vits16",
+   "samples": 8,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.05,
+     "min_cos_mean": 0.999,
+     "min_cos_med": -1.0,
+     "min_cos_min": 0.98
+    },
+    "family_class": "image",
+    "gate_top5": true,
+    "tier": "q8",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.6,
+     "min_cos_mean": 0.98,
+     "min_cos_med": 0.99,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 197,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 197,
+    "token_map": {
+     "cos_mean": 0.999276727783134,
+     "cos_med": 0.9994264123643228,
+     "cos_min": 0.9965725601572955,
+     "rel_max": 0.035393041955982536
+    },
+    "derived": {
+     "cos_mean": 0.9998078294882846,
+     "rel_max": 0.024854458558853404
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 197,
+    "token_map": {
+     "cos_mean": 0.999276727783134,
+     "cos_med": 0.9994264123643228,
+     "cos_min": 0.9965725601572955,
+     "rel_max": 0.035393041955982536
+    },
+    "derived": {
+     "cos_mean": 0.9998078294882846,
+     "rel_max": 0.024854458558853404
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "levjepa-vitl16-f16",
+   "family": "levjepa",
+   "ftype": "f16",
+   "ref": "levjepa-vitl16",
+   "samples": 4,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.03,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": true,
+    "tier": "f16",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.5,
+     "min_cos_mean": 0.99,
+     "min_cos_med": 0.999,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 3137,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 3137,
+    "token_map": {
+     "cos_mean": 0.9999961495215218,
+     "cos_med": 0.9999979939621298,
+     "cos_min": 0.9999004376184149,
+     "rel_max": 0.004104487620776911
+    },
+    "derived": {
+     "cos_mean": 0.9999993611815888,
+     "rel_max": 0.0006557935042444795
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 3137,
+    "token_map": {
+     "cos_mean": 0.9999643165941549,
+     "cos_med": 0.9999898289445843,
+     "cos_min": 0.9933090102724134,
+     "rel_max": 0.016386370629504887
+    },
+    "derived": {
+     "cos_mean": 0.9999991891427935,
+     "rel_max": 0.0012370517144219206
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "levjepa-vitl16-f32",
+   "family": "levjepa",
+   "ftype": "f32",
+   "ref": "levjepa-vitl16",
+   "samples": 4,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.03,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": true,
+    "tier": "f32",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.5,
+     "min_cos_mean": 0.99,
+     "min_cos_med": 0.999,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 3137,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 3137,
+    "token_map": {
+     "cos_mean": 0.9999961760973968,
+     "cos_med": 0.9999979939395254,
+     "cos_min": 0.9998999602696501,
+     "rel_max": 0.0040991744683564965
+    },
+    "derived": {
+     "cos_mean": 0.999999372277347,
+     "rel_max": 0.0006359447946464297
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 3137,
+    "token_map": {
+     "cos_mean": 0.9999961760973968,
+     "cos_med": 0.9999979939395254,
+     "cos_min": 0.9998999602696501,
+     "rel_max": 0.0040991744683564965
+    },
+    "derived": {
+     "cos_mean": 0.999999372277347,
+     "rel_max": 0.0006359447946464297
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "levjepa-vitl16-q4_k",
+   "family": "levjepa",
+   "ftype": "q4_k",
+   "ref": "levjepa-vitl16",
+   "samples": 4,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": true,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": -1.0,
+     "min_cos_mean": 0.99,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": false,
+    "tier": "low-bit",
+    "token_map": {
+     "max_rel_at_2048_tokens": -1.0,
+     "min_cos_mean": -1.0,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 3137,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 3137,
+    "token_map": {
+     "cos_mean": 0.9942218344211592,
+     "cos_med": 0.9973102065556786,
+     "cos_min": 0.8843855135250542,
+     "rel_max": 0.16047482137866223
+    },
+    "derived": {
+     "cos_mean": 0.9993425240867979,
+     "rel_max": 0.01823290811081265
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 3137,
+    "token_map": {
+     "cos_mean": 0.9942218344211592,
+     "cos_med": 0.9973102065556786,
+     "cos_min": 0.8843855135250542,
+     "rel_max": 0.16047482137866223
+    },
+    "derived": {
+     "cos_mean": 0.9993425240867979,
+     "rel_max": 0.01823290811081265
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "levjepa-vitl16-q8_0",
+   "family": "levjepa",
+   "ftype": "q8_0",
+   "ref": "levjepa-vitl16",
+   "samples": 4,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.3,
+     "min_cos_mean": 0.995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": true,
+    "tier": "q8",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.8,
+     "min_cos_mean": 0.95,
+     "min_cos_med": 0.99,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 3137,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 3137,
+    "token_map": {
+     "cos_mean": 0.9997853675992289,
+     "cos_med": 0.9998644770082434,
+     "cos_min": 0.9913961891904866,
+     "rel_max": 0.022831717972429756
+    },
+    "derived": {
+     "cos_mean": 0.9999820219199341,
+     "rel_max": 0.002274073895286476
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 3137,
+    "token_map": {
+     "cos_mean": 0.9997853675992289,
+     "cos_med": 0.9998644770082434,
+     "cos_min": 0.9913961891904866,
+     "rel_max": 0.022831717972429756
+    },
+    "derived": {
+     "cos_mean": 0.9999820219199341,
+     "rel_max": 0.002274073895286476
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "lewm-pusht-f16",
+   "family": "lewm",
+   "ftype": "f16",
+   "ref": "lewm-pusht",
+   "samples": 3,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.01,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "image",
+    "gate_top5": true,
+    "tier": "f16",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.15,
+     "min_cos_mean": 0.999,
+     "min_cos_med": 0.9999,
+     "min_cos_min": 0.9
+    }
+   },
+   "tokens": 257,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 257,
+    "token_map": {
+     "cos_mean": 0.9999999319662223,
+     "cos_med": 0.9999999488455997,
+     "cos_min": 0.9999995031756465,
+     "rel_max": 0.0007081282702413739
+    },
+    "derived": {
+     "cos_mean": 0.9999997969814673,
+     "rel_max": 0.000733160050849321
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 257,
+    "token_map": {
+     "cos_mean": 0.9999992001869373,
+     "cos_med": 0.9999992619944202,
+     "cos_min": 0.9999969672118715,
+     "rel_max": 0.001949226040186481
+    },
+    "derived": {
+     "cos_mean": 0.9999984606437087,
+     "rel_max": 0.0020541383876479867
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "lewm-pusht-f32",
+   "family": "lewm",
+   "ftype": "f32",
+   "ref": "lewm-pusht",
+   "samples": 3,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.01,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "image",
+    "gate_top5": true,
+    "tier": "f32",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.15,
+     "min_cos_mean": 0.999,
+     "min_cos_med": 0.9999,
+     "min_cos_min": 0.9
+    }
+   },
+   "tokens": 257,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 257,
+    "token_map": {
+     "cos_mean": 0.9999999319179388,
+     "cos_med": 0.9999999479776135,
+     "cos_min": 0.9999995421855046,
+     "rel_max": 0.0005877826838200748
+    },
+    "derived": {
+     "cos_mean": 0.9999998518623969,
+     "rel_max": 0.0006245446944951738
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 257,
+    "token_map": {
+     "cos_mean": 0.9999999319179388,
+     "cos_med": 0.9999999479776135,
+     "cos_min": 0.9999995421855046,
+     "rel_max": 0.0005877826838200748
+    },
+    "derived": {
+     "cos_mean": 0.9999998518623969,
+     "rel_max": 0.0006245446944951738
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "lewm-pusht-q4_k",
+   "family": "lewm",
+   "ftype": "q4_0",
+   "ref": "lewm-pusht",
+   "samples": 3,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": true,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": -1.0,
+     "min_cos_mean": 0.99,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "image",
+    "gate_top5": false,
+    "tier": "low-bit",
+    "token_map": {
+     "max_rel_at_2048_tokens": -1.0,
+     "min_cos_mean": -1.0,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 257,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 257,
+    "token_map": {
+     "cos_mean": 0.9986978002954486,
+     "cos_med": 0.9987977671124423,
+     "cos_min": 0.9965710964236736,
+     "rel_max": 0.07070993865967717
+    },
+    "derived": {
+     "cos_mean": 0.9911711062392643,
+     "rel_max": 0.12159022786989103
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 257,
+    "token_map": {
+     "cos_mean": 0.9986978002954486,
+     "cos_med": 0.9987977671124423,
+     "cos_min": 0.9965710964236736,
+     "rel_max": 0.07070993865967717
+    },
+    "derived": {
+     "cos_mean": 0.9911711062392643,
+     "rel_max": 0.12159022786989103
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "lewm-pusht-q8_0",
+   "family": "lewm",
+   "ftype": "q8_0",
+   "ref": "lewm-pusht",
+   "samples": 3,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.05,
+     "min_cos_mean": 0.999,
+     "min_cos_med": -1.0,
+     "min_cos_min": 0.98
+    },
+    "family_class": "image",
+    "gate_top5": true,
+    "tier": "q8",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.6,
+     "min_cos_mean": 0.98,
+     "min_cos_med": 0.99,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 257,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 257,
+    "token_map": {
+     "cos_mean": 0.9999780579840704,
+     "cos_med": 0.9999803776706752,
+     "cos_min": 0.9999242054396873,
+     "rel_max": 0.008890176433345701
+    },
+    "derived": {
+     "cos_mean": 0.9999226058461308,
+     "rel_max": 0.0196863478708832
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 257,
+    "token_map": {
+     "cos_mean": 0.9999780579840704,
+     "cos_med": 0.9999803776706752,
+     "cos_min": 0.9999242054396873,
+     "rel_max": 0.008890176433345701
+    },
+    "derived": {
+     "cos_mean": 0.9999226058461308,
+     "rel_max": 0.0196863478708832
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "vjepa2-ac-vitg-f16",
+   "family": "vjepa2",
+   "ftype": "f16",
+   "ref": "vjepa2-ac-vitg",
+   "samples": 3,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.03,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": true,
+    "tier": "f16",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.5,
+     "min_cos_mean": 0.99,
+     "min_cos_med": 0.999,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 256,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 256,
+    "token_map": {
+     "cos_mean": 0.9983441448617034,
+     "cos_med": 0.9998558303295717,
+     "cos_min": 0.9179149734315986,
+     "rel_max": 0.12825907906526887
+    },
+    "derived": {
+     "cos_mean": 0.9999820910761094,
+     "rel_max": 0.001985068970294489
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 256,
+    "token_map": {
+     "cos_mean": 0.9980063067009799,
+     "cos_med": 0.9997311718771853,
+     "cos_min": 0.9451513868050814,
+     "rel_max": 0.11904030437649406
+    },
+    "derived": {
+     "cos_mean": 0.9999535580041232,
+     "rel_max": 0.002821061228499352
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "vjepa2-ac-vitg-q8_0",
+   "family": "vjepa2",
+   "ftype": "q8_0",
+   "ref": "vjepa2-ac-vitg",
+   "samples": 3,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.3,
+     "min_cos_mean": 0.995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": true,
+    "tier": "q8",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.8,
+     "min_cos_mean": 0.95,
+     "min_cos_med": 0.99,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 256,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 256,
+    "token_map": {
+     "cos_mean": 0.9707630833721608,
+     "cos_med": 0.9952069539294901,
+     "cos_min": 0.3906628611735771,
+     "rel_max": 0.5126757425830217
+    },
+    "derived": {
+     "cos_mean": 0.9993114095015292,
+     "rel_max": 0.014468240021986347
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 256,
+    "token_map": {
+     "cos_mean": 0.9707630833721608,
+     "cos_med": 0.9952069539294901,
+     "cos_min": 0.3906628611735771,
+     "rel_max": 0.5126757425830217
+    },
+    "derived": {
+     "cos_mean": 0.9993114095015292,
+     "rel_max": 0.014468240021986347
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "vjepa2-vitg-fpc64-256-f16",
+   "family": "vjepa2",
+   "ftype": "f16",
+   "ref": "vjepa2-vitg-fpc64-256",
+   "samples": 2,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.03,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": true,
+    "tier": "f16",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.5,
+     "min_cos_mean": 0.99,
+     "min_cos_med": 0.999,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 2048,
+   "prec_f32": {
+    "pass": false,
+    "tokens": 2048,
+    "token_map": {
+     "cos_mean": 0.9950571324105231,
+     "cos_med": 0.999811832186944,
+     "cos_min": 0.36877242124675447,
+     "rel_max": 0.5040995239972761
+    },
+    "derived": {
+     "cos_mean": 0.9999914895952444,
+     "rel_max": 0.001388331987992819
+    }
+   },
+   "prec_f16": {
+    "pass": false,
+    "tokens": 2048,
+    "token_map": {
+     "cos_mean": 0.9824453397841234,
+     "cos_med": 0.9990554942938743,
+     "cos_min": 0.31977069546061837,
+     "rel_max": 0.6642941245978853
+    },
+    "derived": {
+     "cos_mean": 0.9999662858386011,
+     "rel_max": 0.0042632798748988635
+    }
+   },
+   "verdict": "neither precision passes (a known non-pass, see docs/parity.md)"
+  },
+  {
+   "file": "vjepa2-vitg-fpc64-256-q8_0",
+   "family": "vjepa2",
+   "ftype": "q8_0",
+   "ref": "vjepa2-vitg-fpc64-256",
+   "samples": 2,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.3,
+     "min_cos_mean": 0.995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": true,
+    "tier": "q8",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.8,
+     "min_cos_mean": 0.95,
+     "min_cos_med": 0.99,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 2048,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 2048,
+    "token_map": {
+     "cos_mean": 0.9608366985960937,
+     "cos_med": 0.9969776017759424,
+     "cos_min": 0.24920609473905586,
+     "rel_max": 0.7680655144436473
+    },
+    "derived": {
+     "cos_mean": 0.9999296011336924,
+     "rel_max": 0.004436720084585612
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 2048,
+    "token_map": {
+     "cos_mean": 0.9608366985960937,
+     "cos_med": 0.9969776017759424,
+     "cos_min": 0.24920609473905586,
+     "rel_max": 0.7680655144436473
+    },
+    "derived": {
+     "cos_mean": 0.9999296011336924,
+     "rel_max": 0.004436720084585612
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "vjepa2-vitl-fpc16-256-ssv2-f16",
+   "family": "vjepa2",
+   "ftype": "f16",
+   "ref": "vjepa2-vitl-fpc16-256-ssv2",
+   "samples": 2,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.03,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": true,
+    "tier": "f16",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.5,
+     "min_cos_mean": 0.99,
+     "min_cos_med": 0.999,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 2048,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 2048,
+    "token_map": {
+     "cos_mean": 0.9970521605873848,
+     "cos_med": 0.9998695203636899,
+     "cos_min": 0.43524231694967347,
+     "rel_max": 0.3603228369642414
+    },
+    "derived": {
+     "cos_mean": 0.9998991211590288,
+     "rel_max": 0.014223589432736954
+    }
+   },
+   "prec_f16": {
+    "pass": false,
+    "tokens": 2048,
+    "token_map": {
+     "cos_mean": 0.9887025511060592,
+     "cos_med": 0.9992533855853486,
+     "cos_min": 0.33832323068885156,
+     "rel_max": 0.6952745331491477
+    },
+    "derived": {
+     "cos_mean": 0.999375562391438,
+     "rel_max": 0.055169968907952505
+    }
+   },
+   "verdict": "f16 accumulation fails a tier the default passes"
+  },
+  {
+   "file": "vjepa2-vitl-fpc64-256-f16",
+   "family": "vjepa2",
+   "ftype": "f16",
+   "ref": "vjepa2-vitl-fpc64-256",
+   "samples": 4,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.03,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": true,
+    "tier": "f16",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.5,
+     "min_cos_mean": 0.99,
+     "min_cos_med": 0.999,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 8192,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 8192,
+    "token_map": {
+     "cos_mean": 0.994792999096354,
+     "cos_med": 0.9996961106034198,
+     "cos_min": 0.3556742966469627,
+     "rel_max": 0.47461026900514064
+    },
+    "derived": {
+     "cos_mean": 0.9999838565780234,
+     "rel_max": 0.005023583319176881
+    }
+   },
+   "prec_f16": {
+    "pass": false,
+    "tokens": 8192,
+    "token_map": {
+     "cos_mean": 0.9886760221384403,
+     "cos_med": 0.9991700519528903,
+     "cos_min": 0.30255223660832337,
+     "rel_max": 0.6952745331491477
+    },
+    "derived": {
+     "cos_mean": 0.9999666975298324,
+     "rel_max": 0.005886537841051735
+    }
+   },
+   "verdict": "f16 accumulation fails a tier the default passes"
+  },
+  {
+   "file": "vjepa2-vitl-fpc64-256-f32",
+   "family": "vjepa2",
+   "ftype": "f32",
+   "ref": "vjepa2-vitl-fpc64-256",
+   "samples": 4,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.03,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": true,
+    "tier": "f32",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.5,
+     "min_cos_mean": 0.99,
+     "min_cos_med": 0.999,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 8192,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 8192,
+    "token_map": {
+     "cos_mean": 0.9947739897481878,
+     "cos_med": 0.9996977869658077,
+     "cos_min": 0.3548902003487536,
+     "rel_max": 0.468930353428524
+    },
+    "derived": {
+     "cos_mean": 0.9999838531568843,
+     "rel_max": 0.005157889096263495
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 8192,
+    "token_map": {
+     "cos_mean": 0.9947739897481878,
+     "cos_med": 0.9996977869658077,
+     "cos_min": 0.3548902003487536,
+     "rel_max": 0.468930353428524
+    },
+    "derived": {
+     "cos_mean": 0.9999838531568843,
+     "rel_max": 0.005157889096263495
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "vjepa2-vitl-fpc64-256-q4_k",
+   "family": "vjepa2",
+   "ftype": "q4_k",
+   "ref": "vjepa2-vitl-fpc64-256",
+   "samples": 4,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": true,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": -1.0,
+     "min_cos_mean": 0.99,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": false,
+    "tier": "low-bit",
+    "token_map": {
+     "max_rel_at_2048_tokens": -1.0,
+     "min_cos_mean": -1.0,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 8192,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 8192,
+    "token_map": {
+     "cos_mean": 0.895503077970224,
+     "cos_med": 0.9644124778166187,
+     "cos_min": 0.14352633901726175,
+     "rel_max": 0.9383852363681353
+    },
+    "derived": {
+     "cos_mean": 0.9954384278851787,
+     "rel_max": 0.04561301523310261
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 8192,
+    "token_map": {
+     "cos_mean": 0.8985948938965387,
+     "cos_med": 0.9652502213584068,
+     "cos_min": 0.16320236379044067,
+     "rel_max": 0.9021355501801707
+    },
+    "derived": {
+     "cos_mean": 0.9954998035748489,
+     "rel_max": 0.045732941285117026
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "vjepa2-vitl-fpc64-256-q8_0",
+   "family": "vjepa2",
+   "ftype": "q8_0",
+   "ref": "vjepa2-vitl-fpc64-256",
+   "samples": 4,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.3,
+     "min_cos_mean": 0.995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": true,
+    "tier": "q8",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.8,
+     "min_cos_mean": 0.95,
+     "min_cos_med": 0.99,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 8192,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 8192,
+    "token_map": {
+     "cos_mean": 0.9671138982663814,
+     "cos_med": 0.9966796148235642,
+     "cos_min": 0.19375192047016523,
+     "rel_max": 0.6500858316589649
+    },
+    "derived": {
+     "cos_mean": 0.9998890182707912,
+     "rel_max": 0.006611196176503786
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 8192,
+    "token_map": {
+     "cos_mean": 0.9635293692445771,
+     "cos_med": 0.9962048337878804,
+     "cos_min": 0.23815072324222622,
+     "rel_max": 0.6358278952822387
+    },
+    "derived": {
+     "cos_mean": 0.9998814737381472,
+     "rel_max": 0.006671821895490039
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "vjepa2_1-vitb-384-f16",
+   "family": "vjepa2_1",
+   "ftype": "f16",
+   "ref": "vjepa2_1-vitb-384",
+   "samples": 4,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.03,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": true,
+    "tier": "f16",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.5,
+     "min_cos_mean": 0.99,
+     "min_cos_med": 0.999,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 4608,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 4608,
+    "token_map": {
+     "cos_mean": 0.9999505257690604,
+     "cos_med": 0.9999853409972624,
+     "cos_min": 0.9769498179543528,
+     "rel_max": 0.051197758733405214
+    },
+    "derived": {
+     "cos_mean": 0.9999990365272541,
+     "rel_max": 0.0005237604273711648
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 4608,
+    "token_map": {
+     "cos_mean": 0.9997182335977042,
+     "cos_med": 0.9999188269331843,
+     "cos_min": 0.9599231349124047,
+     "rel_max": 0.07634713140379688
+    },
+    "derived": {
+     "cos_mean": 0.9999981386934272,
+     "rel_max": 0.0009017464462244664
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "vjepa2_1-vitb-384-f32",
+   "family": "vjepa2_1",
+   "ftype": "f32",
+   "ref": "vjepa2_1-vitb-384",
+   "samples": 4,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.03,
+     "min_cos_mean": 0.9995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": true,
+    "tier": "f32",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.5,
+     "min_cos_mean": 0.99,
+     "min_cos_med": 0.999,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 4608,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 4608,
+    "token_map": {
+     "cos_mean": 0.9999493124873732,
+     "cos_med": 0.9999846616699836,
+     "cos_min": 0.9852621389467223,
+     "rel_max": 0.04046991680707816
+    },
+    "derived": {
+     "cos_mean": 0.9999990373431749,
+     "rel_max": 0.0005154183419176692
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 4608,
+    "token_map": {
+     "cos_mean": 0.9999493124873732,
+     "cos_med": 0.9999846616699836,
+     "cos_min": 0.9852621389467223,
+     "rel_max": 0.04046991680707816
+    },
+    "derived": {
+     "cos_mean": 0.9999990373431749,
+     "rel_max": 0.0005154183419176692
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "vjepa2_1-vitb-384-q4_k",
+   "family": "vjepa2_1",
+   "ftype": "q4_k",
+   "ref": "vjepa2_1-vitb-384",
+   "samples": 4,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": true,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": -1.0,
+     "min_cos_mean": 0.99,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": false,
+    "tier": "low-bit",
+    "token_map": {
+     "max_rel_at_2048_tokens": -1.0,
+     "min_cos_mean": -1.0,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 4608,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 4608,
+    "token_map": {
+     "cos_mean": 0.9783345685087252,
+     "cos_med": 0.9843053645371176,
+     "cos_min": 0.6028847350435745,
+     "rel_max": 0.2698276664000866
+    },
+    "derived": {
+     "cos_mean": 0.9976908869608921,
+     "rel_max": 0.011425150926336183
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 4608,
+    "token_map": {
+     "cos_mean": 0.97809184623081,
+     "cos_med": 0.9839920499647106,
+     "cos_min": 0.6322458161493685,
+     "rel_max": 0.2200747611105493
+    },
+    "derived": {
+     "cos_mean": 0.9975985652168543,
+     "rel_max": 0.011523758267385584
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  },
+  {
+   "file": "vjepa2_1-vitb-384-q8_0",
+   "family": "vjepa2_1",
+   "ftype": "q8_0",
+   "ref": "vjepa2_1-vitb-384",
+   "samples": 4,
+   "device": "CUDA1",
+   "thresholds": {
+    "advisory": false,
+    "backend": "gpu",
+    "derived": {
+     "max_rel_at_2048_tokens": 0.3,
+     "min_cos_mean": 0.995,
+     "min_cos_med": -1.0,
+     "min_cos_min": -1.0
+    },
+    "family_class": "video",
+    "gate_top5": true,
+    "tier": "q8",
+    "token_map": {
+     "max_rel_at_2048_tokens": 0.8,
+     "min_cos_mean": 0.95,
+     "min_cos_med": 0.99,
+     "min_cos_min": -1.0
+    }
+   },
+   "tokens": 4608,
+   "prec_f32": {
+    "pass": true,
+    "tokens": 4608,
+    "token_map": {
+     "cos_mean": 0.9990726015194566,
+     "cos_med": 0.9995683026100406,
+     "cos_min": 0.8396310517038842,
+     "rel_max": 0.12927996319628315
+    },
+    "derived": {
+     "cos_mean": 0.9999829182299238,
+     "rel_max": 0.0013229062202618428
+    }
+   },
+   "prec_f16": {
+    "pass": true,
+    "tokens": 4608,
+    "token_map": {
+     "cos_mean": 0.9989344495345548,
+     "cos_med": 0.9995336704002781,
+     "cos_min": 0.9026801603251049,
+     "rel_max": 0.10056903229217332
+    },
+    "derived": {
+     "cos_mean": 0.9999837775360668,
+     "rel_max": 0.001649255069540442
+    }
+   },
+   "verdict": "f16 accumulation passes the same tier"
+  }
+ ]
+}

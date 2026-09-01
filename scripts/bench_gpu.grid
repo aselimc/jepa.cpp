@@ -1,13 +1,16 @@
 # Configuration grid for scripts/bench_gpu.sh — one line per (model, mode, shape) and the dtypes
 # measured for it, pipe-separated:
 #
-#   <gguf label> | <mode> | <arg> | <dtype,dtype,...> | [gpu-prec]
+#   <gguf label> | <mode> | <arg> | <dtype,dtype,...> | [gpu-prec] | [batch]
 #
 # <arg> is the frame count for encoder/head/predictor, the rollout step count for lewm-rollout, the
 # predictor window for lewm-step (a label only — the graph is always jepa.pred.n_frames wide) and the
 # candidate count K for ac. The two rollout modes take K or K:H, H being the horizon (default 2, the
 # reference planner's); their tag is K<k>H<h>.
-# <gpu-prec> is f32 (the default: GGML_PREC_F32 on every mul_mat) or f16, the bench-only opt-out.
+# <gpu-prec> is f32 (GGML_PREC_F32 on every mul_mat) or f16 (cuBLAS' own compute type); empty means
+# the model family's own default, which is what the shipping configuration measures.
+# <batch> is the encoder's items per call (default 1); its tag is T<frames>B<batch> and it reaches
+# jepa-bench as --batch, i.e. all of them through one graph.
 #
 # The grid is the grid docs/performance.md publishes, so tests/results/benchmarks-gpu.json is a
 # complete twin of that page's GPU tables rather than a superset with rows nothing quotes. A cell
@@ -16,11 +19,11 @@
 
 # ---- GPU encoder --------------------------------------------------------------------------------
 ijepa_vith14_1k             | encoder | 1  | f32,f16,q8_0,q4_k
-lejepa-vits16-pretrain-in1k | encoder | 1  | f16
-lewm-pusht                  | encoder | 1  | f16
+lejepa-vits16-pretrain-in1k | encoder | 1  | f16,q8_0
+lewm-pusht                  | encoder | 1  | f16,q8_0
 vjepa2-vitl-fpc64-256       | encoder | 16 | f32,f16,q8_0,q4_k
 vjepa2-vitl-fpc64-256       | encoder | 64 | f32,f16,q8_0,q4_k
-vjepa2_1-vitb-384           | encoder | 1  | f16,q4_k
+vjepa2_1-vitb-384           | encoder | 1  | f16,q8_0,q4_k
 vjepa2_1-vitb-384           | encoder | 16 | f16,q4_k
 vjepa2_1-vitb-384           | encoder | 64 | f16
 levjepa-vitl16              | encoder | 16 | f32,f16,q8_0,q4_k
@@ -50,8 +53,35 @@ vjepa2-ac-vitg              | ac-plan      | 256   | f16
 vjepa2-ac-vitg              | ac-plan      | 16:4  | f16
 vjepa2-ac-vitg              | ac-plan      | 64:4  | f16
 
-# ---- the --gpu-prec f16 opt-out (bench-only, not parity-gated) -----------------------------------
+# ---- accumulation precision: the setting each family does NOT default to ------------------------
+# Paired with the default row of the same (model, shape) above, these are the two halves of
+# docs/performance.md "Accumulation precision on a GPU". `ijepa` and `vjepa2` default to f32, so the
+# f16 half is the measurement here; `hfvit` and `levjepa` default to f16, so the f32 half is. One
+# model per family is enough for the comparison, so ViT-g and the 2-AC encoder are not repeated:
+# they are `vjepa2` too and take the ViT-L verdict.
 ijepa_vith14_1k             | encoder | 1  | f16 | f16
+lejepa-vits16-pretrain-in1k | encoder | 1  | f16 | f32
+lewm-pusht                  | encoder | 1  | f16 | f16
 vjepa2-vitl-fpc64-256       | encoder | 16 | f16 | f16
 vjepa2-vitl-fpc64-256       | encoder | 64 | f16 | f16
-levjepa-vitl16              | encoder | 16 | f16 | f16
+vjepa2_1-vitb-384           | encoder | 1  | f16 | f16
+vjepa2_1-vitb-384           | encoder | 16 | f16 | f16
+vjepa2_1-vitb-384           | encoder | 64 | f16 | f16
+levjepa-vitl16              | encoder | 16 | f16 | f32
+
+# ---- batched image encoding on a GPU ------------------------------------------------------------
+# B images through ONE graph, the axis docs/performance.md "Batched GPU throughput" sweeps; its b=1
+# column is the encoder section above, at the same dtypes.
+ijepa_vith14_1k             | encoder | 1  | f16,q8_0 |  | 8
+ijepa_vith14_1k             | encoder | 1  | f16,q8_0 |  | 32
+lejepa-vits16-pretrain-in1k | encoder | 1  | f16,q8_0 |  | 8
+lejepa-vits16-pretrain-in1k | encoder | 1  | f16,q8_0 |  | 32
+lewm-pusht                  | encoder | 1  | f16,q8_0 |  | 8
+lewm-pusht                  | encoder | 1  | f16,q8_0 |  | 32
+vjepa2_1-vitb-384           | encoder | 1  | f16,q8_0 |  | 8
+vjepa2_1-vitb-384           | encoder | 1  | f16,q8_0 |  | 32
+
+# ---- clips per batch, the video counterpart -----------------------------------------------------
+# jepa_encode already takes n_batch clips; the semantics are unchanged and only the item count moves.
+vjepa2_1-vitb-384           | encoder | 16 | f16 |  | 8
+vjepa2-vitl-fpc64-256       | encoder | 16 | f16 |  | 8

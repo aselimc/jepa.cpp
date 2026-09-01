@@ -443,7 +443,7 @@ The configurations live in `scripts/bench_gpu.grid`, one line per (model, mode, 
 | Kernel | 6.17.0-1032-oem |
 | Host compiler | c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 |
 | ggml | `36da5713`, **`GGML_LLAMAFILE=ON`** (a host-side path, unused here) |
-| jepa.cpp | `d53ab486` |
+| jepa.cpp | `b98cfa1a` |
 | Precision | `GGML_PREC_F32` on every `mul_mat` unless a row says `--gpu-prec f16`; K/V F16 in flash attention for every file but f32 |
 
 Measurement sessions (one `bench_gpu.sh` invocation each):
@@ -455,6 +455,7 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 | CUDA1 | 2 + 5 | 2026-09-01 17:10 UTC | 2026-09-01 17:10 UTC | 0.45 → 0.67 | 0.23 | — |
 | CUDA1 | 2 + 5 | 2026-09-01 19:38 UTC | 2026-09-01 19:41 UTC | 0.75 → 1.00 | 0.22 | V-JEPA 2-AC planning KPIs (7.2) |
 | CUDA1 | 2 + 5 | 2026-09-01 20:56 UTC | 2026-09-01 21:02 UTC | 0.47 → 1.00 | 0.19 | AC planning grid incl. H=4 (7.2 rework) |
+| CUDA1 | 2 + 5 | 2026-09-01 22:40 UTC | 2026-09-01 22:41 UTC | 0.28 → 0.72 | 0.22 | accumulation-precision pairs and batched image/clip encoding, device 1 |
 
 `foreign cores` is the CPU time the whole machine spent out of idle over the session minus the CPU time this sweep's own processes spent, divided by the wall clock: how much of the box belonged to somebody else while the card was timed. The highest here is **0.24** of one core out of 192, i.e. an idle box. A GPU row is host-idle by construction, so the load average alone would not have caught a second tenant.
 
@@ -464,14 +465,33 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 |---|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|
 | ijepa_vith14_1k | f32 | 224x224 | 256 | CUDA0 | 11.86 | 11.81 | 0.074 | 21580 | 356 | 147.0 | 12.4x |
 | ijepa_vith14_1k | f16 | 224x224 | 256 | CUDA0 | 15.52 | 15.45 | 0.044 | 16500 | 359 | 147.0 | 9.5x |
+| ijepa_vith14_1k | f16 | 224x224 | 256 | CUDA1 | 16.07 | 16.07 | 0.008 | 15925 | 359 | 147.0 | 9.2x |
+| ijepa_vith14_1k | f16 | 224x224 x8 | 2 048 | CUDA1 | 82.62 | 82.58 | 0.034 | 24788 | 360 | – | – |
+| ijepa_vith14_1k | f16 | 224x224 x32 | 8 192 | CUDA1 | 358.35 | 358.11 | 0.151 | 22860 | 412 | – | – |
 | ijepa_vith14_1k | q8_0 | 224x224 | 256 | CUDA0 | 7.99 | 7.99 | 0.002 | 32034 | 346 | 147.0 | 18.4x |
+| ijepa_vith14_1k | q8_0 | 224x224 | 256 | CUDA1 | 8.12 | 8.11 | 0.004 | 31537 | 346 | 147.0 | 18.1x |
+| ijepa_vith14_1k | q8_0 | 224x224 x8 | 2 048 | CUDA1 | 48.03 | 47.83 | 0.127 | 42639 | 363 | – | – |
+| ijepa_vith14_1k | q8_0 | 224x224 x32 | 8 192 | CUDA1 | 288.99 | 288.95 | 0.051 | 28347 | 414 | – | – |
 | ijepa_vith14_1k | q4_k | 224x224 | 256 | CUDA0 | 7.77 | 7.77 | 0.002 | 32947 | 347 | 147.0 | 18.9x |
 | lejepa-vits16-pretrain-in1k | f16 | 224x224 | 197 | CUDA0 | 1.08 | 1.08 | 0.000 | 181734 | 358 | 12.8 | 11.8x |
+| lejepa-vits16-pretrain-in1k | f16 | 224x224 | 197 | CUDA1 | 0.99 | 0.99 | 0.005 | 198469 | 428 | 12.8 | 12.9x |
+| lejepa-vits16-pretrain-in1k | f16 | 224x224 x8 | 1 576 | CUDA1 | 3.29 | 3.28 | 0.004 | 479129 | 423 | – | – |
+| lejepa-vits16-pretrain-in1k | f16 | 224x224 x32 | 6 304 | CUDA1 | 13.42 | 13.30 | 0.124 | 469691 | 457 | – | – |
+| lejepa-vits16-pretrain-in1k | q8_0 | 224x224 | 197 | CUDA1 | 1.29 | 1.29 | 0.001 | 152796 | 361 | 12.8 | 9.9x |
+| lejepa-vits16-pretrain-in1k | q8_0 | 224x224 x8 | 1 576 | CUDA1 | 3.20 | 3.20 | 0.003 | 492254 | 356 | – | – |
+| lejepa-vits16-pretrain-in1k | q8_0 | 224x224 x32 | 6 304 | CUDA1 | 10.94 | 10.88 | 0.083 | 576392 | 390 | – | – |
 | levjepa-vitl16 | f32 | 16f 224x224 | 3 137 | CUDA0 | 85.89 | 85.72 | 0.120 | 36524 | 399 | 1496.2 | 17.4x |
 | levjepa-vitl16 | f16 | 16f 224x224 | 3 137 | CUDA0 | 87.64 | 87.36 | 0.277 | 35794 | 390 | 1496.2 | 17.1x |
+| levjepa-vitl16 | f16 | 16f 224x224 | 3 137 | CUDA1 | 83.99 | 83.80 | 0.168 | 37351 | 394 | 1496.2 | 17.8x |
 | levjepa-vitl16 | q8_0 | 16f 224x224 | 3 137 | CUDA0 | 71.39 | 70.88 | 0.402 | 43942 | 391 | 1496.2 | 21.0x |
 | levjepa-vitl16 | q4_k | 16f 224x224 | 3 137 | CUDA0 | 71.23 | 71.00 | 0.198 | 44038 | 393 | 1496.2 | 21.0x |
 | lewm-pusht | f16 | 224x224 | 257 | CUDA0 | 0.86 | 0.85 | 0.001 | 300409 | 358 | 9.8 | 11.4x |
+| lewm-pusht | f16 | 224x224 | 257 | CUDA1 | 0.85 | 0.85 | 0.001 | 300937 | 358 | 9.8 | 11.4x |
+| lewm-pusht | f16 | 224x224 x8 | 2 056 | CUDA1 | 1.99 | 1.99 | 0.001 | 1033218 | 352 | – | – |
+| lewm-pusht | f16 | 224x224 x32 | 8 224 | CUDA1 | 6.38 | 6.37 | 0.005 | 1288624 | 384 | – | – |
+| lewm-pusht | q8_0 | 224x224 | 257 | CUDA1 | 1.09 | 1.09 | 0.002 | 234853 | 362 | 9.8 | 8.9x |
+| lewm-pusht | q8_0 | 224x224 x8 | 2 056 | CUDA1 | 2.02 | 2.01 | 0.002 | 1019791 | 355 | – | – |
+| lewm-pusht | q8_0 | 224x224 x32 | 8 224 | CUDA1 | 6.49 | 6.48 | 0.004 | 1266848 | 387 | – | – |
 | vjepa2-ac-vitg | f16 | 2f 256x256 | 256 | CUDA1 | 27.83 | 27.80 | 0.018 | 9197 | 347 | – | – |
 | vjepa2-ac-vitg | q8_0 | 2f 256x256 | 256 | CUDA1 | 14.04 | 14.03 | 0.006 | 18230 | 350 | – | – |
 | vjepa2-ac-vitg | q4_k | 2f 256x256 | 256 | CUDA1 | 13.37 | 13.37 | 0.002 | 19150 | 356 | – | – |
@@ -485,17 +505,29 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 | vjepa2-vitg-fpc64-256 | q4_k | 64f 256x256 | 8 192 | CUDA1 | 832.29 | 832.17 | 0.073 | 9843 | 491 | 16285.6 | 19.6x |
 | vjepa2-vitl-fpc64-256 | f32 | 16f 256x256 | 2 048 | CUDA0 | 43.57 | 42.94 | 0.338 | 47006 | 382 | 820.7 | 18.8x |
 | vjepa2-vitl-fpc64-256 | f16 | 16f 256x256 | 2 048 | CUDA0 | 46.47 | 46.29 | 0.096 | 44068 | 374 | 820.7 | 17.7x |
+| vjepa2-vitl-fpc64-256 | f16 | 16f 256x256 | 2 048 | CUDA1 | 47.02 | 46.98 | 0.048 | 43554 | 374 | 820.7 | 17.4x |
+| vjepa2-vitl-fpc64-256 | f16 | 16f 256x256 x8 | 16 384 | CUDA1 | 381.08 | 379.93 | 0.837 | 42994 | 509 | – | – |
 | vjepa2-vitl-fpc64-256 | q8_0 | 16f 256x256 | 2 048 | CUDA0 | 33.86 | 32.87 | 0.595 | 60488 | 379 | 820.7 | 24.2x |
 | vjepa2-vitl-fpc64-256 | q4_k | 16f 256x256 | 2 048 | CUDA0 | 34.66 | 34.22 | 0.302 | 59095 | 380 | 820.7 | 23.7x |
 | vjepa2-vitl-fpc64-256 | f32 | 64f 256x256 | 8 192 | CUDA0 | 302.59 | 302.18 | 0.259 | 27073 | 465 | 6388.1 | 21.1x |
 | vjepa2-vitl-fpc64-256 | f16 | 64f 256x256 | 8 192 | CUDA0 | 305.43 | 305.22 | 0.223 | 26821 | 468 | 6388.1 | 20.9x |
+| vjepa2-vitl-fpc64-256 | f16 | 64f 256x256 | 8 192 | CUDA1 | 309.43 | 308.73 | 0.526 | 26475 | 469 | 6388.1 | 20.6x |
 | vjepa2-vitl-fpc64-256 | q8_0 | 64f 256x256 | 8 192 | CUDA0 | 280.42 | 280.35 | 0.071 | 29214 | 473 | 6388.1 | 22.8x |
 | vjepa2-vitl-fpc64-256 | q4_k | 64f 256x256 | 8 192 | CUDA0 | 281.38 | 281.28 | 0.090 | 29113 | 476 | 6388.1 | 22.7x |
 | vjepa2_1-vitb-384 | f16 | 384x384 | 576 | CUDA0 | 4.38 | 4.38 | 0.004 | 131411 | 346 | 60.3 | 13.8x |
+| vjepa2_1-vitb-384 | f16 | 384x384 | 576 | CUDA1 | 4.47 | 4.46 | 0.004 | 128920 | 346 | 60.3 | 13.5x |
+| vjepa2_1-vitb-384 | f16 | 384x384 x8 | 4 608 | CUDA1 | 36.33 | 36.03 | 0.191 | 126825 | 370 | – | – |
+| vjepa2_1-vitb-384 | f16 | 384x384 x32 | 18 432 | CUDA1 | 144.06 | 143.91 | 0.098 | 127949 | 445 | – | – |
+| vjepa2_1-vitb-384 | q8_0 | 384x384 | 576 | CUDA1 | 3.45 | 3.44 | 0.004 | 167126 | 352 | 60.3 | 17.5x |
+| vjepa2_1-vitb-384 | q8_0 | 384x384 x8 | 4 608 | CUDA1 | 27.74 | 27.69 | 0.039 | 166122 | 375 | – | – |
+| vjepa2_1-vitb-384 | q8_0 | 384x384 x32 | 18 432 | CUDA1 | 111.26 | 111.17 | 0.107 | 165666 | 452 | – | – |
 | vjepa2_1-vitb-384 | q4_k | 384x384 | 576 | CUDA0 | 3.44 | 3.44 | 0.002 | 167252 | 352 | 60.3 | 17.5x |
 | vjepa2_1-vitb-384 | f16 | 16f 384x384 | 4 608 | CUDA0 | 42.46 | 42.09 | 0.467 | 108535 | 410 | 853.5 | 20.1x |
+| vjepa2_1-vitb-384 | f16 | 16f 384x384 | 4 608 | CUDA1 | 43.38 | 43.23 | 0.098 | 106234 | 410 | 853.5 | 19.7x |
+| vjepa2_1-vitb-384 | f16 | 16f 384x384 x8 | 36 864 | CUDA1 | 349.01 | 348.63 | 0.244 | 105624 | 690 | – | – |
 | vjepa2_1-vitb-384 | q4_k | 16f 384x384 | 4 608 | CUDA0 | 37.35 | 37.13 | 0.146 | 123366 | 416 | 853.5 | 22.9x |
 | vjepa2_1-vitb-384 | f16 | 64f 384x384 | 18 432 | CUDA0 | 424.21 | 420.98 | 1.70 | 43450 | 618 | 9036.1 | 21.3x |
+| vjepa2_1-vitb-384 | f16 | 64f 384x384 | 18 432 | CUDA1 | 429.07 | 426.13 | 1.99 | 42958 | 619 | 9036.1 | 21.1x |
 
 `peak RSS` is **host** memory (the process `VmHWM`), not device memory: the weights are uploaded and the host copy is released, so it says little beyond the size of the graph arena and the patch buffer. The speed-up column divides the 32-thread f16 run of the same graph and shape — from the Encoder table above, i.e. 96 Zen 4 cores' worth of machine against one workstation card — by this row, whatever this row's dtype is.
 
@@ -503,15 +535,25 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 
 | model | shape | tokens | f32 ms | f16 ms | q8_0 ms | q4_k ms | f16 → q8_0 | f16 → q4_k |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| ijepa_vith14_1k | 224x224 | 256 | 11.9 | 15.5 | 8.0 | 7.8 | 1.94x | 2.00x |
-| levjepa-vitl16 | 16f 224x224 | 3 137 | 85.9 | 87.6 | 71.4 | 71.2 | 1.23x | 1.23x |
+| ijepa_vith14_1k | 224x224 | 256 | 11.9 | 16.1 | 8.1 | 7.8 | 1.98x | 2.07x |
+| ijepa_vith14_1k | 224x224 x8 | 2 048 | – | 82.6 | 48.0 | – | 1.72x | – |
+| ijepa_vith14_1k | 224x224 x32 | 8 192 | – | 358 | 289 | – | 1.24x | – |
+| lejepa-vits16-pretrain-in1k | 224x224 | 197 | – | 1.0 | 1.3 | – | 0.77x | – |
+| lejepa-vits16-pretrain-in1k | 224x224 x8 | 1 576 | – | 3.3 | 3.2 | – | 1.03x | – |
+| lejepa-vits16-pretrain-in1k | 224x224 x32 | 6 304 | – | 13.4 | 10.9 | – | 1.23x | – |
+| levjepa-vitl16 | 16f 224x224 | 3 137 | 85.9 | 84.0 | 71.4 | 71.2 | 1.18x | 1.18x |
+| lewm-pusht | 224x224 | 257 | – | 0.9 | 1.1 | – | 0.78x | – |
+| lewm-pusht | 224x224 x8 | 2 056 | – | 2.0 | 2.0 | – | 0.99x | – |
+| lewm-pusht | 224x224 x32 | 8 224 | – | 6.4 | 6.5 | – | 0.98x | – |
 | vjepa2-ac-vitg | 2f 256x256 | 256 | – | 27.8 | 14.0 | 13.4 | 1.98x | 2.08x |
 | vjepa2-vitg-fpc64-256 | 16f 256x256 | 2 048 | 133 | 143 | 102 | 101 | 1.40x | 1.42x |
 | vjepa2-vitg-fpc64-256 | 64f 256x256 | 8 192 | 890 | 905 | 831 | 832 | 1.09x | 1.09x |
-| vjepa2-vitl-fpc64-256 | 16f 256x256 | 2 048 | 43.6 | 46.5 | 33.9 | 34.7 | 1.37x | 1.34x |
-| vjepa2-vitl-fpc64-256 | 64f 256x256 | 8 192 | 303 | 305 | 280 | 281 | 1.09x | 1.09x |
-| vjepa2_1-vitb-384 | 384x384 | 576 | – | 4.4 | – | 3.4 | – | 1.27x |
-| vjepa2_1-vitb-384 | 16f 384x384 | 4 608 | – | 42.5 | – | 37.4 | – | 1.14x |
+| vjepa2-vitl-fpc64-256 | 16f 256x256 | 2 048 | 43.6 | 47.0 | 33.9 | 34.7 | 1.39x | 1.36x |
+| vjepa2-vitl-fpc64-256 | 64f 256x256 | 8 192 | 303 | 309 | 280 | 281 | 1.10x | 1.10x |
+| vjepa2_1-vitb-384 | 384x384 | 576 | – | 4.5 | 3.4 | 3.4 | 1.30x | 1.30x |
+| vjepa2_1-vitb-384 | 384x384 x8 | 4 608 | – | 36.3 | 27.7 | – | 1.31x | – |
+| vjepa2_1-vitb-384 | 384x384 x32 | 18 432 | – | 144 | 111 | – | 1.29x | – |
+| vjepa2_1-vitb-384 | 16f 384x384 | 4 608 | – | 43.4 | – | 37.4 | – | 1.16x |
 
 **The CPU ordering inverts here.** Every type jepa.cpp ships takes `mmq`, a real INT8 tensor-core kernel, so q8_0 and q4_k both beat f16 while being half and a quarter of the weight bytes — where on the CPU the k-quants fall off llamafile's accelerated sgemm and lose. The f32 column is not slower than f16 because ggml's CUDA F32 path is TF32, while the f16 path pays for `GGML_PREC_F32` accumulation. Accuracy per type does not invert with the backend: `docs/parity.md` *Results — encoders on CUDA0* has the cosines.
 
@@ -519,10 +561,15 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 
 | model | ftype | shape | tokens | `GGML_PREC_F32` ms | `--gpu-prec f16` ms | cost of F32 accumulation |
 |---|---|---|---:|---:|---:|---:|
-| ijepa_vith14_1k | f16 | 224x224 | 256 | 15.5 | 8.8 | 1.76x |
-| levjepa-vitl16 | f16 | 16f 224x224 | 3 137 | 87.6 | 83.2 | 1.05x |
-| vjepa2-vitl-fpc64-256 | f16 | 16f 256x256 | 2 048 | 46.5 | 37.1 | 1.25x |
-| vjepa2-vitl-fpc64-256 | f16 | 64f 256x256 | 8 192 | 305 | 303 | 1.01x |
+| ijepa_vith14_1k | f16 | 224x224 | 256 | 16.1 | 8.9 | 1.80x |
+| lejepa-vits16-pretrain-in1k | f16 | 224x224 | 197 | 1.1 | 1.0 | 1.11x |
+| levjepa-vitl16 | f16 | 16f 224x224 | 3 137 | 89.2 | 84.0 | 1.06x |
+| lewm-pusht | f16 | 224x224 | 257 | 0.9 | 0.8 | 1.02x |
+| vjepa2-vitl-fpc64-256 | f16 | 16f 256x256 | 2 048 | 47.0 | 38.0 | 1.24x |
+| vjepa2-vitl-fpc64-256 | f16 | 64f 256x256 | 8 192 | 309 | 305 | 1.01x |
+| vjepa2_1-vitb-384 | f16 | 384x384 | 576 | 4.5 | 3.4 | 1.30x |
+| vjepa2_1-vitb-384 | f16 | 16f 384x384 | 4 608 | 43.4 | 44.4 | 0.98x |
+| vjepa2_1-vitb-384 | f16 | 64f 384x384 | 18 432 | 429 | 446 | 0.96x |
 
 `--gpu-prec f16` hands the `mul_mat`s cuBLAS' own f16 compute type instead of forcing F32 accumulation. It is **bench-only**: it is not exposed in the runtime tools and not parity-gated (`docs/parity.md` measures a 177x wider f16 error with it), so these milliseconds are a measured upper bound rather than a shipping configuration. The cost is a strong function of the sequence — it is what holds the small image models back against the long clips' twenties in the speed-up column above.
 
@@ -536,28 +583,45 @@ Measurement sessions (one `bench_gpu.sh` invocation each):
 | vjepa2-vitl-fpc64-256 | f16 | predictor | 16f 256x256 | 2 048 | 112.804 | 112.721 | 0.063 | 46.3 | 343.84 | 3.05x |
 | lewm-pusht | f16 | lewm-step | 3f x 192d | 3 | 0.450 | 0.441 | 0.006 | – | 0.92 | 2.04x |
 | lewm-pusht | f16 | lewm-rollout | rollout K=20 | 1 | 0.448 | 0.439 | 0.013 | – | 0.86 | 1.93x |
-| vjepa2-ac-vitg | f16 | ac | 1f x 256tok, K=16 | 4 096 | 113.118 | 112.886 | 0.191 | – | 1337.13 | 11.82x |
 | vjepa2-ac-vitg | f16 | ac | 1f x 256tok, K=1 | 256 | 8.984 | 8.896 | 0.072 | – | 94.87 | 10.56x |
+| vjepa2-ac-vitg | f16 | ac | 1f x 256tok, K=16 | 4 096 | 113.118 | 112.886 | 0.191 | – | 1337.13 | 11.82x |
 | vjepa2-ac-vitg | f16 | ac | 1f x 256tok, K=64 | 16 384 | 533.225 | 533.008 | 0.138 | – | 5411.15 | 10.15x |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=1 | 256 | 11.867 | 11.857 | 0.007 | – | 138.88 | 11.70x |
 | vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=16 | 256 | 175.968 | 175.884 | 0.066 | – | 2049.10 | 11.64x |
 | vjepa2-ac-vitg | f16 | ac-rollout | rollout H=4, K=16 | 256 | 321.001 | 320.864 | 0.100 | – | – | – |
-| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=1 | 256 | 11.867 | 11.857 | 0.007 | – | 138.88 | 11.70x |
-| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=256 | 256 | 3173.207 | 3167.872 | 3.27 | – | – | – |
 | vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=64 | 256 | 787.574 | 786.909 | 0.390 | – | 8242.94 | 10.47x |
 | vjepa2-ac-vitg | f16 | ac-rollout | rollout H=4, K=64 | 256 | 1341.136 | 1340.755 | 0.290 | – | – | – |
+| vjepa2-ac-vitg | f16 | ac-rollout | rollout H=2, K=256 | 256 | 3173.207 | 3167.872 | 3.27 | – | – | – |
 | vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=2, K=16 | 256 | 143.976 | 143.940 | 0.055 | – | 2049.10 | 14.23x |
 | vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=4, K=16 | 256 | 283.755 | 283.715 | 0.038 | – | – | – |
 | vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=2, K=64 | 256 | 750.660 | 750.453 | 0.114 | – | 8242.94 | 10.98x |
 | vjepa2-ac-vitg | q8_0 | ac-rollout | rollout H=4, K=64 | 256 | 1331.563 | 1331.518 | 0.028 | – | – | – |
 | vjepa2-ac-vitg | f16 | ac-plan | plan K=16, H=2, it=1 | 512 | 357.957 | 357.811 | 0.128 | – | – | – |
 | vjepa2-ac-vitg | f16 | ac-plan | plan K=16, H=4, it=1 | 1 024 | 1285.918 | 1285.186 | 0.417 | – | – | – |
-| vjepa2-ac-vitg | f16 | ac-plan | plan K=256, H=2, it=1 | 512 | 6371.005 | 6366.964 | 3.54 | – | – | – |
 | vjepa2-ac-vitg | f16 | ac-plan | plan K=64, H=2, it=1 | 512 | 1590.445 | 1589.309 | 0.592 | – | – | – |
 | vjepa2-ac-vitg | f16 | ac-plan | plan K=64, H=4, it=1 | 1 024 | 5368.995 | 5367.895 | 0.959 | – | – | – |
+| vjepa2-ac-vitg | f16 | ac-plan | plan K=256, H=2, it=1 | 512 | 6371.005 | 6366.964 | 3.54 | – | – | – |
 | vjepa2-ac-vitg | q8_0 | ac-plan | plan K=16, H=2, it=1 | 512 | 290.904 | 290.706 | 0.133 | – | – | – |
 | vjepa2-ac-vitg | q8_0 | ac-plan | plan K=64, H=2, it=1 | 512 | 1503.825 | 1503.678 | 0.083 | – | – | – |
 
 These are the synthetic-input graphs of the *Masked predictor*, *Attentive-pool head* and *LeWM world model* tables above, run on the card. The masked predictor is the one encoder-sized graph that does **not** gain twentyfold: at `head_dim` 32 no CUDA flash-attention kernel exists, so it takes the naive `mul_mat + soft_max_ext` path — genuinely F32, and about 3 TFLOP/s against flash's 50–70 (`docs/architecture.md` "GPU backend"). The LeWM graphs are the opposite end: three rows of 192 dimensions is far below the size at which a kernel launch pays for itself, and `docs/parity.md` *Results — predictors on CUDA0* times the same two graphs on the real fixture state.
+
+### Batched encoding on a GPU (`--batch B`, one graph)
+
+| model | ftype | shape | device | prec | ms/item b=1 | b=8 | b=32 | items/s b=1 | b=8 | b=32 | best gain |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| ijepa_vith14_1k | f16 | 224x224 | CUDA1 | f32 | 16.075 | 10.328 | 11.199 | 62.2 | 96.8 | 89.3 | 1.56x |
+| ijepa_vith14_1k | q8_0 | 224x224 | CUDA1 | f32 | 8.117 | 6.004 | 9.031 | 123.2 | 166.6 | 110.7 | 1.35x |
+| lejepa-vits16-pretrain-in1k | f16 | 224x224 | CUDA1 | f16 | 0.993 | 0.411 | 0.419 | 1007.0 | 2432.4 | 2384.1 | 2.42x |
+| lejepa-vits16-pretrain-in1k | q8_0 | 224x224 | CUDA1 | f16 | 1.289 | 0.400 | 0.342 | 775.8 | 2498.4 | 2925.8 | 3.77x |
+| lewm-pusht | f16 | 224x224 | CUDA1 | f32 | 0.854 | 0.249 | 0.199 | 1171.0 | 4020.1 | 5014.1 | 4.28x |
+| lewm-pusht | q8_0 | 224x224 | CUDA1 | f32 | 1.094 | 0.252 | 0.203 | 914.1 | 3968.3 | 4929.1 | 5.39x |
+| vjepa2-vitl-fpc64-256 | f16 | 16f 256x256 | CUDA1 | f32 | 47.023 | 47.635 | – | 21.3 | 21.0 | – | 1.00x |
+| vjepa2_1-vitb-384 | f16 | 384x384 | CUDA1 | f32 | 4.468 | 4.542 | 4.502 | 223.8 | 220.2 | 222.1 | 1.00x |
+| vjepa2_1-vitb-384 | f16 | 16f 384x384 | CUDA1 | f32 | 43.376 | 43.626 | – | 23.1 | 22.9 | – | 1.00x |
+| vjepa2_1-vitb-384 | q8_0 | 384x384 | CUDA1 | f32 | 3.446 | 3.467 | 3.477 | 290.2 | 288.4 | 287.6 | 1.00x |
+
+`--batch B` puts B items through **one** graph on the batch dimension, so the row is one `ggml_backend_graph_compute` and `ms/item` is it divided by B. What batching amortises is everything that does not scale with the matmuls — kernel launches, the per-layer norm and activation passes, weight streaming — so the gain is largest where a single item leaves the card idle and smallest where one item already fills it.
 
 ### PyTorch on the same card
 
@@ -570,6 +634,54 @@ These are the synthetic-input graphs of the *Masked predictor*, *Attentive-pool 
 
 `scripts/torch_gpu_baseline.py` on the same device: torch 2.13.0+cu130, transformers 5.16.1, batch 1, TF32 off, 3 warmup + 7 timed forwards, cuda.synchronize() around each, on the stored preprocessed tensor of a reference fixture — the same pixels, not merely the same shape. `VJEPA2Model` runs with `skip_predictor=True`, so its forward is the encoder alone. `torch fp16 peak GiB` is `max_memory_allocated` after the warmups, one model per precision, so it is the steady-state device footprint of that precision and nothing else.
 
+### PyTorch batched, eager against `torch.compile`
+
+| model | shape | precision | runtime | ms/item b=1 | b=8 | b=32 | items/s b=1 | b=8 | b=32 |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|
+| ijepa_vith14_1k | 224x224 | fp16 | eager | 5.893 | 4.160 | 4.245 | 169.7 | 240.4 | 235.6 |
+| ijepa_vith14_1k | 224x224 | fp16 | compile | 7.177 | 5.688 | 6.389 | 139.3 | 175.8 | 156.5 |
+| ijepa_vith14_1k | 224x224 | fp32 | eager | 23.624 | 21.621 | 20.436 | 42.3 | 46.2 | 48.9 |
+| ijepa_vith14_1k | 224x224 | fp32 | compile | 23.825 | 21.552 | 20.299 | 42.0 | 46.4 | 49.3 |
+| lejepa-vits16-pretrain-in1k | 224x224 | fp16 | eager | 2.228 | 0.302 | 0.259 | 448.9 | 3312.2 | 3858.7 |
+| lejepa-vits16-pretrain-in1k | 224x224 | fp16 | compile | 0.920 | 0.238 | 0.212 | 1086.8 | 4199.7 | 4711.6 |
+| lejepa-vits16-pretrain-in1k | 224x224 | fp32 | eager | 1.983 | 0.720 | 0.816 | 504.2 | 1388.3 | 1226.0 |
+| lejepa-vits16-pretrain-in1k | 224x224 | fp32 | compile | 1.578 | 0.704 | 0.775 | 633.8 | 1419.8 | 1290.2 |
+| levjepa-vitl16 | 16f 224x224 | fp16 | eager | 60.468 | 65.617 | – | 16.5 | 15.2 | – |
+| levjepa-vitl16 | 16f 224x224 | fp16 | compile | 54.915 | 52.179 | – | 18.2 | 19.2 | – |
+| levjepa-vitl16 | 16f 224x224 | fp32 | eager | 231.570 | 240.379 | – | 4.3 | 4.2 | – |
+| levjepa-vitl16 | 16f 224x224 | fp32 | compile | 222.148 | 216.436 | – | 4.5 | 4.6 | – |
+| vjepa2-vitl-fpc64-256 | 16f 256x256 | fp16 | eager | 30.302 | 30.086 | – | 33.0 | 33.2 | – |
+| vjepa2-vitl-fpc64-256 | 16f 256x256 | fp16 | compile | 24.338 | 24.064 | – | 41.1 | 41.6 | – |
+| vjepa2-vitl-fpc64-256 | 16f 256x256 | fp32 | eager | 119.532 | 125.055 | – | 8.4 | 8.0 | – |
+| vjepa2-vitl-fpc64-256 | 16f 256x256 | fp32 | compile | 111.087 | 109.947 | – | 9.0 | 9.1 | – |
+| vjepa2-vitl-fpc64-256 | 64f 256x256 | fp16 | eager | 153.977 | – | – | 6.5 | – | – |
+| vjepa2-vitl-fpc64-256 | 64f 256x256 | fp16 | compile | 155.030 | – | – | 6.5 | – | – |
+| vjepa2-vitl-fpc64-256 | 64f 256x256 | fp32 | eager | 861.161 | – | – | 1.2 | – | – |
+| vjepa2-vitl-fpc64-256 | 64f 256x256 | fp32 | compile | 868.312 | – | – | 1.1 | – | – |
+
+`scripts/torch_gpu_baseline.py --device 1 --batch 1,8,32 --compile`: the fixture tensor repeated along the batch axis, which is the axis `jepa-bench --batch` sweeps, so the two engines are timed on the same work. `torch.compile` is warmed up before timing, so its compilation is not in these milliseconds — a served model pays it once. This is a session of its own on the second card, kept apart from the batch-1 baseline above rather than merged into it.
+
+Configurations the baseline could not measure, and why:
+
+| model | precision | runtime | batch | reason |
+|---|---|---|---|---|
+| vjepa2-vitl-fpc64-256 | fp32 | eager | 32 | 65536 rows is over the --max-batch-tokens 32768 ceiling |
+| vjepa2-vitl-fpc64-256 | fp32 | compile | 32 | 65536 rows is over the --max-batch-tokens 32768 ceiling |
+| vjepa2-vitl-fpc64-256 | fp16 | eager | 32 | 65536 rows is over the --max-batch-tokens 32768 ceiling |
+| vjepa2-vitl-fpc64-256 | fp16 | compile | 32 | 65536 rows is over the --max-batch-tokens 32768 ceiling |
+| vjepa2-vitl-fpc64-256 | fp32 | eager | 8 | 65536 rows is over the --max-batch-tokens 32768 ceiling |
+| vjepa2-vitl-fpc64-256 | fp32 | eager | 32 | 262144 rows is over the --max-batch-tokens 32768 ceiling |
+| vjepa2-vitl-fpc64-256 | fp32 | compile | 8 | 65536 rows is over the --max-batch-tokens 32768 ceiling |
+| vjepa2-vitl-fpc64-256 | fp32 | compile | 32 | 262144 rows is over the --max-batch-tokens 32768 ceiling |
+| vjepa2-vitl-fpc64-256 | fp16 | eager | 8 | 65536 rows is over the --max-batch-tokens 32768 ceiling |
+| vjepa2-vitl-fpc64-256 | fp16 | eager | 32 | 262144 rows is over the --max-batch-tokens 32768 ceiling |
+| vjepa2-vitl-fpc64-256 | fp16 | compile | 8 | 65536 rows is over the --max-batch-tokens 32768 ceiling |
+| vjepa2-vitl-fpc64-256 | fp16 | compile | 32 | 262144 rows is over the --max-batch-tokens 32768 ceiling |
+| levjepa-vitl16 | fp32 | eager | 32 | 100384 rows is over the --max-batch-tokens 32768 ceiling |
+| levjepa-vitl16 | fp32 | compile | 32 | 100384 rows is over the --max-batch-tokens 32768 ceiling |
+| levjepa-vitl16 | fp16 | eager | 32 | 100384 rows is over the --max-batch-tokens 32768 ceiling |
+| levjepa-vitl16 | fp16 | compile | 32 | 100384 rows is over the --max-batch-tokens 32768 ceiling |
+
 ## Footnotes
 
 <sup>fpc64</sup> the `vjepa2-vitl-fpc64-256` manifest times one `VJEPA2Model` forward, which always runs the **predictor** as well (its `predictor_last_hidden_state` comes from the same call), so it is an upper bound on the encoder and no speedup is claimed against it.
@@ -580,4 +692,4 @@ These are the synthetic-input graphs of the *Masked predictor*, *Attentive-pool 
 
 ---
 
-Generated by `scripts/gen_benchmarks_md.py` from 113 runs in `tmp/bench` and 64 GPU runs in `tmp/bench-gpu`. Cross-check against `docs/parity.md` (same graphs, real fixture inputs) and `docs/quantization.md` (accuracy per dtype).
+Generated by `scripts/gen_benchmarks_md.py` from 113 runs in `tmp/bench` and 104 GPU runs in `tmp/bench-gpu`. Cross-check against `docs/parity.md` (same graphs, real fixture inputs) and `docs/quantization.md` (accuracy per dtype).

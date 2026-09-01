@@ -84,8 +84,9 @@ static void usage(const char * a0) {
         "  --batch B         items per encoder call (default 1); image families put all B through ONE graph\n"
         "  --threads L       thread count, or a comma-separated list to sweep (default: all cores)\n"
         JEPA_GPU_USAGE
-        "  --gpu-prec P      f32 (default on a GPU: GGML_PREC_F32 accumulation in every mul_mat)\n"
-        "                    or f16 (cuBLAS' own compute type; faster, 177x wider f16 error)\n"
+        "  --gpu-prec P      f32 (GGML_PREC_F32 accumulation in every mul_mat) or f16 (cuBLAS' own\n"
+        "                    compute type; 177x wider f16 error). Default: the model family's, which\n"
+        "                    the device column prints; docs/performance.md has the table\n"
         "  --repeat R        measured runs (default 3)\n"
         "  --warmup W        unmeasured runs before them (default 1)\n"
         "  --steps K         lewm-rollout steps (default 20); ac-rollout horizon (default 2)\n"
@@ -174,8 +175,11 @@ struct run {
     std::string model_name, model_path, family, ftype, ftype_gguf, mode, shape, kv;
     std::string device = "CPU";   // ggml device the graph ran on ("CPU", "CUDA0", ...)
     bool gpu = false;
-    // GGML_PREC_F32 mul_mat (GPU only; docs/architecture.md "Attention and precision")
+    // GGML_PREC_F32 mul_mat (GPU only; docs/architecture.md "Attention and precision").
+    // prec_explicit records whether --gpu-prec chose it or the model family's default did, which
+    // is what tells a table apart from an opt-out row measured beside it.
     bool prec_f32 = false;
+    bool prec_explicit = false;
     int  threads = 0, batch = 1, frames = 0, height = 0, width = 0;
     int  repeat = 0, warmup = 0, steps = 0;
     bool flash = true;
@@ -254,6 +258,7 @@ static bool write_json(const std::string & path, const std::vector<run> & runs) 
         json_str(f, "device", r.device);
         fprintf(f, "\"gpu\": %s, ", r.gpu ? "true" : "false");
         fprintf(f, "\"mul_mat_prec_f32\": %s, ", r.prec_f32 ? "true" : "false");
+        fprintf(f, "\"gpu_prec_explicit\": %s, ", r.prec_explicit ? "true" : "false");
         fprintf(f, "\"flash\": %s, ", r.flash ? "true" : "false");
         fprintf(f, "\"threads\": %d, \"batch\": %d, \"frames\": %d, \"height\": %d, \"width\": %d, ",
                 r.threads, r.batch, r.frames, r.height, r.width);
@@ -297,7 +302,7 @@ int main(int argc, char ** argv) {
     jepa_model_params   mp = jepa_model_default_params();
     int frames = -1, batch = 1, repeat = 3, warmup = 1, steps = 20, cem_steps = 1;
     bool cached = true;
-    int gpu_prec = -1;   // -1 = the context default (F32 on a GPU), 0 = --gpu-prec f16, 1 = f32
+    int gpu_prec = -1;   // -1 = the context default (per family on a GPU), 0 = --gpu-prec f16, 1 = f32
     uint64_t seed = 1234;
     bool md = false, md_header = true, verbose = false;
     for (int i = 1; i < argc; i++) {
@@ -493,6 +498,7 @@ int main(int argc, char ** argv) {
         r.device = jepa_model_device_name(model);
         r.gpu = jepa_model_is_gpu(model);
         r.prec_f32 = jepa_context_mul_mat_prec_f32(ctx);
+        r.prec_explicit = gpu_prec >= 0;
         // The published tables are 32/96 threads (one worker per physical core, or a third of them).
         // Falling through to hardware_concurrency() puts two workers on every SMT sibling, which is
         // both slower and not what the documents quote — say so rather than let it pass unnoticed.

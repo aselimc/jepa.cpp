@@ -324,6 +324,11 @@ struct jepa_block_opts {
 // 177x better) — docs/architecture.md "Attention and precision".
 extern thread_local bool jepa_mul_mat_prec_f32;
 
+// The per-family GPU default for the flag above, applied by jepa_context_new before
+// $JEPA_GPU_PREC and jepa_context_set_mul_mat_prec_f32() get their say. Every family's verdict is
+// a parity measurement and a timing measurement; the table is in jepa.cpp next to the definition.
+bool jepa_gpu_prec_f32_default(jepa_family_id fam);
+
 // y = norm(x, eps) * w + b   (w / b may be nullptr)
 ggml_tensor * jepa_build_layer_norm(ggml_context * ctx, ggml_tensor * x, ggml_tensor * w, ggml_tensor * b, float eps);
 // y = w x + b   with w [in, out] (PyTorch [out, in]); b may be nullptr

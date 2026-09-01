@@ -16,6 +16,14 @@
 #   --note TEXT    free-text note stored in the session metadata
 #   --torch FILE   PyTorch-on-the-same-card baseline JSON to fold into the artifact
 #                  (default tmp/bench-gpu/torch-gpu.json, from scripts/torch_gpu_baseline.py)
+#   --torch-batched FILE  a second scripts/torch_gpu_baseline.py output, its --batch/--compile
+#                  sweep, stored beside the batch-1 baseline rather than replacing it
+#                  (default tmp/bench-gpu/torch-gpu-batched.json)
+#   --merge        overlay this sweep's rows on the committed artifact instead of replacing it,
+#                  which is what a partial sweep (--only, or a grid of a few lines) wants: a row is
+#                  replaced when its (model, ftype, mode, shape, device, gpu_prec, steps) matches
+#                  and every other row is carried through. Without it the artifact holds exactly
+#                  what this sweep measured.
 #   --results-json FILE   the committed artifact (default tests/results/benchmarks-gpu.json)
 #   --doc FILE     document to regenerate (default docs/benchmarks.md)
 #   --no-doc       do not regenerate it
@@ -24,8 +32,8 @@
 # The sweep is the GPU half of scripts/bench_all.sh and deliberately mirrors it: one jepa-bench
 # process per configuration, one JSON each, plus a meta.json holding the box, the toolchain and the
 # load the session saw. What differs is the key — a GPU row is keyed by device and precision rather
-# than by thread count — and the protocol: best of 5 after 2 warmups, GGML_PREC_F32 on every
-# mul_mat unless the grid asks for --gpu-prec f16.
+# than by thread count — and the protocol: best of 5 after 2 warmups at the accumulation precision
+# the model's family defaults to, unless the grid's fifth field names one.
 #
 # The aggregate is written by scripts/gen_benchmarks_md.py --gpu-dir, which also renders the GPU
 # tables of docs/benchmarks.md; with the raw JSONs gone the same generator rebuilds those tables
@@ -40,6 +48,7 @@ GRID="$ROOT/scripts/bench_gpu.grid"
 DOC="$ROOT/docs/benchmarks.md"
 RESULTS_JSON="$ROOT/tests/results/benchmarks-gpu.json"
 TORCH_JSON=""
+TORCH_BATCHED_JSON=""
 PYTHON="${PYTHON:-}"
 if [ -z "$PYTHON" ]; then
     for cand in "$ROOT/.venv/bin/python" "$(command -v python3 || true)"; do
@@ -56,6 +65,7 @@ KEEP=0
 NOTE=""
 GEN_DOC=1
 DRY=0
+MERGE=0
 
 if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9]+$ ]]; then DEVICE="$1"; shift; fi
 while [ $# -gt 0 ]; do
@@ -67,12 +77,14 @@ while [ $# -gt 0 ]; do
         --out)     OUT="$2"; shift ;;
         --note)    NOTE="$2"; shift ;;
         --torch)   TORCH_JSON="$2"; shift ;;
+        --torch-batched) TORCH_BATCHED_JSON="$2"; shift ;;
         --results-json) RESULTS_JSON="$2"; shift ;;
         --doc)     DOC="$2"; shift ;;
         --keep)    KEEP=1 ;;
+        --merge)   MERGE=1 ;;
         --no-doc)  GEN_DOC=0 ;;
         -n|--dry-run) DRY=1 ;;
-        -h|--help) sed -n '2,32p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument $1" >&2; exit 1 ;;
     esac
     shift
@@ -82,12 +94,14 @@ done
 [ -f "$GRID" ]  || { echo "missing grid file $GRID" >&2; exit 1; }
 [ -d "$GGUF_DIR" ] || { echo "missing $GGUF_DIR" >&2; exit 1; }
 [ -n "$TORCH_JSON" ] || TORCH_JSON="$OUT/torch-gpu.json"
+[ -n "$TORCH_BATCHED_JSON" ] || TORCH_BATCHED_JSON="$OUT/torch-gpu-batched.json"
 
 mkdir -p "$OUT"
 # The PyTorch baseline is written by a separate, much slower script and is not part of a re-sweep,
 # so a plain (non---keep) run must not delete it along with the previous sweep's JSONs.
 if [ "$KEEP" = 0 ] && [ "$DRY" = 0 ]; then
-    find "$OUT" -maxdepth 1 -name '*.json' ! -name "$(basename "$TORCH_JSON")" -delete
+    find "$OUT" -maxdepth 1 -name '*.json' ! -name "$(basename "$TORCH_JSON")" \
+                                       ! -name "$(basename "$TORCH_BATCHED_JSON")" -delete
 fi
 
 # ---------------------------------------------------------------------------------------------
@@ -200,11 +214,11 @@ run_bench() {  # $1 label  $2 ftype  $3 mode  $4 tag  $5 prec  $6... extra args
         return
     fi
     local suffix="" json
-    [ "$prec" = "f16" ] && suffix="__precf16"
+    [ "$prec" = "default" ] || suffix="__prec$prec"
     json="$OUT/${label}-${ftype}__${mode}__${tag}__gpu${DEVICE}${suffix}.json"
     local cmd=("$BENCH" -m "$gguf" --mode "$mode" --label "$label" --ftype-label "$ftype"
                --gpu "$DEVICE" --repeat "$REPEAT" --warmup "$WARMUP" --json "$json")
-    [ "$prec" = "f16" ] && cmd+=(--gpu-prec f16)
+    [ "$prec" = "default" ] || cmd+=(--gpu-prec "$prec")
     cmd+=("$@")
     if [ "$DRY" = 1 ]; then printf '%q ' "${cmd[@]}"; echo; return 0; fi
     echo "--- $label-$ftype  $mode  $tag  prec=$prec  (CUDA$DEVICE)" >&2
@@ -218,12 +232,15 @@ FAILURES=0
 FAILED_CONFIGS=()
 [ "$DRY" = 1 ] || write_meta start
 
-while IFS='|' read -r label mode arg dtypes prec; do
+while IFS='|' read -r label mode arg dtypes prec batch; do
     case "${label// /}" in ""|\#*) continue ;; esac
     label="${label// /}"; mode="${mode// /}"; arg="${arg// /}"; dtypes="${dtypes// /}"
-    prec="${prec// /}"; [ -n "$prec" ] || prec="f32"
+    prec="${prec// /}"; [ -n "$prec" ] || prec="default"
+    batch="${batch// /}"; [ -n "$batch" ] || batch=1
     case "$mode" in
-        encoder|head|predictor) tag="T$arg"; extra=(--frames "$arg") ;;
+        encoder)                tag="T$arg"; extra=(--frames "$arg")
+                                if [ "$batch" -gt 1 ]; then tag="${tag}B${batch}"; extra+=(--batch "$batch"); fi ;;
+        head|predictor)         tag="T$arg"; extra=(--frames "$arg") ;;
         lewm-step)              tag="F$arg"; extra=() ;;
         lewm-rollout)           tag="K$arg"; extra=(--steps "$arg") ;;
         ac)                     tag="K$arg"; extra=(--batch "$arg") ;;
@@ -252,10 +269,16 @@ fi
 echo "JSONs in $OUT" >&2
 
 GEN_RC=0
+# The CPU half of the document is not re-measured by a GPU sweep, so it is seeded from its own
+# committed artifact and tmp/bench (usually empty here) is overlaid on top. Without that seed the
+# generator would find no CPU runs at all and refuse to write anything.
 gen=("$PYTHON" "$ROOT/scripts/gen_benchmarks_md.py" --bench-dir "$ROOT/tmp/bench"
+     --merge-json "$ROOT/tests/results/benchmarks.json"
      --ref-dir "$ROOT/tests/fixtures/ref" --parity "$ROOT/docs/parity.md"
      --gpu-dir "$OUT" --results-json-gpu "$RESULTS_JSON" -o "$DOC")
 [ -f "$TORCH_JSON" ] && gen+=(--torch-gpu "$TORCH_JSON")
+[ -f "$TORCH_BATCHED_JSON" ] && gen+=(--torch-gpu-batched "$TORCH_BATCHED_JSON")
+[ "$MERGE" = 1 ] && gen+=(--merge-json-gpu "$RESULTS_JSON")
 [ "$GEN_DOC" = 1 ] || gen+=(--no-doc)
 "${gen[@]}" || GEN_RC=$?
 [ "$GEN_RC" = 0 ] || echo "gen_benchmarks_md.py failed with status $GEN_RC" >&2

@@ -131,6 +131,44 @@ int jepa_device_from_env(void) {
     return -1;
 }
 
+// Whether a GPU context built for `fam` marks every mul_mat GGML_PREC_F32 by default.
+//
+// Two measurements decide each family, both on docs/performance.md ("Accumulation precision on a
+// GPU") and both from committed artifacts. First, the family's GPU parity tier with f16
+// accumulation: `tests/results/gpu-prec.json` runs test-parity over every fixture sample of every
+// dtype at both settings, and the tiers themselves are unchanged. Second, the speed: f16
+// accumulation is a win only where the GEMM is small enough for cuBLAS's F32-output conversion to
+// matter, and a loss on long sequences.
+//
+// Only f16 weights are affected at all. A quantized file takes mmq, which never reaches cuBLAS, and
+// ggml's "F32" path is TF32 by way of CUBLAS_GEMM_DEFAULT_TENSOR_OP and cannot be made strict from
+// here; the flash-attention accumulator is set separately and is always GGML_PREC_F32.
+//
+//   ijepa     f32 — f16 accumulation FAILS the image f16 tier (worst token 0.8938 against the 0.90
+//                   bar, rel_max 0.202 against 0.15, on coco_000000039769), for the largest
+//                   speed-up anyone measured here: 15.5 -> 8.8 ms. The gate wins.
+//   vjepa2    f32 — FAILS the video f16 tier (token-map mean 0.9887 against 0.99, rel_max 0.695
+//                   against 0.5). Covers ViT-L, the SSv2 classifier, ViT-g and the 2-AC encoder.
+//   vjepa2_1  f32 — passes every tier, but only its 576-token image shape is faster (4.63 -> 3.58
+//                   ms); its 4 608- and 18 432-token clips lose 3-4 %, and clips are the shapes
+//                   this family exists for. $JEPA_GPU_PREC=f16 is there for the image case.
+//   lewm      f32 — passes every tier, no speed-up to take (0.85 -> 0.88 ms at 257 tokens).
+//   hfvit     f16 — passes every tier with room (token map 0.999994 -> 0.999988 mean, rel_max
+//                   5.8e-03 -> 6.3e-03) and gains 1.12x.
+//   levjepa   f16 — passes every tier with room (rel_max 4.1e-03 -> 1.6e-02 against a 0.62 bar)
+//                   and gains 1.06x at 3 137 tokens.
+//   vjepa     f32 — no released weights and no fixtures, so nothing is measured: it keeps the
+//                   conservative setting.
+bool jepa_gpu_prec_f32_default(jepa_family_id fam) {
+    switch (fam) {
+        case JEPA_FAMILY_HFVIT:
+        case JEPA_FAMILY_LEVJEPA:
+            return false;
+        default:
+            return true;
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // context
 // ---------------------------------------------------------------------------------------------
@@ -167,11 +205,10 @@ jepa_context * jepa_context_new(jepa_model * model, jepa_context_params params) 
     // Graph validation (jepa_graph_validate): mandatory on a GPU, opt-in on the CPU.
     ctx->validate_graph = ctx->is_gpu;
     if (const char * s = getenv("JEPA_VALIDATE_GRAPH")) ctx->validate_graph = atoi(s) != 0;
-    // GGML_PREC_F32 mul_mat: on by default on a GPU (correctness first), off on the CPU where it
-    // means nothing. $JEPA_GPU_PREC=f16 is the opt-out; docs/architecture.md "Attention and
-    // precision" puts the cost at -21 % throughput at N=2048 and +9 % at N=8192, 1.76x end to end
-    // at 256 tokens against 1.06x at 8192, and nothing at all on quantized weights.
-    ctx->prec_f32 = ctx->is_gpu;
+    // GGML_PREC_F32 mul_mat: a GPU default decided per family, off on the CPU where it means
+    // nothing. $JEPA_GPU_PREC selects either value explicitly; docs/architecture.md "Attention and
+    // precision" and docs/performance.md "Accumulation precision on a GPU" carry the measurements.
+    ctx->prec_f32 = ctx->is_gpu && jepa_gpu_prec_f32_default(model->hp.family);
     if (const char * s = getenv("JEPA_GPU_PREC")) {
         if (strcmp(s, "f16") == 0)      ctx->prec_f32 = false;
         else if (strcmp(s, "f32") == 0) ctx->prec_f32 = true;

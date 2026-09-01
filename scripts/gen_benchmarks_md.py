@@ -195,8 +195,10 @@ def load_gpu_runs(gpu_dir: Path) -> tuple[list[dict], dict, list[str]]:
     accumulation precision, and a thread count says nothing there."""
     meta, runs, skipped = {}, [], []
     for p in sorted(gpu_dir.glob("*.json")):
-        if p.name == "torch-gpu.json":
-            continue                      # the PyTorch baseline, read separately via --torch-gpu
+        # The PyTorch baselines live in the same directory and are read separately, via --torch-gpu
+        # and --torch-gpu-batched; they are not jepa-bench runs and must not be reported as unreadable.
+        if p.name.startswith("torch-"):
+            continue
         try:
             blob = json.loads(p.read_text())
         except (OSError, ValueError) as e:
@@ -335,8 +337,14 @@ def shape_label(r: dict) -> str:
     if r["mode"] in ("lewm-step", "lewm-rollout", "ac", "ac-rollout", "ac-plan"):
         return r["shape"]
     if r["frames"] > 1:
-        return f"{r['frames']}f {r['height']}x{r['width']}"
-    return f"{r['height']}x{r['width']}"
+        s = f"{r['frames']}f {r['height']}x{r['width']}"
+    else:
+        s = f"{r['height']}x{r['width']}"
+    # An encoder row carries its item count, exactly as jepa-bench writes it into `shape`: batch 8
+    # and batch 32 of one model at one crop are different measurements, and without the suffix they
+    # would share a key and one would silently replace the other.
+    b = r.get("batch", 1) or 1
+    return f"{s} x{b}" if b > 1 else s
 
 
 def sort_key(r: dict):
@@ -379,9 +387,19 @@ def main() -> int:
     ap.add_argument("--results-json-gpu", default="tests/results/benchmarks-gpu.json",
                     help="the machine-readable twin of the GPU tables: written when --gpu-dir is "
                          "given, read to render them when it is not")
+    ap.add_argument("--merge-json-gpu", default=None, metavar="FILE",
+                    help="--merge-json for the GPU half: seed the rows from this committed artifact "
+                         "and overlay --gpu-dir on top, so a sweep of part of the grid adds its "
+                         "rows instead of dropping every configuration it did not measure. A row is "
+                         "replaced when its (model, ftype, mode, shape, device, gpu_prec, steps) "
+                         "matches; the sessions of both are kept.")
     ap.add_argument("--torch-gpu", default=None,
                     help="scripts/torch_gpu_baseline.py output, folded into the GPU artifact "
                          "(only with --gpu-dir; otherwise the artifact's own copy is used)")
+    ap.add_argument("--torch-gpu-batched", default=None,
+                    help="a second scripts/torch_gpu_baseline.py output, the --batch/--compile "
+                         "sweep, stored beside the batch-1 baseline under `pytorch_gpu_batched` "
+                         "rather than replacing it")
     ap.add_argument("--no-doc", action="store_true",
                     help="write the JSON summaries but not the document")
     ap.add_argument("--check", action="store_true",
@@ -950,14 +968,30 @@ def main() -> int:
         if not gpu_runs:
             print(f"no GPU bench JSONs in {a.gpu_dir}", file=sys.stderr)
             return 1
-        torch_gpu = None
+        torch_gpu = torch_gpu_batched = None
         if a.torch_gpu:
             try:
                 torch_gpu = json.loads(Path(a.torch_gpu).read_text())
             except (OSError, ValueError) as e:
                 print(f"warning: cannot read {a.torch_gpu}: {e}", file=sys.stderr)
+        if a.torch_gpu_batched:
+            try:
+                torch_gpu_batched = json.loads(Path(a.torch_gpu_batched).read_text())
+            except (OSError, ValueError) as e:
+                print(f"warning: cannot read {a.torch_gpu_batched}: {e}", file=sys.stderr)
         gpu_blob = build_gpu_results(gpu_runs, gpu_meta, torch_gpu, runs, gpu_skipped,
                                      show_path(a.out), show_path(a.gpu_dir))
+        if torch_gpu_batched:
+            gpu_blob["pytorch_gpu_batched"] = {
+                k: torch_gpu_batched[k] for k in ("task", "protocol", "box", "rows")
+                if k in torch_gpu_batched}
+        if a.merge_json_gpu:
+            try:
+                base_gpu = json.loads(Path(a.merge_json_gpu).read_text())
+            except (OSError, ValueError) as e:
+                print(f"cannot read {a.merge_json_gpu}: {e}", file=sys.stderr)
+                return 1
+            gpu_blob = merge_gpu_blob(gpu_blob, base_gpu)
         if gpu_json and not a.check:
             gpu_json.parent.mkdir(parents=True, exist_ok=True)
             gpu_json.write_text(json.dumps(gpu_blob, indent=1, sort_keys=False) + "\n")
@@ -1121,15 +1155,74 @@ def write_results_json(path: Path, runs, meta, bl, parity, skipped, doc) -> None
 # ---- the GPU half: tests/results/benchmarks-gpu.json and the tables it feeds -----------------------
 
 def gpu_prec(r: dict) -> str:
-    """"f32" when GGML_PREC_F32 accumulates every mul_mat (the default on a GPU), "f16" for the
-    --gpu-prec f16 opt-out.  The two are different measurements of the same file and never share a
-    column."""
+    """"f32" when GGML_PREC_F32 accumulates every mul_mat, "f16" for cuBLAS' own compute type.  The
+    two are different measurements of the same file and never share a column."""
     return "f32" if r.get("mul_mat_prec_f32", True) else "f16"
+
+
+def gpu_prec_explicit(r: dict) -> bool:
+    """Whether --gpu-prec chose this row's accumulation precision rather than the model family's
+    default.  Older sweeps did not record it, and for them the two were the same thing: every
+    default was F32, so an f16 row was an opt-out by construction."""
+    if "gpu_prec_explicit" in r:
+        return bool(r["gpu_prec_explicit"])
+    return (r.get("gpu_prec") or gpu_prec(r)) != "f32"
 
 
 def gpu_sort_key(r: dict):
     return (MODE_ORDER.get(r["mode"], 9), r["model"], r.get("frames", 0),
             FTYPE_ORDER.get(r["ftype"], 99), gpu_prec(r) != "f32")
+
+
+def gpu_row_key(row: dict) -> tuple:
+    """What makes two rows OF THE ARTIFACT the same configuration.  A GPU row is keyed by device and
+    accumulation precision where a CPU row is keyed by thread count, and the encoder's item count
+    lives in `shape`, so this is run_key()'s counterpart rather than the same function."""
+    return (row.get("model"), row.get("ftype"), row.get("mode"), row.get("shape"),
+            row.get("device"), row.get("gpu_prec"), row.get("steps", 0))
+
+
+def artifact_gpu_sort_key(row: dict):
+    """gpu_sort_key() for a row that has already been through build_gpu_results(), where the
+    precision is a string field rather than the tool's `mul_mat_prec_f32` boolean."""
+    return (MODE_ORDER.get(row["mode"], 9), row["model"], row.get("frames", 0),
+            FTYPE_ORDER.get(row["ftype"], 99), row.get("gpu_prec", "f32") != "f32",
+            row.get("batch", 1), row.get("steps", 0))
+
+
+def merge_gpu_blob(fresh: dict, base: dict) -> dict:
+    """Overlay a partial sweep's artifact on the committed one: a row measured now replaces the row
+    with the same key, every other row is carried through untouched, and the session lists are
+    concatenated.  Without this a sweep of four configurations would publish an artifact of four
+    rows and drop the sixty the card is not being asked to re-measure."""
+    rows = {gpu_row_key(r): r for r in base.get("rows", [])}
+    replaced = sum(1 for r in fresh.get("rows", []) if gpu_row_key(r) in rows)
+    for r in fresh.get("rows", []):
+        rows[gpu_row_key(r)] = r
+    out = dict(base)
+    out.update({k: v for k, v in fresh.items()
+                if k not in ("rows", "sessions", "box", "pytorch_gpu", "pytorch_gpu_batched")})
+    # The box is the card the *fresh* session used; anything it did not record falls back.
+    box = dict(base.get("box", {}))
+    box.update({k: v for k, v in fresh.get("box", {}).items() if v is not None})
+    out["box"] = box
+    seen, sessions = set(), []
+    for s in list(base.get("sessions", [])) + list(fresh.get("sessions", [])):
+        key = json.dumps(s, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            sessions.append(s)
+    out["sessions"] = sessions
+    for k in ("pytorch_gpu", "pytorch_gpu_batched"):
+        if k in fresh:
+            out[k] = fresh[k]
+        elif k in base:
+            out[k] = base[k]
+    out["rows"] = sorted(rows.values(), key=artifact_gpu_sort_key)
+    print(f"merged {len(fresh.get('rows', []))} freshly measured GPU row(s) "
+          f"({replaced} replacing an existing one) onto {len(base.get('rows', []))} "
+          f"-> {len(out['rows'])} total", file=sys.stderr)
+    return out
 
 
 def build_gpu_results(runs, meta, torch_gpu, cpu_runs, skipped, doc, sweep_dir) -> dict:
@@ -1198,6 +1291,7 @@ def build_gpu_results(runs, meta, torch_gpu, cpu_runs, skipped, doc, sweep_dir) 
             "frames": r.get("frames", 0), "height": r.get("height", 0), "width": r.get("width", 0),
             "batch": r.get("batch", 1), "steps": r.get("steps", 0),
             "device": r["device"], "gpu": True, "gpu_prec": gpu_prec(r),
+            "gpu_prec_explicit": gpu_prec_explicit(r),
             "tokens": r["tokens"], "repeat": r.get("repeat"), "warmup": r.get("warmup"),
             "kv": r.get("kv"), "flash": r.get("flash"),
             "ms_mean": round(r["ms_mean"], 3), "ms_min": round(r["ms_min"], 3),
@@ -1243,7 +1337,7 @@ def render_gpu(A, blob: dict) -> None:
         return
     box = blob.get("box", {})
     enc = [r for r in rows if r["mode"] == "encoder"]
-    default_prec = [r for r in enc if r["gpu_prec"] == "f32"]
+    default_prec = [r for r in enc if not gpu_prec_explicit(r)]
 
     A("## GPU (CUDA)")
     A("")
@@ -1421,12 +1515,56 @@ def render_gpu(A, blob: dict) -> None:
           "real fixture state.")
         A("")
 
+    # ---- batched encoding ------------------------------------------------------------------
+    batched = [r for r in enc if (r.get("batch") or 1) > 1]
+    if batched:
+        anchors = {(r["model"], r["ftype"], r["device"], r["gpu_prec"], r["frames"],
+                    r["height"], r["width"]): r for r in enc if (r.get("batch") or 1) == 1}
+        seen: dict[tuple, dict[int, dict]] = {}
+        for r in batched:
+            k = (r["model"], r["ftype"], r["device"], r["gpu_prec"], r["frames"],
+                 r["height"], r["width"])
+            seen.setdefault(k, {})[r["batch"]] = r
+            if k in anchors:
+                seen[k][1] = anchors[k]
+        brows = []
+        for k, d in sorted(seen.items()):
+            model, ftype, device, prec, frames, h, w = k
+            sizes = sorted(d)
+            base = d[sizes[0]]
+            best = min(d.values(), key=lambda r: r["ms_mean"] / r["batch"])
+            brows.append([model, ftype, f"{frames}f {h}x{w}" if frames > 1 else f"{h}x{w}",
+                          device, prec]
+                         + [f"{d[b]['ms_mean'] / b:.3f}" if b in d else "–" for b in (1, 8, 32)]
+                         + [f"{1000.0 * b / d[b]['ms_mean']:.1f}" if b in d else "–"
+                            for b in (1, 8, 32)]
+                         + [f"{(base['ms_mean'] / base['batch']) / (best['ms_mean'] / best['batch']):.2f}x"])
+        A("### Batched encoding on a GPU (`--batch B`, one graph)")
+        A("")
+        A(table(brows, ["model", "ftype", "shape", "device", "prec",
+                        "ms/item b=1", "b=8", "b=32", "items/s b=1", "b=8", "b=32", "best gain"],
+                "lllllrrrrrrr"))
+        A("")
+        A("`--batch B` puts B items through **one** graph on the batch dimension, so the row is one "
+          "`ggml_backend_graph_compute` and `ms/item` is it divided by B. What batching amortises "
+          "is everything that does not scale with the matmuls — kernel launches, the per-layer norm "
+          "and activation passes, weight streaming — so the gain is largest where a single item "
+          "leaves the card idle and smallest where one item already fills it.")
+        A("")
+
     tg = blob.get("pytorch_gpu")
     if tg and tg.get("rows"):
+        # Our side of the comparison must come from the card the baseline ran on: this artifact
+        # spans two, and a cross-card row would be a different measurement wearing the same label.
+        tdev = tg.get("box", {}).get("device_index")
+        cands = [r for r in enc if r["ftype"] == "f16" and not gpu_prec_explicit(r)
+                 and (r.get("batch") or 1) == 1]
         cuda_f16 = {(r["model"], r["tokens"]): r["ms_mean"]
-                    for r in enc if r["ftype"] == "f16" and r["gpu_prec"] == "f32"}
+                    for r in cands if tdev is None or r["device"] == f"CUDA{tdev}"}
         by_key: dict[tuple, dict[str, dict]] = {}
         for r in tg["rows"]:
+            if r.get("skipped") or r.get("runtime", "eager") != "eager" or (r.get("batch") or 1) != 1:
+                continue
             by_key.setdefault((r["model"], r["tokens"], r["shape"]), {})[r["precision"]] = r
         trows = []
         for (model, tokens, shape), d in by_key.items():
@@ -1455,6 +1593,57 @@ def render_gpu(A, blob: dict) -> None:
                 "one model per precision, so it is the steady-state device footprint of that "
                 "precision and nothing else.")
             A("")
+
+    # ---- PyTorch batched / torch.compile ----------------------------------------------------
+    tgb = blob.get("pytorch_gpu_batched")
+    if tgb and tgb.get("rows"):
+        tb = [r for r in tgb["rows"]
+              if not r.get("skipped") and ((r.get("batch") or 1) > 1 or r.get("runtime") == "compile")]
+        if tb:
+            grouped: dict[tuple, dict[tuple, dict]] = {}
+            for r in tgb["rows"]:
+                if r.get("skipped"):
+                    continue
+                grouped.setdefault((r["model"], r["shape"], r["precision"]), {})[
+                    (r.get("runtime", "eager"), r.get("batch") or 1)] = r
+            trows2 = []
+            for (model, shape, prec), d in sorted(grouped.items()):
+                sizes = sorted({b for _, b in d})
+                if len(sizes) < 2 and not any(rt == "compile" for rt, _ in d):
+                    continue
+                for rt in ("eager", "compile"):
+                    if not any(k[0] == rt for k in d):
+                        continue
+                    trows2.append(
+                        [model, shape, prec, rt]
+                        + [f"{d[(rt, b)]['ms_per_item_mean']:.3f}" if (rt, b) in d else "–"
+                           for b in (1, 8, 32)]
+                        + [f"{d[(rt, b)]['items_per_s']:.1f}" if (rt, b) in d else "–"
+                           for b in (1, 8, 32)])
+            if trows2:
+                A("### PyTorch batched, eager against `torch.compile`")
+                A("")
+                A(table(trows2, ["model", "shape", "precision", "runtime",
+                                 "ms/item b=1", "b=8", "b=32",
+                                 "items/s b=1", "b=8", "b=32"], "llllrrrrrr"))
+                A("")
+                bx = tgb.get("box", {})
+                A(f"`scripts/torch_gpu_baseline.py --device {bx.get('device_index', '?')} "
+                  "--batch 1,8,32 --compile`: the fixture tensor repeated along the batch axis, "
+                  "which is the axis `jepa-bench --batch` sweeps, so the two engines are timed on "
+                  "the same work. `torch.compile` is warmed up before timing, so its compilation is "
+                  "not in these milliseconds — a served model pays it once. This is a session of "
+                  "its own on the second card, kept apart from the batch-1 baseline above rather "
+                  "than merged into it.")
+                A("")
+            skipped_rows = [r for r in tgb["rows"] if r.get("skipped")]
+            if skipped_rows:
+                A("Configurations the baseline could not measure, and why:")
+                A("")
+                A(table([[r["model"], r.get("precision", "–"), r.get("runtime", "–"),
+                          str(r.get("batch", "–")), r["skipped"]] for r in skipped_rows],
+                        ["model", "precision", "runtime", "batch", "reason"], "lllll"))
+                A("")
 
 
 if __name__ == "__main__":
