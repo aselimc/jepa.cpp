@@ -3,6 +3,7 @@
 
     scripts/render_accuracy_md.py                              # print the block to stdout
     scripts/render_accuracy_md.py --write docs/accuracy-image.md   # splice it into the doc
+    scripts/render_accuracy_md.py --check                      # exit 1 if the doc is stale (CI)
 
 One accuracy table per model (rows: backend/dtype x feature x gallery), the flip table, and the
 throughput table, so no number in the doc is ever retyped by hand.  `--write` replaces the region
@@ -11,6 +12,7 @@ markers still has to be edited by a human when the numbers move enough to change
 """
 import argparse
 import json
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -141,17 +143,29 @@ def main():
     ap.add_argument("json", nargs="?", type=Path, default=ROOT / "tests/results/accuracy-image.json")
     ap.add_argument("--write", type=Path, help="splice the block into this markdown file, between "
                                                "the BEGIN/END markers")
+    ap.add_argument("--check", action="store_true",
+                    help="exit 1 if the block in --write (default docs/accuracy-image.md) is stale, "
+                         "instead of rewriting it")
     a = ap.parse_args()
     block = render(json.loads(a.json.read_text()))
-    if not a.write:
+    target = a.write or (ROOT / "docs" / "accuracy-image.md" if a.check else None)
+    if target is None:
         print(block, end="")
         return
-    md = a.write.read_text()
+    md = target.read_text()
     i, j = md.find(BEGIN), md.find(END)
     if i < 0 or j < 0:
-        raise SystemExit(f"{a.write}: missing the {BEGIN!r} / {END!r} markers")
-    a.write.write_text(md[:i] + BEGIN + "\n\n" + block + "\n" + md[j:])
-    print(f"wrote the generated block into {a.write}")
+        raise SystemExit(f"{target}: missing the {BEGIN!r} / {END!r} markers")
+    spliced = md[:i] + BEGIN + "\n\n" + block + "\n" + md[j:]
+    if a.check:
+        if spliced != md:
+            print(f"{target} is stale — run scripts/render_accuracy_md.py --write {target}",
+                  file=sys.stderr)
+            raise SystemExit(1)
+        print(f"{target} is up to date")
+        return
+    target.write_text(spliced)
+    print(f"wrote the generated block into {target}")
 
 
 if __name__ == "__main__":

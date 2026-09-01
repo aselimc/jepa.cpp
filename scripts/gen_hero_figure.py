@@ -22,8 +22,8 @@ which this one imports; the only literals here are layout and wording.
     python scripts/gen_hero_figure.py --png tmp/h.png --width-px 880 # rasterise at README width
     python scripts/gen_hero_figure.py --check                        # exit 1 if the SVG is stale
 
-matplotlib is the only dependency and stays out of docs/requirements.txt and CI, as it does for the
-results figure:
+matplotlib is the only dependency and stays out of docs/requirements.txt, as it does for the results
+figure; CI installs it pinned for the --check gate:
 
     uv pip install --python .venv/bin/python matplotlib
 
