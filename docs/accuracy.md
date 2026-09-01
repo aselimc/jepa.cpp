@@ -9,7 +9,7 @@ a committed artifact; each section names its source.
 |---|---|
 | CPU | AMD Ryzen Threadripper PRO 7995WX, 96 cores / 192 threads, AVX-512 |
 | Build | gcc 13.3.0, `-O3 -march=native`, ggml `36da5713`, `GGML_LLAMAFILE=ON` |
-| GPU | NVIDIA RTX 4500 Ada Generation, compute 8.9, 24 GB; CUDA 13.0.88, driver 580.173.02 — device 0 unless a row says device 1 |
+| GPU | NVIDIA RTX 4500 Ada Generation, compute 8.9, 24 GB; CUDA 13.0.88, driver 580.173.02 — device 0 everywhere except the SSv2 validation sweep, which used device 1 |
 | Reference | torch 2.13.0+cpu, transformers 5.16.1, float32, 32 threads |
 | Reference, SSv2 validation | torch 2.13.0+cu130 on the second RTX 4500 Ada, transformers 5.16.1, float32, TF32 off on matmul and cuDNN |
 | Date | 2026-08-31; the SSv2 validation sweep 2026-09-01 |
@@ -248,8 +248,10 @@ augmentation**. Sixteen frames sampled uniformly over the whole clip
 resampling, centre crop 256, the checkpoint's own mean and standard deviation. Both engines read the
 same THWC uint8 frames and each runs that pipeline itself, so the rows differ only in the engine and
 the weight dtype. Every clip decoded; none was skipped. The reference is `transformers`
-`VJEPA2ForVideoClassification` in float32 on the second RTX 4500 Ada, TF32 disabled on both `matmul`
-and cuDNN.
+`VJEPA2ForVideoClassification` in float32 on the second RTX 4500 Ada (`cuda:1`), TF32 disabled on
+both `matmul` and cuDNN, four clips per forward. The processor is batch-invariant; the model forward
+is not quite — a different batch size moves a logit by ~2e-04 and no argmax with it — so the batch
+size is part of the protocol.
 
 | backend | dtype | top-1 % | top-5 % | Δ top-1 vs PyTorch | top-1 agreement % | logit cos, mean / worst clip |
 |---|---|---:|---:|---:|---:|---:|
@@ -260,9 +262,12 @@ and cuDNN.
 | jepa.cpp CUDA | q4_k | 72.52 | 94.02 | +32 clips | 94.19 | 0.993067 / 0.7948 |
 
 **f16 is the PyTorch number.** Over 24 777 independent 174-way argmaxes the f16 file lands one clip
-from the reference and reproduces its 94.11 % top-5 exactly, at 717 MiB of resident weights against
-the f32 file's 1 432. The f32 GGUF behaves like the f16 one on a GPU, which is the "no f32 tier on CUDA" rule
-measured end to end rather than asserted.
+from the reference on top-1 and lands on the same 94.11 % top-5 rate, at 717 MiB of resident weights
+against the f32 file's 1 432. The rates match; the decisions behind them do not quite. The two
+72.39 % rows land on a different answer for 85 clips, 55 of which change from right to wrong or
+back — 28 gained against 27 lost, which is where the one-clip margin comes from — and the identical
+top-5 rate is a wash of 8 hits gained against 8 lost. The f32 GGUF behaves like the f16 one on a
+GPU, which is the "no f32 tier on CUDA" rule measured end to end rather than asserted.
 
 **Quantization moves decisions without moving the score.** q8_0 disagrees with PyTorch on 502 clips
 and q4_k on 1 439, yet both land *within 0.13 pp* of it on top-1 and give up at most 0.09 pp of
@@ -309,9 +314,10 @@ largest single logit — over a full encoder, attentive pooler and 174-way class
 
 The published figure for this architecture is **73.7 %** (V-JEPA 2, arXiv:2506.09985, Table 4, ViT-L
 on SSv2), measured with 16 × 2 × 3 inputs — two temporal crops × three spatial crops, logits averaged
-over the six clips. This page's 72.39 % is one clip and one crop, so the 1.3 pp difference is the
-price of the single view rather than a fidelity gap; the released checkpoint's model card publishes
-no number of its own.
+over the six clips. This page's figure is one clip and one crop. The engine is not what separates
+them — PyTorch itself scores 72.39 % under this protocol — but nothing here runs the multi-view
+protocol, and the decoder and the probe of the published run are not held fixed either, so the
+1.3 pp is left unattributed. The released checkpoint's model card publishes no number of its own.
 
 *Source: [accuracy-video.md](accuracy-video.md#ssv2-validation-accuracy-the-real-task), 2026-09-01.
 Machine-readable twin: `tests/results/accuracy-ssv2.json`, which carries the clip order, the true
@@ -378,7 +384,7 @@ scripts/render_accuracy_md.py --write docs/accuracy-image.md
 S="tmp/venv-cuda/bin/python scripts/bench_accuracy_ssv2.py"
 .venv/bin/python scripts/bench_accuracy_ssv2.py frames --jobs 48
 .venv/bin/python scripts/bench_accuracy_ssv2.py lists
-$S torch --device cuda:1                                 # the fp32 reference, 24 777 clips
+$S torch --device cuda:1 --batch 4 --threads 8           # the fp32 reference, 24 777 clips
 $S cpp   --dtype f16  --device cuda:1                    # then q8_0, q4_k, f32
 $S cpp   --dtype f16  --device cpu --scope sub10         # then f32, 2 478 clips at 32 threads
 OMP_NUM_THREADS=32 .venv/bin/python scripts/bench_accuracy_ssv2.py \
@@ -391,3 +397,9 @@ $S report --out-json tests/results/accuracy-ssv2.json
 .venv/bin/python scripts/gguf_dequant_selftest.py --gguf models/gguf/<model>-q8_0.gguf \
     --ref tests/fixtures/ref/<model> --threads 32
 ```
+
+Both `report` stages are idempotent and survive the deletion of their frame caches: re-running the
+last two commands on a checkout with no decoded frames rewrites
+`tests/results/accuracy-{video,ssv2}.json` and `docs/accuracy-video.md` **byte for byte**, because
+each carries the decode count, the decode wall time and the frame manifest forward from the artifact
+it is overwriting. That is the check to run after editing either generator.

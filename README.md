@@ -69,7 +69,7 @@ show up directly as lost accuracy. It doesn't:
 | I-JEPA ViT-H/14 | 147 ms / image | 250 ms | Imagenette k-NN **95.31 %** vs **95.36 %** |
 | LeJEPA ViT-S/16 | 12.8 ms / image | 15.4 ms | Imagenette k-NN **94.55 %** vs **94.45 %** |
 | LeWorldModel | 9.8 ms + 0.9 ms per rollout step | 16.8 ms | world-model outputs match to cosine 1.0000000 |
-| V-JEPA 2 ViT-L (SSv2, 16-frame clip, end-to-end) | 922 ms / clip (631 ms @ 96 threads) | 1051 ms | SSv2 val top-1 **72.39 %** vs **72.39 %**, top-5 **94.11 %** vs **94.11 %**, on all 24 777 clips |
+| V-JEPA 2 ViT-L (SSv2, 16-frame clip, end-to-end) | 922 ms / clip (631 ms @ 96 threads) | 1051 ms | SSv2 val, all 24 777 clips, **f16 on CUDA**: top-1 **72.39 %** vs **72.39 %**, top-5 **94.11 %** vs **94.11 %** (CPU f16 at 32 threads covers a 2 478-clip subset: 72.92 % vs 72.84 %) |
 | V-JEPA 2.1 ViT-B @384 | 60 ms / image · 853 ms / 16-frame clip | 110 ms · 908 ms | UCF-101 k-NN predictions identical at f32; **89.5 %** vs **88.6 %** at f16 |
 | LeVJEPA ViT-L/16 | 1480 ms / 16-frame clip (882 ms @ 96 threads) | 1752 ms | UCF-101 k-NN **81.9 %** vs **81.9 %**; every prediction identical at f32, f16 *and* q8_0 |
 
