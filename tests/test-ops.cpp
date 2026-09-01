@@ -389,6 +389,15 @@ static bool run_mask_case(ggml_backend_t backend) {
 // A 16-frame clip of a block-causal model is ~221 MiB of graph memory, most of it the 3137 x 3137
 // mask; a 1 MiB budget must refuse it, with no allocation and no crash. The positive control is the
 // same file at one frame (197 rows, a 76 KiB mask), which has to encode normally.
+// setenv/unsetenv are POSIX; MSVC ships _putenv_s, where an empty value removes the variable.
+#ifdef _WIN32
+static void ops_setenv(const char * k, const char * v) { _putenv_s(k, v); }
+static void ops_unsetenv(const char * k)               { _putenv_s(k, ""); }
+#else
+static void ops_setenv(const char * k, const char * v) { setenv(k, v, 1); }
+static void ops_unsetenv(const char * k)               { unsetenv(k); }
+#endif
+
 static bool run_budget_case(const char * gguf) {
     jepa_model_params mp = jepa_model_default_params();
     mp.verbose = false;
@@ -398,7 +407,7 @@ static bool run_budget_case(const char * gguf) {
     std::vector<float> px((size_t) 3 * 16 * S * S, 0.0f);
 
     auto encode = [&](int frames, int mib) {
-        setenv("JEPA_MAX_GRAPH_MIB", std::to_string(mib).c_str(), 1);
+        ops_setenv("JEPA_MAX_GRAPH_MIB", std::to_string(mib).c_str());
         jepa_context_params cp = jepa_context_default_params();
         cp.n_threads = 4;
         jepa_context * ctx = jepa_context_new(model, cp);
@@ -409,7 +418,7 @@ static bool run_budget_case(const char * gguf) {
         const int64_t rows = o.n_tokens;
         free(o.data);
         if (ctx) jepa_context_free(ctx);
-        unsetenv("JEPA_MAX_GRAPH_MIB");
+        ops_unsetenv("JEPA_MAX_GRAPH_MIB");
         return std::pair<int, int64_t>(rc, rows);
     };
 
