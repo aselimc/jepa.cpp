@@ -1,5 +1,8 @@
 # jepa.cpp
 
+[![ci](https://github.com/aselimc/jepa.cpp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aselimc/jepa.cpp/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/aselimc/jepa.cpp?label=release&color=2f5fa3)](https://github.com/aselimc/jepa.cpp/releases/latest)
+
 **Run Meta's JEPA vision models on a plain CPU, from a single file, with no Python.**
 
 JEPA (Joint-Embedding Predictive Architecture) is the family of self-supervised vision models behind
@@ -96,7 +99,9 @@ Which file should you actually ship? The quantization study boils down to:
 
 ## Quickstart
 
-Build (needs CMake ≥ 3.16, Ninja and a C++17 compiler; ggml is a submodule):
+Prebuilt Linux x86-64 CPU binaries are on the
+[releases page](https://github.com/aselimc/jepa.cpp/releases). To build from source (needs CMake ≥ 3.16,
+Ninja and a C++17 compiler; ggml is a submodule):
 
 ```bash
 git clone --recursive https://github.com/aselimc/jepa.cpp && cd jepa.cpp
@@ -170,6 +175,11 @@ ctest --test-dir build        # 10 suites: parity, predictors, batching, RoPE ve
 outputs and classifier top-1/top-5 with per-family thresholds; `test-predictor` does the same for the
 three predictors, including a bit-exactness causality check on the world model. Details:
 [parity](https://aselimc.github.io/jepa.cpp/parity/) · [accuracy](docs/accuracy.md).
+
+The suites that need no weights (`ops`, `attn`) run in CI on Ubuntu 22.04 and 24.04, on macOS arm64
+and under ASAN+UBSAN, alongside a Windows/MSVC build and the documentation gates; the rest run from
+hub-hosted GGUFs. See
+[getting started → tests](https://aselimc.github.io/jepa.cpp/getting-started/#tests).
 
 ## Optional: running on a GPU
 
