@@ -321,7 +321,10 @@ hostile until it is in range. Nothing is clamped or defaulted silently: an input
 describe a model this engine can run is refused, by name, on `stderr` and in
 [`jepa_error_text()`](api.md).
 
-**What the loader validates.** In this order, and all of it before a byte of weight is allocated:
+**What the loader validates.** The metadata and the tensor extents come first, before a byte of
+weight is allocated — that ordering is the point of the extent check, since the weight buffer is
+sized from the header's claims and not from the file's length. The dtype, shape and
+required-tensor checks run once the tensors are resident and before any graph is built:
 
 | check | refused when |
 |---|---|
