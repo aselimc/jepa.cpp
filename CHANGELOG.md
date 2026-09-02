@@ -8,6 +8,10 @@ across releases.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] — 2026-09-02
+
 ### Changed
 
 - **The GPU accumulation precision is now a per-family default instead of `GGML_PREC_F32`
