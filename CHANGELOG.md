@@ -8,6 +8,10 @@ across releases.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.4.0] — 2026-09-02
+
 ### Added
 
 - **`jepa-server`, an HTTP front end over the C API**, with a dynamic batcher in front of it.
