@@ -8,11 +8,15 @@ engine, the preprocessing and the arithmetic all on the C side. The raw 1:1 ``ct
     >>> with jepa_cpp.Model("models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf", threads=8) as m:
     ...     tokens = m.encode("cat.jpg")            # [197, 384]
     ...     feature = m.encode("cat.jpg", pool="cls")   # [384]
+
+:class:`Client` is the same engine over HTTP instead of in process — it talks to ``jepa-server``
+(:mod:`jepa_cpp.client`, docs/serving.md) and needs no library of its own.
 """
 
 from __future__ import annotations
 
 from ._lib import LIB_ENV, library_path
+from .client import Client, ServerError, clip
 from .model import (
     STILL_REPEAT_FAMILIES,
     VIDEO_FAMILIES,
@@ -26,12 +30,15 @@ from .model import (
 
 __all__ = [
     "Classification",
+    "Client",
     "JepaError",
     "LIB_ENV",
     "Model",
     "STILL_REPEAT_FAMILIES",
+    "ServerError",
     "VIDEO_FAMILIES",
     "__version__",
+    "clip",
     "devices",
     "library_path",
     "library_version",

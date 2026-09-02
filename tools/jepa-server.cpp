@@ -1193,8 +1193,11 @@ int main(int argc, char ** argv) {
         for (size_t i = 0; i < job.tasks.size(); i++) {
             const Task & t = *job.tasks[i];
             total_tokens += t.n_tokens;
+            // `dim` is not in the OpenAI shape and does no harm there; it is what lets a
+            // base64 reader reshape a --pool none vector, whose bytes are rows x dim.
             data.push_back(json{{"object", "embedding"},
                                 {"index", (int64_t) i},
+                                {"dim", t.dim},
                                 {"embedding", embedding_value(t.emb, t.rows, t.dim, as_b64)}});
         }
         json out{{"object", "list"},
