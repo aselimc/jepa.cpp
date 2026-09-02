@@ -8,7 +8,37 @@ across releases.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`jepa-server`, an HTTP front end over the C API**, with a dynamic batcher in front of it.
+  `POST /v1/embeddings` is OpenAI-shaped (float or base64 vectors), `POST /classify` returns top-k
+  labels, `POST /rollout` runs a V-JEPA 2-AC or LeWM rollout and the CEM planner, and `GET /health`,
+  `GET /metrics` (Prometheus: request counts, latency and batch-size histograms, queue depth) and
+  `GET /v1/models` describe the process. One immutable model shared by `--workers` threads, one
+  `jepa_context` each, exactly as the header's thread contract prescribes; requests of the same
+  shape are folded into one encoder graph up to `--max-batch` (default 8, capped at the engine's
+  32-slice limit) after waiting at most `--max-wait-ms` (default 5). Grouping changes scheduling and
+  not arithmetic — the ctest entry `server` gates a four-item request against four one-item requests
+  and against `jepa-embed --pool cls`, bit pattern for bit pattern. Binds `127.0.0.1` unless
+  `--host` says otherwise; every malformed request is a JSON error carrying `jepa_error_text`.
+  cpp-httplib v0.54.1 is vendored under `third_party/cpp-httplib/`.
+- **`jepa_cpp.client`**, a `urllib`-only client for it — `Client.embed / classify / rollout /
+  health / models / metrics` plus `clip()` for the frames of one clip — and `python/tests/
+  test_client.py`, which starts a real server and asserts the vectors are bit-identical to
+  `jepa-embed` in both encodings. No new wheel dependency.
+- **`docker/Dockerfile.cpu` and `docker/Dockerfile.cuda`**, multi-stage, weights mounted rather than
+  baked in. Both were built and run: the CPU image is 124 MB and its vector is bit-identical to a
+  `JEPA_NATIVE=OFF` host build (and cosine 0.999999958 from the `-march=native` one — the AVX-512
+  `mul_mat` path, measured, not assumed); the 4.31 GB CUDA image reports the card from
+  `jepa-info --devices` and answers with `"backend": "CUDA0"`.
+- **A serving load test**, `scripts/bench_server.py` into `tests/results/server-bench.json`, and the
+  [Serving](docs/serving.md) page it renders into. On LeJEPA-S f16 at 32 threads with one worker,
+  batching takes 32 concurrent clients from 74.9 to 102.4 req/s (1.37×) and cuts p50 from 420 to
+  294 ms, while `--max-batch 32` buys nothing over 8. At one client the same setting *costs* 5.3 ms
+  of p50, which is `--max-wait-ms` spent waiting for company that never arrives — the artifact
+  carries the mean batch size actually formed, and a `GET /health` control row per cell, so a
+  reader can tell the server's limit from the harness's.
+
 
 ## [0.3.0] — 2026-09-02
 

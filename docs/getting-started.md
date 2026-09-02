@@ -334,10 +334,35 @@ Modes are `encoder` (default), `head`, `predictor`, `lewm-step` and `lewm-rollou
 synthetic but deterministic — a seeded uint8 stream put through the model's own `jepa.pre.*`
 normalisation — so the tool runs wherever a GGUF is, with no fixtures and no Python.
 
+### `jepa-server` — the same engine over HTTP
+
+```bash
+build/jepa-server -m models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf \
+    --threads 8 --workers 4 --max-batch 8            # http://127.0.0.1:8080
+```
+
+```
+jepa-server 0.3.0: lejepa-vits16-pretrain-in1k-f16 (hfvit, f16, CPU) on http://127.0.0.1:8080
+  workers 4 x 8 threads | max-batch 8 | max-wait 5 ms | local files refused
+```
+
+```bash
+curl -s localhost:8080/health
+curl -s localhost:8080/v1/embeddings -H 'Content-Type: application/json' \
+     -d "{\"input\": {\"b64\": \"$(base64 -w0 tests/fixtures/media/coco_000000000139.jpg)\"}}"
+```
+
+`POST /v1/embeddings` is OpenAI-shaped, `POST /classify` returns top-k labels, `POST /rollout` runs a
+world-model rollout or the V-JEPA 2-AC planner, and `GET /health`, `GET /metrics` and
+`GET /v1/models` describe the process. Requests of the same shape are folded into one encoder graph,
+which changes the scheduling and not the arithmetic. The server binds `127.0.0.1` unless `--host`
+says otherwise and has neither TLS nor authentication, so it is a component to put behind something.
+Endpoints, flags, the Python client and the measured throughput: [Serving](serving.md).
+
 ### Running on a GPU
 
-With a `-DJEPA_CUDA=ON` build, `jepa-embed`, `jepa-classify`, `jepa-worldmodel` and `jepa-bench` take
-`--gpu [N]`:
+With a `-DJEPA_CUDA=ON` build, `jepa-embed`, `jepa-classify`, `jepa-worldmodel`, `jepa-bench` and
+`jepa-server` take `--gpu [N]`:
 
 ```bash
 build-cuda/jepa-embed -m models/gguf/ijepa_vith14_1k-f16.gguf -i img.jpg --gpu 0

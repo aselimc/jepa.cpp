@@ -149,6 +149,9 @@ build/jepa-worldmodel -m models/gguf/lewm-pusht-f16.gguf \
 # make it smaller
 build/jepa-quantize models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf \
                     models/gguf/lejepa-vits16-pretrain-in1k-q8_0.gguf q8_0 -t 32
+
+# ...or serve any of it over HTTP, on 127.0.0.1
+build/jepa-server -m models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf --workers 4 -t 8
 ```
 
 `--video` shells out to `ffmpeg` (a run-time dependency of the two tools, never of the build or the
@@ -178,7 +181,7 @@ policy, parity thresholds — is on the [documentation site](https://aselimc.git
 ## Testing
 
 ```bash
-ctest --test-dir build        # 13 suites: parity, predictors, batching, RoPE vectors + the block-causal mask, attention, backend, video ingest, error paths, threads
+ctest --test-dir build        # 16 suites: parity, predictors, batching, RoPE vectors + the block-causal mask, attention, backend, video ingest, error paths, threads, the HTTP server
 ```
 
 `test-parity` replays PyTorch golden dumps through the engine and gates per-token cosine, pooled
@@ -195,6 +198,16 @@ The suites that need no weights (`ops`, `attn`, `errors`, `threads`) run in CI o
 24.04, on macOS arm64 and under ASAN+UBSAN, alongside a Windows/MSVC build and the documentation
 gates; the rest run from hub-hosted GGUFs. See
 [getting started → tests](https://aselimc.github.io/jepa.cpp/getting-started/#tests).
+
+## Optional: serving over HTTP
+
+`jepa-server` puts the same engine behind `POST /v1/embeddings` (OpenAI-shaped), `/classify`,
+`/rollout`, `/health`, `/metrics` and `/v1/models`: one model shared by `--workers` threads with a
+`jepa_context` each, and a batcher that folds requests of the same shape into one encoder graph —
+scheduling only, so a batched vector is the vector `jepa-embed` writes, bit for bit, and the ctest
+entry `server` gates exactly that. It binds `127.0.0.1`, has no TLS and no authentication, and
+`python/src/jepa_cpp/client.py` talks to it with nothing but `urllib`. Endpoints, flags, the Docker
+images and the measured throughput: [serving](https://aselimc.github.io/jepa.cpp/serving/).
 
 ## Optional: running on a GPU
 

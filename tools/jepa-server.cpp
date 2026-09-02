@@ -700,17 +700,25 @@ static void worker_main(Engine & eng, Worker & wk) {
             batch.swap(wk.batch);
             wk.has_work = false;
         }
-        if (!batch.empty()) {
-            if (batch[0]->kind == TASK_ROLLOUT) {
-                Task * t = batch[0];
-                if (jepa_model_has_predictor(eng.model) && jepa_ac_tokens_per_frame(eng.model) > 0) {
-                    run_rollout_ac(eng, wk.ctx, t);
+        // A worker must come back from anything a request can do to it: an allocation this batch
+        // could not make is that request's 5xx, not the end of the process.
+        try {
+            if (!batch.empty()) {
+                if (batch[0]->kind == TASK_ROLLOUT) {
+                    Task * t = batch[0];
+                    if (jepa_model_has_predictor(eng.model) && jepa_ac_tokens_per_frame(eng.model) > 0) {
+                        run_rollout_ac(eng, wk.ctx, t);
+                    } else {
+                        run_rollout_lewm(eng, wk.ctx, t);
+                    }
                 } else {
-                    run_rollout_lewm(eng, wk.ctx, t);
+                    run_encode_batch(eng, wk.ctx, batch);
                 }
-            } else {
-                run_encode_batch(eng, wk.ctx, batch);
             }
+        } catch (const std::bad_alloc &) {
+            for (Task * t : batch) if (t->err.empty()) t->err = "out of memory serving this batch";
+        } catch (const std::exception & e) {
+            for (Task * t : batch) if (t->err.empty()) t->err = std::string("worker failed: ") + e.what();
         }
         for (Task * t : batch) t->job->finish_one();
         {

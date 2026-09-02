@@ -58,6 +58,7 @@ nav:
   - Getting started: getting-started.md
   - Releases: releases.md
   - Architecture: architecture.md
+  - Serving: serving.md
   - GGUF format: gguf-schema.md
   - Benchmarks:
       - Performance: performance.md

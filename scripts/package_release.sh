@@ -37,7 +37,7 @@ if [ -z "$VERSION" ]; then
 fi
 [ -n "$VERSION" ] || { echo "cannot determine the version" >&2; exit 1; }
 
-TOOLS="jepa-info jepa-embed jepa-classify jepa-worldmodel jepa-quantize jepa-bench"
+TOOLS="jepa-info jepa-embed jepa-classify jepa-worldmodel jepa-quantize jepa-bench jepa-server"
 for t in $TOOLS; do
   [ -x "$BUILD/$t" ] || { echo "missing $BUILD/$t — build first" >&2; exit 1; }
 done

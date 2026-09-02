@@ -49,7 +49,7 @@ jobs:
         run: |
           mkdir -p dist
           cp build/jepa-embed build/jepa-classify build/jepa-quantize \
-             build/jepa-bench build/jepa-info build/jepa-worldmodel dist/
+             build/jepa-bench build/jepa-info build/jepa-worldmodel build/jepa-server dist/
           cp -a build/ggml/src/libggml*.so* dist/
           dist/jepa-info --version
 

@@ -28,6 +28,7 @@ through V-JEPA 2.1 ViT-B on PyTorch, on jepa.cpp's CPU engine and on its CUDA en
 |---|---|
 | [Getting started](getting-started.md) | build (CPU and CUDA), download the published GGUFs or convert the checkpoints yourself, the per-model licence table, one worked example per tool, running the test suite |
 | [Architecture](architecture.md) | the shared ViT graph, the family matrix, the 3-D RoPE specification, preprocessing, attention and precision, batching, the GPU backend, the runtime switches, and the parity methodology |
+| [Serving](serving.md) | `jepa-server` over HTTP: the endpoints and their request and response shapes, dynamic batching and what it is and is not allowed to change, the Python client, the Docker images, and the measured throughput and latency by concurrency and batch size |
 | [GGUF format](gguf-schema.md) | the file format, version 1: every metadata key, the canonical tensor names, the token order, the quantization rules |
 | [Performance](performance.md) | the speed and memory scores: CPU and CUDA encoders against PyTorch, end-to-end classification, predictors, batching, thread scaling, quantization |
 | [Accuracy](accuracy.md) | the fidelity and task scores: f32 exactness, f16/q8_0 and GPU cosines, Imagenette and UCF-101 k-NN, the SSv2 validation top-1, the dtype recommendation per backend |
@@ -49,4 +50,5 @@ stand alone, beside the tables they draw — latency and quantization on
 
 Machine-readable twins of the measured tables live in
 [`tests/results/*.json`](https://github.com/aselimc/jepa.cpp/tree/main/tests/results): `benchmarks.json`,
-`accuracy-image.json`, `accuracy-video.json`, `accuracy-ssv2.json`, `batching.json`.
+`accuracy-image.json`, `accuracy-video.json`, `accuracy-ssv2.json`, `batching.json`,
+`server-bench.json`.
