@@ -10,7 +10,11 @@
 //
 //   * /health answers before anything else does, and describes the model that was loaded;
 //   * /v1/embeddings on one image is BIT-IDENTICAL to `jepa-embed --pool cls` on the same file —
-//     the whole point of putting the server on top of the C API rather than beside it;
+//     the whole point of putting the server on top of the C API rather than beside it. Like the
+//     `batch` suite, that is a CPU claim: on a CUDA device batched and per-item runs agree to ~1e-7
+//     cosine and not bit-for-bit, because GEMM tiling varies with the batch shape. Pointing
+//     $JEPA_DEVICE at a GPU therefore fails this suite exactly as it fails `batch`, and the run
+//     says so;
 //   * a four-item request, which the dispatcher folds into one graph, returns rows bit-identical to
 //     four one-item requests, which it cannot: dynamic batching is a scheduling decision and never
 //     a numeric one (the engine's own guarantee, tests/test-batch.cpp, seen from the outside);
@@ -230,6 +234,12 @@ int main(int argc, char ** argv) {
         if (res && res->status == 200) {
             const json h = json::parse(res->body, nullptr, false);
             check(!h.is_discarded() && h.value("status", "") == "ok", "/health says ok");
+            if (!h.is_discarded() && h.value("is_gpu", false)) {
+                printf("  note: the server loaded on %s ($JEPA_DEVICE). The bit-identity checks below\n"
+                       "        are CPU claims — on a device the two paths agree to ~1e-7 cosine and\n"
+                       "        not bit-for-bit, and `batch` fails the same way.\n",
+                       h.value("backend", "a GPU").c_str());
+            }
             check(h.value("model", "") == "test-model", "/health reports --model-name");
             check(h.value("workers", 0) == 2, "/health reports the worker count");
             check(h.value("max_batch", 0) == 8, "/health reports max_batch");

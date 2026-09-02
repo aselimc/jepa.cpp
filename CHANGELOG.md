@@ -32,12 +32,16 @@ across releases.
   `mul_mat` path, measured, not assumed); the 4.31 GB CUDA image reports the card from
   `jepa-info --devices` and answers with `"backend": "CUDA0"`.
 - **A serving load test**, `scripts/bench_server.py` into `tests/results/server-bench.json`, and the
-  [Serving](docs/serving.md) page it renders into. On LeJEPA-S f16 at 32 threads with one worker,
-  batching takes 32 concurrent clients from 74.9 to 102.4 req/s (1.37×) and cuts p50 from 420 to
-  294 ms, while `--max-batch 32` buys nothing over 8. At one client the same setting *costs* 5.3 ms
-  of p50, which is `--max-wait-ms` spent waiting for company that never arrives — the artifact
-  carries the mean batch size actually formed, and a `GET /health` control row per cell, so a
-  reader can tell the server's limit from the harness's.
+  [Serving](docs/serving.md) page it renders into (`scripts/render_serving_md.py --check` gates the
+  tables). With one worker, batching takes 32 concurrent clients from 75.3 to 106.8 req/s (1.42×) on
+  LeJEPA-S f16 at 32 CPU threads and from 61.0 to 87.2 (1.43×) on I-JEPA ViT-H f16 on one GPU, and
+  cuts p50 from 424 to 290 ms and 523 to 364 ms with it. `--max-batch 32` buys nothing over 8 on
+  either. At one client the same setting *costs* 5 ms of p50 on both — `--max-wait-ms` spent waiting
+  for company that never arrives. Each concurrent V-JEPA 2-AC planner (K=16) costs a flat 347 MiB of
+  device memory beyond the 2519 MiB of shared weights and adds no throughput past the first: 1.98,
+  2.20 and 2.16 rollouts/s at 1, 2 and 4, with p50 doubling each time. The artifact carries the mean
+  batch size actually formed and a `GET /health` control row per cell, so a reader can tell the
+  server's limit from the harness's.
 
 
 ## [0.3.0] — 2026-09-02

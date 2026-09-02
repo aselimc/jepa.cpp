@@ -221,60 +221,48 @@ image: [`docker/README.md`](https://github.com/aselimc/jepa.cpp/blob/main/docker
 | Build | c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, ggml `36da5713`, `GGML_LLAMAFILE=ON`, kernel 6.17.0-1032-oem |
 | GPU | NVIDIA RTX 4500 Ada Generation, 24570 MiB, compute 8.9, 210.00 W board limit, driver 580.173.02 |
 | Client | Python 3.12.13, `jepa_cpp.client` over `urllib` |
-| Commit | `21840813`, jepa.cpp 0.2.0 |
-| Date | 2026-09-02 01:54 UTC, idle box, one measured pass at a time |
+| Commit | `f426f1c6`, jepa.cpp 0.3.0 |
+| Date | 2026-09-02 01:59 UTC, idle box, one measured pass at a time |
 
 ### CPU — LeJEPA ViT-S/16 f16, 32 threads, 1 worker
 
-| `--max-batch` | 1 client | 8 clients | 32 clients |
-|---|---:|---:|---:|
-| **1** — **req/s** | 44.4 | 75.3 | 73.5 |
-| **8** — **req/s** | 35.6 | 92.5 | 105.2 |
-| **32** — **req/s** | 35.7 | 91.8 | 107.2 |
+| `--max-batch` | clients | req/s | p50 ms | p95 ms | p99 ms | mean batch | graphs |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 44.3 | 23 | 23 | 24 | 1.0 | 512 |
+| 1 | 8 | 74.8 | 106 | 114 | 138 | 1.0 | 512 |
+| 1 | 32 | 75.3 | 424 | 430 | 432 | 1.0 | 512 |
+| 8 | 1 | 35.8 | 28 | 29 | 29 | 1.0 | 512 |
+| 8 | 8 | 92.4 | 86 | 90 | 122 | 8.0 | 64 |
+| 8 | 32 | 106.0 | 297 | 306 | 346 | 8.0 | 64 |
+| 32 | 1 | 35.9 | 28 | 29 | 30 | 1.0 | 512 |
+| 32 | 8 | 90.8 | 86 | 95 | 126 | 4.3 | 118 |
+| 32 | 32 | **106.8** | 290 | 362 | 442 | 16.0 | 32 |
 
-| 1 — p50 ms | 22 | 105 | 425 |
-| 8 — p50 ms | 28 | 85 | 299 |
-| 32 — p50 ms | 28 | 86 | 289 |
-
-| 1 — p99 ms | 24 | 135 | 569 |
-| 8 — p99 ms | 32 | 123 | 355 |
-| 32 — p99 ms | 29 | 125 | 436 |
-
-| 1 — mean batch | 1.0 | 1.0 | 1.0 |
-| 8 — mean batch | 1.0 | 6.2 | 8.0 |
-| 32 — mean batch | 1.0 | 4.9 | 16.0 |
-
-512 requests per cell, 3 warmup, one 640×480 COCO JPEG each. The `GET /health` control ran at 2880–5318 req/s over the same cells, against a best measured 107.2 req/s of real work — a factor of 27 of headroom, so these cells are measuring the server.
+512 requests per cell, 3 warmup, one 640×480 COCO JPEG each. The `GET /health` control ran at 2890–5232 req/s over the same cells, against a best measured 106.8 req/s of real work — a factor of 27 of headroom, so these cells are measuring the server.
 
 ### GPU — I-JEPA ViT-H/14 f16, device 1, 1 worker
 
-| `--max-batch` | 1 client | 8 clients | 32 clients |
-|---|---:|---:|---:|
-| **1** — **req/s** | 43.7 | 61.3 | 61.0 |
-| **8** — **req/s** | 35.6 | 78.3 | 87.2 |
-| **32** — **req/s** | 35.6 | 74.6 | 77.0 |
+| `--max-batch` | clients | req/s | p50 ms | p95 ms | p99 ms | mean batch | graphs |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 43.9 | 23 | 24 | 25 | 1.0 | 384 |
+| 1 | 8 | 61.2 | 130 | 132 | 132 | 1.0 | 384 |
+| 1 | 32 | 61.0 | 523 | 525 | 525 | 1.0 | 384 |
+| 8 | 1 | 35.7 | 28 | 29 | 30 | 1.0 | 384 |
+| 8 | 8 | 78.0 | 102 | 106 | 107 | 8.0 | 48 |
+| 8 | 32 | **87.2** | 364 | 369 | 390 | 8.0 | 48 |
+| 32 | 1 | 35.2 | 28 | 29 | 34 | 1.0 | 384 |
+| 32 | 8 | 73.9 | 108 | 111 | 115 | 4.9 | 78 |
+| 32 | 32 | 80.2 | 397 | 406 | 413 | 16.0 | 24 |
 
-| 1 — p50 ms | 23 | 130 | 522 |
-| 8 — p50 ms | 28 | 102 | 363 |
-| 32 — p50 ms | 28 | 107 | 414 |
-
-| 1 — p99 ms | 24 | 131 | 527 |
-| 8 — p99 ms | 29 | 107 | 385 |
-| 32 — p99 ms | 29 | 111 | 445 |
-
-| 1 — mean batch | 1.0 | 1.0 | 1.0 |
-| 8 — mean batch | 1.0 | 8.0 | 8.0 |
-| 32 — mean batch | 1.0 | 4.2 | 16.0 |
-
-384 requests per cell, 3 warmup, one 640×480 COCO JPEG each. The `GET /health` control ran at 3081–5209 req/s over the same cells, against a best measured 87.2 req/s of real work — a factor of 35 of headroom, so these cells are measuring the server.
+384 requests per cell, 3 warmup, one 640×480 COCO JPEG each. The `GET /health` control ran at 2963–5224 req/s over the same cells, against a best measured 87.2 req/s of real work — a factor of 34 of headroom, so these cells are measuring the server.
 
 ### Device memory per concurrent planner
 
 | concurrent planners | peak device MiB | added per planner | rollout/s | p50 ms | p99 ms |
 |---|---:|---:|---:|---:|---:|
-| 1 | 3105 | – | 1.97 | 508 | 511 |
-| 2 | 3451 | 346 | 2.24 | 864 | 946 |
-| 4 | 4145 | 347 | 2.16 | 1796 | 2233 |
+| 1 | 3105 | – | 1.98 | 506 | 511 |
+| 2 | 3451 | 346 | 2.20 | 908 | 945 |
+| 4 | 4145 | 347 | 2.16 | 1816 | 2234 |
 
 V-JEPA 2-AC ViT-g f16 on device 1, 16 candidates × 2 steps per request, 2519 MiB of weights. The card holds 15 MiB idle, 2737 MiB with the model resident and nothing running, and 3105 MiB once one planner has built its graphs.
 
@@ -288,23 +276,25 @@ that happened, not the batching `--max-batch` allowed.*
 
 ### What the numbers say
 
-**Batching pays under load and costs at idle.** At 32 concurrent clients it is worth 1.4× on both
-backends, and it takes p50 down with it because a queue that drains in groups drains faster. At one
-client it is a pure loss: the mean batch is 1.0 — there is nothing to group with — and every request
-pays `--max-wait-ms` waiting for company that never arrives, which is exactly the ~5 ms the p50
-column moves by. `--max-wait-ms 0` is the right setting for a latency-sensitive, low-concurrency
-caller, and the default is the right one for a saturated queue.
+**Batching pays under load and costs at idle.** At 32 concurrent clients it is worth 1.42× on the
+CPU (75.3 → 106.8 req/s) and 1.43× on the GPU (61.0 → 87.2), and it takes p50 down with it — 424 →
+290 ms and 523 → 364 ms — because a queue that drains in groups drains faster. At one client it is a
+pure loss: the mean batch is 1.0, because there is nothing to group with, and every request pays
+`--max-wait-ms` waiting for company that never arrives — which is exactly the 5 ms the p50 column
+moves by, on both backends. `--max-wait-ms 0` is the right setting for a latency-sensitive,
+low-concurrency caller; the default is the right one for a saturated queue.
 
-**`--max-batch 32` buys nothing over 8 here.** It forms the larger groups the `mean batch` row
-shows, and gets the same throughput or slightly less. Batching's return flattens once a graph is
-wide enough to keep the cores or the SMs busy, and past that a bigger group only adds latency to the
-requests at the front of it. Eight is the default for that reason.
+**`--max-batch 32` buys nothing over 8 here.** It forms the larger groups the `mean batch` column
+shows — 16 instead of 8 at 32 clients — and returns the same throughput on the CPU (106.8 against
+106.0) and less on the GPU (80.2 against 87.2), with a worse p99 on both. Batching's return flattens
+once a graph is wide enough to keep the cores or the SMs busy, and past that a bigger group only
+adds queueing to the requests at the front of it. Eight is the default for that reason.
 
 **More concurrent planners buy memory and latency, not throughput.** A second planner takes rollout
-throughput from 2.0 to 2.2 per second and doubles p50; a fourth changes throughput not at all and
-doubles p50 again. One ViT-g planner already saturates the card. What `--workers` above 1 is for on
-a planning server is keeping a second request from waiting behind a first, and the memory table is
-the price of that.
+throughput from 1.98 to 2.20 per second and p50 from 506 to 908 ms; a fourth gives 2.16 — no more
+than one — and 1816 ms, exactly double again. One ViT-g planner already saturates the card, so what
+`--workers` above 1 is for on a planning server is keeping a second request from waiting behind a
+first. Each one costs a flat ~347 MiB of device memory on top of the 2519 MiB of shared weights.
 
 ## Reproduce
 
