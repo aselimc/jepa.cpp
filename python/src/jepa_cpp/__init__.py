@@ -10,7 +10,9 @@ engine, the preprocessing and the arithmetic all on the C side. The raw 1:1 ``ct
     ...     feature = m.encode("cat.jpg", pool="cls")   # [384]
 
 :class:`Client` is the same engine over HTTP instead of in process — it talks to ``jepa-server``
-(:mod:`jepa_cpp.client`, docs/serving.md) and needs no library of its own.
+(:mod:`jepa_cpp.client`, docs/serving.md) with nothing but :mod:`urllib`, so the compute lives on
+the other end of the socket. Importing it still loads this package, and therefore the bundled
+library that :class:`Model` uses.
 """
 
 from __future__ import annotations

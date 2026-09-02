@@ -177,7 +177,8 @@ static bool item_frames(const item & it, npy::Array & hold, jepa_video::clip & v
 
 // One item -> the preprocessed NCTHW clip jepa_encode() takes. The frames come from the item
 // (image, .npy or container); everything after that is jepa_frames::to_clip(), which jepa-server
-// and jepa-classify go through as well, so the three cannot drift apart.
+// goes through as well, so those two cannot drift apart. jepa-classify keeps its own copy of the
+// loop, which agrees with this one but is not this one — see tools/jepa-frames.h.
 static float * preprocess_item(const jepa_model * model, const item & it, int tubelet, bool video_model,
                                int * out_T, int * out_h, int * out_w, bool warn_pad) {
     npy::Array hold;

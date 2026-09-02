@@ -1066,10 +1066,13 @@ int main(int argc, char ** argv) {
     if (opt.max_wait_ms < 0) opt.max_wait_ms = 0;
     if (opt.max_items < 1) opt.max_items = 1;
     if (opt.max_frames < 1) opt.max_frames = 1;
+    std::string model_basename = opt.model_path;
+    {
+        const size_t slash = model_basename.find_last_of("/\\");
+        if (slash != std::string::npos) model_basename = model_basename.substr(slash + 1);
+    }
     if (opt.model_name.empty()) {
-        std::string base = opt.model_path;
-        const size_t slash = base.find_last_of("/\\");
-        if (slash != std::string::npos) base = base.substr(slash + 1);
+        std::string base = model_basename;
         if (base.size() > 5 && base.compare(base.size() - 5, 5, ".gguf") == 0) base.resize(base.size() - 5);
         opt.model_name = base;
     }
@@ -1425,7 +1428,10 @@ int main(int argc, char ** argv) {
             json out{{"status", "ok"},
                      {"version", jepa_version()},
                      {"model", opt.model_name},
-                     {"path", opt.model_path},
+                     // The file's base name, never opt.model_path: a client has no business
+                     // learning where this process keeps its weights, and --model-name would not
+                     // be masking anything if the absolute path came back beside it.
+                     {"file", model_basename},
                      {"family", eng.family},
                      {"file_type", jepa_model_file_type_name(eng.model)},
                      {"embed_dim", jepa_model_embed_dim(eng.model)},
@@ -1469,12 +1475,34 @@ int main(int argc, char ** argv) {
         res.set_content(render_metrics(opt, eng.model), "text/plain; version=0.0.4; charset=utf-8");
     });
 
+    // Some refusals never reach a handler: httplib rejects an oversized body, a malformed request
+    // line or an unroutable path itself. They are still this server's refusals, so they get the same
+    // JSON error object and a message that says what to do about it.
     server.set_error_handler([&](const httplib::Request &, httplib::Response & res) {
-        if (res.body.empty()) {
-            res.set_content(error_body({res.status, res.status == 404 ? "not_found" : "server_error",
-                                        res.status == 404 ? "no such endpoint" : "request failed"}).dump(),
-                            "application/json");
+        if (!res.body.empty()) return;
+        ApiError e{res.status, "server_error", "request failed"};
+        switch (res.status) {
+            case 404:
+                e.type = "not_found";
+                e.message = "no such endpoint";
+                break;
+            case 413:
+                e.type = "invalid_request_error";
+                e.message = "the request body is larger than the " + std::to_string(opt.max_body_mb)
+                          + " MiB limit (--max-body-mb)";
+                break;
+            case 400:
+                e.type = "invalid_request_error";
+                e.message = "the request could not be read as HTTP";
+                break;
+            case 414:
+                e.type = "invalid_request_error";
+                e.message = "the request URI is too long";
+                break;
+            default:
+                break;
         }
+        res.set_content(error_body(e).dump(), "application/json");
     });
     server.set_exception_handler([&](const httplib::Request &, httplib::Response & res, std::exception_ptr) {
         res.status = 500;

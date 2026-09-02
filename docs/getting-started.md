@@ -424,16 +424,20 @@ reference is [`python/README.md`](https://github.com/aselimc/jepa.cpp/blob/main/
 ctest --test-dir build
 ```
 
-Thirteen suites: five parity and predictor replays of the PyTorch golden dumps, plus `batch` (batched
-vs per-item bit-exactness), `ops` (3-D RoPE against generated vectors), `attn` (flash vs naive
-attention against a double-precision reference), `video` (`--video` decode and sampling against the
-reference dumps' PyAV frames), `backend` (GPU graph validation and CPU/GPU agreement, which exits 0
-with a skip line when the build has no GPU, so one `ctest` invocation covers both kinds of machine),
+Seventeen suites with every asset present: nine parity and predictor replays of the PyTorch golden
+dumps, plus `batch` (batched vs per-item bit-exactness), `ops` (3-D RoPE against generated vectors),
+`attn` (flash vs naive attention against a double-precision reference), `video` (`--video` decode and
+sampling against the reference dumps' PyAV frames), `backend` (GPU graph validation and CPU/GPU
+agreement, which exits 0 with a skip line when the build has no GPU, so one `ctest` invocation covers
+both kinds of machine), `server` (a real [`jepa-server`](serving.md) on a loopback port, its
+embeddings compared bit for bit against the `jepa-embed` binary of the same build),
 `errors` (malformed GGUFs it forges itself, and the NULL / oversized / budget guards of the inference
 entry points) and `threads` (the [thread contract](architecture.md#robustness), N threads sharing one
 model). The parity suites register at CMake configure time and need `models/gguf/` and
-`tests/fixtures/ref/` populated, so re-run `cmake` once after downloading and converting. `errors`
-and `threads` need neither and always register. The methodology is in
+`tests/fixtures/ref/` populated, so re-run `cmake` once after downloading and converting; `video`
+additionally needs the clips under `tests/fixtures/media/`, and `server` needs the small LeJEPA file
+and the fixture images. A checkout missing an asset registers fewer suites rather than failing.
+`errors` and `threads` need neither and always register. The methodology is in
 [Architecture → testing and parity](architecture.md#testing-and-parity-methodology), and what the
 loader validates is in [Architecture → robustness](architecture.md#robustness).
 

@@ -30,8 +30,15 @@ limit). A group that is not yet full waits up to `--max-wait-ms` (default 5) for
 while there is nothing else to run: work that cannot join a group is never held up by it.
 
 **Grouping changes the scheduling and not the arithmetic.** On the CPU a batched encode is
-bit-identical to the same items encoded one at a time; on a CUDA device the two agree to ~1e-7
-cosine but not bit-for-bit, because GEMM tiling varies with the batch shape. The
+bit-identical to the same items encoded one at a time. On a CUDA device it is close but not
+bit-identical, because GEMM tiling varies with the batch shape — and how close depends on the dtype.
+Measured on device 1, LeJEPA ViT-S/16, eight images batched against the same eight one at a time:
+the pooled vector a client receives is 3.1e-07 from its per-item twin at f32 and 5.8e-06 at f16, and
+individual `pool: "none"` token rows deviate about two decades further (2.5e-05 and 6.5e-05). Both
+models on this page are f16, which is the larger of the two figures. Reproduce with
+`JEPA_DEVICE=cuda:1 build-cuda/test-batch --media tests/fixtures/media --images 8 --image
+models/gguf/lejepa-vits16-pretrain-in1k-f32.gguf --image models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf`,
+which reports each as a cosine and fails on a GPU by design: its bars are the CPU's. The
 [`batch`](architecture.md#batching) suite gates that inside the engine and the `server` suite gates
 it through the socket: a four-item request returns the rows four one-item requests return. Video
 families run one clip per graph in the library, so for those the group stays at 1 unless
@@ -134,7 +141,9 @@ of planners that can be in flight at once, and the memory table below is what ea
 ### `GET /health`, `GET /v1/models`, `GET /metrics`
 
 `/health` reports the loaded model, the backend and device it runs on, the pool settings and the
-current queue depth. `/v1/models` is the OpenAI listing of the one model. `/metrics` is Prometheus
+current queue depth. `model` is the id `--model-name` sets and `file` is the GGUF's base name — the
+directory it was loaded from is deliberately not in the response, so a client cannot read this
+process's filesystem layout out of it. `/v1/models` is the OpenAI listing of the one model. `/metrics` is Prometheus
 text: `jepa_requests_total` by endpoint and status, `jepa_items_total`,
 `jepa_request_duration_seconds` as a histogram, `jepa_batch_size` as an exact histogram of the graph
 sizes the dispatcher formed, and `jepa_queue_depth` / `jepa_requests_in_flight` / `jepa_workers` as
@@ -172,17 +181,38 @@ truncated base64 string, bytes that are not an image, an unknown model name, a l
 `--allow-local-files` and a `"url"` input (the server fetches nothing, ever) are all 4xx, and the
 `server` suite checks that `/health` still answers after each of them.
 
+A body over `--max-body-mb` never reaches a handler — the HTTP layer rejects it while reading — and
+so does a request line it cannot parse or a path it cannot route. Those refusals carry the same
+object:
+
+```json
+{"error": {"message": "the request body is larger than the 32 MiB limit (--max-body-mb)",
+           "type": "invalid_request_error", "code": null}}
+```
+
+with `413` for the body limit, `414` for an over-long URI, `400` for an unparseable request and
+`404` (`"type": "not_found"`) for an unknown endpoint.
+
 ## Security
 
 `jepa-server` binds `127.0.0.1` and has neither TLS nor authentication. It is a component to put
 behind something that has both, not an edge. Binding it elsewhere takes an explicit `--host`, which
-prints a warning naming what that means. Local paths are refused unless `--allow-local-files` says
-otherwise, and even then the server only ever *reads* what a request names.
+prints a warning naming what that means.
+
+**`--allow-local-files` is unbounded read access.** There is no root to confine paths to: a request
+may name any path the server process can open, absolute or relative, and a symlink is followed to
+wherever it points. The server only ever *reads* — it never writes, and it never fetches a URL — but
+"reads" means every image file that uid can reach. The refusals leak a little beyond that: a path
+that exists but is not a decodable image fails differently from one that cannot be opened at all, so
+a caller can use the flag to test whether a path exists. Turn it on only where any client that can
+reach the port is already trusted with the filesystem the server runs on; otherwise send
+`{"b64": ...}`, which is what the Python client does by default and what needs no flag at all.
+(A `--files-root` confinement is not implemented.)
 
 ## The Python client
 
-`jepa_cpp.client` is `urllib` and `json` and nothing else, so talking to a server adds no dependency
-to the wheel.
+`jepa_cpp.client` is `urllib` and `json`, plus the numpy the bindings already require, so talking to
+a server adds no dependency to the wheel.
 
 ```python
 from jepa_cpp.client import Client, clip

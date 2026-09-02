@@ -4,8 +4,9 @@
     scripts/bench_server.py --out tests/results/server-bench.json --note "idle box"
     scripts/bench_server.py --skip-gpu --skip-planner --requests 40   # a quick CPU-only pass
 
-Standard library plus :mod:`jepa_cpp.client`, which is itself standard library — no third-party HTTP
-stack is involved, so what this measures is what a caller running the shipped client would get.
+Standard library plus :mod:`jepa_cpp.client`, whose only dependency beyond the standard library is
+the numpy the bindings already require — no third-party HTTP stack is involved, so what this measures
+is what a caller running the shipped client would get.
 
 What is measured, and what that costs
 -------------------------------------

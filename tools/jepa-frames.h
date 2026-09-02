@@ -1,9 +1,15 @@
-// Frames -> one preprocessed NCTHW clip, shared by the tools that build clips from images.
+// Frames -> one preprocessed NCTHW clip, shared by jepa-embed and jepa-server.
 //
-// jepa-embed, jepa-classify and jepa-server all take the same route from decoded RGB8 frames to the
-// tensor jepa_encode() consumes, and "the server preprocesses exactly like the CLI" is a property
-// worth having structurally rather than by inspection — so the route lives here, in one function,
-// and each tool only supplies the frames.
+// Those two take the same route from decoded RGB8 frames to the tensor jepa_encode() consumes, and
+// "the server preprocesses exactly like the CLI" is a property worth having structurally rather than
+// by inspection — so the route lives here, in one function, and each tool only supplies the frames.
+//
+// jepa-classify does NOT go through here: it keeps its own per-frame loop and its own tubelet pad
+// (tools/jepa-classify.cpp). That loop agrees with this one on everything it handles, because both
+// call jepa_preprocess_image_rgb per frame and concatenate the CHW planes the same way, but it is a
+// separate copy — it has no still-image repeat, which only the fixed-clip-length families need and
+// which a classifier is never handed. Unifying it is a change to a parity-gated path and wants its
+// own before/after byte comparison.
 #pragma once
 
 #include "jepa.h"

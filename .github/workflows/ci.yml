@@ -195,6 +195,10 @@ jobs:
       - name: the accuracy tables match tests/results/accuracy-image.json
         run: python scripts/render_accuracy_md.py --check
 
+      # tests/results/server-bench.json is committed, so this one needs no measurement to check.
+      - name: the serving tables match tests/results/server-bench.json
+        run: python scripts/render_serving_md.py --check
+
       - name: the site builds
         run: mkdocs build --strict
 
