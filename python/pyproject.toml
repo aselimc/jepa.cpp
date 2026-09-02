@@ -64,7 +64,7 @@ environment = { CMAKE_ARGS = "-DJEPA_PY_NATIVE=OFF" }
 
 [tool.cibuildwheel.linux]
 archs = ["x86_64"]
-manylinux-x86-64-image = "manylinux_2_28"
+manylinux-x86_64-image = "manylinux_2_28"
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
