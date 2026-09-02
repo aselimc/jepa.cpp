@@ -428,7 +428,8 @@ bool         jepa_model_is_gpu(const jepa_model * model);
 // "Accumulation precision on a GPU", from tests/results/gpu-prec.json): f16 accumulation for
 // `hfvit` and `levjepa`, which clear their GPU parity tiers with room and gain 1.06-1.11x, and
 // GGML_PREC_F32 for `ijepa`, `vjepa2`, `vjepa2_1`, `lewm` and `vjepa` — the first two because f16
-// accumulation fails their tier, the next two because it saves no time at their shapes, and
+// accumulation fails their tier, the next two because it is no faster at their shapes (and, for
+// `lewm`, measures consistently slower), and
 // `vjepa` because it has no released weights to measure.
 // jepa_context_mul_mat_prec_f32() reports what a context ended up with.
 void jepa_context_set_mul_mat_prec_f32(jepa_context * ctx, bool on);

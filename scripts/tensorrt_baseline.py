@@ -353,8 +353,9 @@ def do_run(a) -> int:
                 "output_cos_vs_reference": ref_cos(a, spec, out_np),
             }
             blob["rows"].append(row)
-            print(f"{key:32} fp16  mean {row['ms_mean']:8.3f}  min {row['ms_min']:8.3f}  "
-                  f"sd {row['ms_std']:6.3f}  (engine built in {build_s:.0f} s)")
+            print(f"{key:32} {row['precision']:5} mean {row['ms_mean']:8.3f}  "
+                  f"min {row['ms_min']:8.3f}  sd {row['ms_std']:6.3f}  "
+                  f"(engine built in {build_s:.0f} s)")
             del engine, ctx
         except Exception as e:  # noqa: BLE001 — a build failure is a result, not a crash
             blob["rows"].append({"model": key.split("@")[0], "key": key, "shape": spec["shape"],

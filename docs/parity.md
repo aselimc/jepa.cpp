@@ -714,7 +714,7 @@ Where the two settings diverge, worst sample per file, stored-input pass:
 | levjepa-vitl16 | f16 | 0.999964 (0.999996) | 0.999990 (0.999998) | 0.9933 (0.9999) | 1.6e-02 (4.1e-03) | **passes** — the shipped default |
 | ijepa-vith14-1k | f16 | 0.999240 (0.999788) | 0.999982 (0.999996) | **0.8938** (0.9613) | **2.0e-01** (9.1e-02) | **fails**: worst token under the 0.90 floor and `rel_max` over the 0.15 bar, both on `coco_000000039769` |
 | vjepa2-vitl-fpc64-256 | f16 | **0.9887** (0.9948) | 0.999170 (0.999696) | 0.3026 (0.3557) | **7.0e-01** (4.7e-01) | **fails**: token-map mean under 0.99 and `rel_max` over 0.5·√(N/2048), on *bowling* |
-| vjepa2-vitl-fpc16-256-ssv2 | f16 | 0.9887 | 0.999253 | 0.3383 | 7.0e-01 | **fails** the same two bars |
+| vjepa2-vitl-fpc16-256-ssv2 | f16 | **0.9887** (0.9971) | 0.999253 (0.999870) | 0.3383 (0.4352) | **7.0e-01** (3.6e-01) | **fails** the same two bars |
 | vjepa2_1-vitb-384 | f16 | 0.999718 (0.999951) | 0.999919 (0.999985) | 0.9599 (0.9769) | 7.6e-02 (5.1e-02) | passes, but its clips are 2–4 % slower, so it keeps `GGML_PREC_F32` |
 | lewm-pusht | f16 | 0.999999 (1.000000) | 0.999999 (1.000000) | 1.0000 (1.0000) | 1.9e-03 (7.1e-04) | passes, with no time to gain, so it keeps `GGML_PREC_F32` |
 

@@ -153,8 +153,9 @@ int jepa_device_from_env(void) {
 //   vjepa2_1  f32 — passes every tier, but only its 576-token image shape is faster (4.55 -> 3.53
 //                   ms); its 4 608- and 18 432-token clips lose 2-4 %, and clips are the shapes
 //                   this family exists for. $JEPA_GPU_PREC=f16 is there for the image case.
-//   lewm      f32 — passes every tier with no time to gain: 0.866 against 0.879 ms at 257 tokens,
-//                   over launch-to-launch ranges that overlap.
+//   lewm      f32 — passes every tier with no time to gain: f16 accumulation measures consistently
+//                   slower at this size, 0.878-0.881 ms against 0.850-0.853 over four alternating
+//                   launches of each, on a 257-token encode that is launch-bound anyway.
 //   hfvit     f16 — passes every tier with room (token map 0.999994 -> 0.999988 mean, rel_max
 //                   5.8e-03 -> 6.3e-03) and gains 1.11x (1.132 -> 1.018 ms).
 //   levjepa   f16 — passes every tier with room (rel_max 4.1e-03 -> 1.6e-02 against a 0.62 bar)

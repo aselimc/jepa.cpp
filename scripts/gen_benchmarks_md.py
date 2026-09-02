@@ -1260,8 +1260,13 @@ def build_gpu_results(runs, meta, torch_gpu, cpu_runs, skipped, doc, sweep_dir) 
                                      "ggml's CUDA backend captures a CUDA graph once it has seen "
                                      "the same topology and tensor addresses twice, so warmup >= 2 "
                                      "is what makes the measured runs the captured path",
-            "gpu_prec": "f32 = GGML_PREC_F32 accumulation in every mul_mat (the default on a GPU); "
-                        "f16 = the bench-only --gpu-prec f16 opt-out, which is not parity-gated",
+            "gpu_prec": "the accumulation precision of every mul_mat: f32 = GGML_PREC_F32, f16 = "
+                        "cuBLAS' own compute type. Which one a GPU context picks is per family "
+                        "(src/jepa.cpp, jepa_gpu_prec_f32_default) and both settings are "
+                        "parity-measured per family in tests/results/gpu-prec.json; "
+                        "$JEPA_GPU_PREC and --gpu-prec override the family's choice for a process",
+            "gpu_prec_explicit": "false = the family's own default, i.e. the shipping "
+                                 "configuration; true = --gpu-prec asked for the other setting",
             "kv": "K/V dtype in flash attention; auto is F32 for f32 files and F16 otherwise",
             "encoder_ms": "head/predictor rows only: the faster of two warm encoder passes that "
                           "produced this row's input (a third, cold one runs first and is discarded)",

@@ -85,7 +85,7 @@ the fine print are in [docs/performance.md](docs/performance.md).)*
 
 An optional CUDA build is **9–21× faster than those 32-thread numbers** on one RTX 4500 Ada — I-JEPA
 15.5 ms, the 16-frame V-JEPA 2 ViT-L clip 46.5 ms, the 64-frame one 306 ms, the LeVJEPA clip
-84.7 ms — at 36–67 % of PyTorch's
+83.2 ms at the f16 accumulation its family now defaults to — at 36–67 % of PyTorch's
 throughput on the same card; see the GPU paragraph below and
 [docs/performance.md](docs/performance.md#gpu-encoder). Batched, it reaches 167 images/s on I-JEPA
 ViT-H and 2 926 on LeJEPA ViT-S

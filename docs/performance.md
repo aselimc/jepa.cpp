@@ -146,9 +146,10 @@ decide each family, and neither is a judgement call:
 | `levjepa` | LeVJEPA ViT-L/16 | 16 f 224² | 3 137 | 89.85 | 84.72 | **1.06×** | passes | **f16** |
 | `vjepa` | — | — | — | – | – | – | not measured ᶜ | `GGML_PREC_F32` |
 
-ᵃ the one row whose two settings overlap: 0.850–0.910 ms against 0.878–0.881 over four alternating
-launches of each, on a 0.85 ms encode that is launch-bound rather than GEMM-bound. There is nothing
-to take, so the family keeps the more accurate setting.
+ᵃ the one row where f16 accumulation is the slower setting, consistently: three of the four F32
+launches land at 0.850–0.853 ms against an f16 band of 0.878–0.881, and the fourth (0.910) is the
+only overlap and the only outlier. On a 0.85 ms encode that is launch-bound rather than GEMM-bound
+there is nothing to gain either way, so the family keeps the more accurate setting.
 ᵇ its 576-token image shape is the largest single win in the table after I-JEPA's, and its clips —
 the shapes this family exists for — are 2–4 % slower. A default is one value, and `$JEPA_GPU_PREC=f16`
 turns the image case on for a deployment that only encodes images.
@@ -184,9 +185,10 @@ build-cuda/jepa-bench -m models/gguf/ijepa_vith14_1k-f16.gguf --gpu 1 --gpu-prec
 *Source: `tests/results/gpu-prec.json` — `timing_repeatability` for the millisecond columns (four
 alternating launches of each setting, five measured runs inside each) and the per-file `prec_f32` /
 `prec_f16` verdicts for the tier column. `tests/results/benchmarks-gpu.json` carries the same pairs
-as single grid rows and agrees to within 1.2 % on every shape above 5 ms and 2.5 % on the smaller
-ones, where a process launch is a measurable fraction of the graph — which is also why the ratio
-column is read off four alternating launches rather than off one pair. Device 1.*
+as single grid rows: it agrees to within 1.2 % on every shape above 5 ms and 2.5 % on the smaller
+ones, with one exception — LeWM's f16 cell, 0.841 ms in the grid against 0.879 ms here, 4.6 % apart
+on a sub-millisecond graph where a single launch is most of what is being measured. That is exactly
+why the ratio column is read off four alternating launches rather than off one pair. Device 1.*
 
 ## Batched GPU throughput
 
@@ -316,11 +318,12 @@ of keys. The same encoder at crops that straddle the stride says what that costs
 | 2 176 | no | 9 | 2 304 | 7.36 | 0.0648 |
 | 2 304 | yes | 9 | 2 304 | 8.24 | 0.0647 |
 
-**Nothing. The cost per score element is flat to 0.8 % and there is no step at the boundary**, while
-the cost per *padded* element falls for the off-stride counts (0.0610–0.0612 against 0.0646–0.0647).
-The kernel clamps its last tile against the real key count instead of computing it, so an off-stride
-sequence pays for the keys it has and not for the tile it does not fill. No tiling kernel is called
-for.
+**Nothing — there is no step at the boundary.** The cost per score element sits at 0.0646–0.0651 ns
+across all five counts within this sweep, and about 2 % across sweeps; either way the off-stride
+counts are no dearer than the aligned ones on either side of them, while the cost per *padded*
+element falls for exactly the off-stride counts (0.0610–0.0612 against 0.0646–0.0647). The kernel
+clamps its last tile against the real key count instead of computing it, so an off-stride sequence
+pays for the keys it has and not for the tile it does not fill. No tiling kernel is called for.
 
 One thing the same source does show: the tile-skipping optimisation ggml applies to a *masked*
 attention — `flash_attn_mask_to_KV_max`, which finds the last unmasked key per query tile and stops
@@ -346,8 +349,10 @@ an encoder can be made to use at all.
 | V-JEPA 2 ViT-L fpc64 | 16 f 256² | 2 048 | – ʰ | 100.0 | 30.30 | 47.02 (f16) | 33.9 (q8_0, CUDA0) |
 
 **Read the fp16 column beside its own accuracy.** The I-JEPA engine reproduces the fixture's PyTorch
-dump to a mean per-token cosine of **0.9944**; jepa.cpp scores **0.999986** on the same sample and
-the image family's GPU f16 tier demands a mean of 0.999, which 0.9944 does not clear. The fp32
+dump to a mean per-token cosine of **0.994–0.996** — 0.9944 for the engine timed here, and it moves
+between builds because TensorRT autotunes its kernel choice against the card each time; jepa.cpp
+scores **0.999986** on the same sample and the image family's GPU f16 tier demands a mean of 0.999,
+which neither end of that range clears. The fp32
 engine reaches 0.99998 and costs 11.7 ms — slower than jepa.cpp's q8_0 path. The ceiling is real and
 it is 1.6–3.2× above where jepa.cpp sits, but part of the distance is numerical and the tiers on
 this project's own files say how much.
@@ -591,11 +596,13 @@ engine. LeVJEPA is the closest of the four (67 % / 71 %), and the mask is why: i
 mask disqualifies PyTorch's flash SDPA kernel, which its own model card warns about, so the reference
 gives up more than jepa.cpp does.
 
-Both jepa.cpp columns are `GGML_PREC_F32`, which was the default for every family when this sweep
-ran. It still is for `ijepa` and `vjepa2`, the first three rows; LeVJEPA now defaults to f16
-accumulation, so its shipping figure is the fourth column's 82.9 ms and the 71 % beside it —
-[Accumulation precision on a GPU](#accumulation-precision-on-a-gpu) has the current measurement of
-that pair on device 1 (89.85 → 84.72 ms) and the parity result behind the change.
+The **jepa.cpp CUDA** column is `GGML_PREC_F32`, which was the default for every family when this
+sweep ran. It still is for `ijepa` and `vjepa2`, the first three rows; LeVJEPA now defaults to f16
+accumulation, so its shipping figure on this card is **83.2 ms** — the `levjepa-vitl16` f16 row of
+`tests/results/benchmarks-gpu.json` with `device` CUDA0 and `gpu_prec` f16, which the fourth column
+above rounds to 82.9 from the earlier session — and the 71 % beside it.
+[Accumulation precision on a GPU](#accumulation-precision-on-a-gpu) measures the same pair again on
+device 1 (89.85 → 84.72 ms) and carries the parity result behind the change.
 
 For scale, the card's own ceilings computed from what `nvidia-smi` reports — 7 680 CUDA cores at a
 max SM clock of 3 105 MHz under a 210 W board limit — are **47.7 TFLOP/s FP32** and, at the 2× dense
