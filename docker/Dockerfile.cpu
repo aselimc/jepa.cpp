@@ -1,0 +1,74 @@
+# jepa-server on the CPU. Multi-stage: the toolchain and the build tree stay in the builder, and the
+# final image is a Debian slim base plus the two binaries and whatever ggml left beside them.
+#
+#   docker build -f docker/Dockerfile.cpu -t jepa-server:cpu .
+#   docker run --rm -p 127.0.0.1:8080:8080 -v "$PWD/models:/models:ro" jepa-server:cpu \
+#          -m /models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf
+#
+# The build context is the repository root, because the ggml submodule has to come with it; see
+# .dockerignore for what is kept out of it.
+
+# ---- builder ---------------------------------------------------------------------------------
+FROM debian:bookworm-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY CMakeLists.txt ./
+COPY include ./include
+COPY src ./src
+COPY tools ./tools
+COPY third_party ./third_party
+COPY ggml ./ggml
+
+# JEPA_NATIVE=OFF: an image is a distributable artefact and -march=native bakes in whatever ISA the
+#   build host happened to have. The engine's arithmetic follows the ISA, so a native image would
+#   also be an image whose numbers depend on where it was built.
+# BUILD_SHARED_LIBS=OFF: one binary rather than a binary plus four libggml*.so, which is what
+#   scripts/package_release.sh ships for the same reason.
+# JEPA_BUILD_TESTS=OFF: the suites want the git-ignored fixtures, which are not in the context.
+RUN cmake -S . -B build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DJEPA_NATIVE=OFF \
+        -DJEPA_BUILD_TESTS=OFF \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++" \
+    && cmake --build build -j "$(nproc)" --target jepa-server jepa-info \
+    && mkdir -p /out/bin /out/lib \
+    && cp build/jepa-server build/jepa-info /out/bin/ \
+    && strip /out/bin/jepa-server /out/bin/jepa-info \
+    && find build -name 'libggml*.so*' -exec cp -a {} /out/lib/ \;
+
+# ---- runtime ---------------------------------------------------------------------------------
+FROM debian:bookworm-slim
+
+LABEL org.opencontainers.image.title="jepa-server" \
+      org.opencontainers.image.description="HTTP inference for the JEPA family (CPU)" \
+      org.opencontainers.image.source="https://github.com/aselimc/jepa.cpp" \
+      org.opencontainers.image.licenses="MIT"
+
+# libgomp is ggml's OpenMP runtime and the only shared object still needed beyond libc; libstdc++
+# and libgcc are linked in above.
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --create-home --uid 10001 jepa
+
+COPY --from=builder /out/bin/ /usr/local/bin/
+COPY --from=builder /out/lib/ /usr/local/lib/
+ENV LD_LIBRARY_PATH=/usr/local/lib
+
+USER jepa
+WORKDIR /models
+
+# 0.0.0.0 inside the container, because a container's loopback is its own and nothing outside could
+# reach the server otherwise. Publish it as `-p 127.0.0.1:8080:8080` to keep it on the host's
+# loopback: jepa-server has no TLS and no authentication, so what puts it on a network has to be the
+# run command, deliberately.
+#
+# There is no HEALTHCHECK because the image carries no HTTP client to write one with. GET /health is
+# the probe; an orchestrator makes that request itself.
+EXPOSE 8080
+ENTRYPOINT ["jepa-server", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["--help"]

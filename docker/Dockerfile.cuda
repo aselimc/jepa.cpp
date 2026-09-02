@@ -1,0 +1,83 @@
+# jepa-server on a CUDA device. Same two stages as Dockerfile.cpu, on the NVIDIA CUDA images: nvcc
+# and the full toolkit in the builder, the CUDA runtime libraries only in the final image.
+#
+#   docker build -f docker/Dockerfile.cuda -t jepa-server:cuda .
+#   docker run --rm --gpus '"device=0"' -p 127.0.0.1:8080:8080 -v "$PWD/models:/models:ro" \
+#          jepa-server:cuda -m /models/gguf/ijepa_vith14_1k-f16.gguf --gpu 0
+#
+# `--gpus` needs the NVIDIA container toolkit on the host. One process serves one device — a model
+# and its contexts never straddle two backends — so two cards are two containers, each given its own
+# `--gpus '"device=N"'` and its own published port.
+
+ARG CUDA_VERSION=13.0.3
+ARG UBUNTU_VERSION=24.04
+# The architectures the kernels are compiled for. `89-real` is Ada (RTX 4500 Ada, RTX 40xx);
+# `80-virtual` keeps a PTX fallback that JITs on anything newer. JEPA_NATIVE would resolve this to
+# whatever card the build host has, which is exactly wrong for an image.
+ARG CUDA_ARCHITECTURES=89-real;80-virtual
+
+# ---- builder ---------------------------------------------------------------------------------
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS builder
+ARG CUDA_ARCHITECTURES
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY CMakeLists.txt ./
+COPY include ./include
+COPY src ./src
+COPY tools ./tools
+COPY third_party ./third_party
+COPY ggml ./ggml
+
+# ggml's CUDA backend calls the driver API (cuMemMap and friends, for VMM), and a build machine with
+# no NVIDIA driver installed has no libcuda.so — only the stub the toolkit ships for exactly this
+# case. CMake finds that stub for libggml-cuda.so on its own. Linking the executables against that
+# library is the part that needs help: the stub's SONAME is `libcuda.so.1`, that is the DT_NEEDED
+# libggml-cuda.so carries, and a dependency's DT_NEEDED is resolved through `-rpath-link` rather
+# than `-L`. So: a `libcuda.so.1` name for the stub to be found under, and an `-rpath-link` at it.
+# Both live in the builder only. The runtime image never carries a stub — the real driver arrives
+# from the host through the NVIDIA container toolkit, under that same name.
+ARG CUDA_STUBS=/usr/local/cuda/targets/x86_64-linux/lib/stubs
+RUN ln -sf "${CUDA_STUBS}/libcuda.so" "${CUDA_STUBS}/libcuda.so.1"
+
+# ggml builds its CUDA backend as its own shared object (~45 MB for one architecture), so this build
+# keeps shared libraries and the runtime stage carries them; the CPU image links everything in
+# instead. Budget: 138 CUDA translation units.
+RUN cmake -S . -B build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DJEPA_CUDA=ON \
+        -DJEPA_NATIVE=OFF \
+        -DJEPA_BUILD_TESTS=OFF \
+        -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
+        -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath-link,${CUDA_STUBS}" \
+    && cmake --build build -j "$(nproc)" --target jepa-server jepa-info \
+    && mkdir -p /out/bin /out/lib \
+    && cp build/jepa-server build/jepa-info /out/bin/ \
+    && strip /out/bin/jepa-server /out/bin/jepa-info \
+    && find build -name 'libggml*.so*' -exec cp -a {} /out/lib/ \;
+
+# ---- runtime ---------------------------------------------------------------------------------
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
+
+LABEL org.opencontainers.image.title="jepa-server" \
+      org.opencontainers.image.description="HTTP inference for the JEPA family (CUDA)" \
+      org.opencontainers.image.source="https://github.com/aselimc/jepa.cpp" \
+      org.opencontainers.image.licenses="MIT"
+
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --create-home --uid 10001 jepa
+
+COPY --from=builder /out/bin/ /usr/local/bin/
+COPY --from=builder /out/lib/ /usr/local/lib/
+ENV LD_LIBRARY_PATH=/usr/local/lib
+
+USER jepa
+WORKDIR /models
+
+EXPOSE 8080
+ENTRYPOINT ["jepa-server", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["--help"]

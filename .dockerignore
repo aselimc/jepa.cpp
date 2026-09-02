@@ -1,0 +1,29 @@
+# The docker/ build context is the repository root, because the ggml submodule has to come with it.
+# Everything below would otherwise be sent to the daemon for nothing — models/ alone is tens of
+# gigabytes, and a build tree is both large and useless inside the image, which builds its own.
+build*/
+.venv/
+site/
+dist/
+wheelhouse/
+models/
+data/
+tmp/
+tests/fixtures/ref/
+tests/fixtures/media/*.mp4
+tests/fuzz/corpus/
+fuzz-findings/
+python/build/
+python/dist/
+**/__pycache__/
+**/*.pyc
+**/*.egg-info/
+.pytest_cache/
+.git/
+.github/
+docs/
+*.gguf
+*.safetensors
+*.pt
+*.pth
+*.bin
