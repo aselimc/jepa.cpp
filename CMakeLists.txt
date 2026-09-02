@@ -40,8 +40,8 @@ add_subdirectory(ggml EXCLUDE_FROM_ALL)
 # --- compiler flags ----------------------------------------------------------
 # MSVC does not speak the GCC/Clang warning spellings, needs /utf-8 for these UTF-8 sources and
 # /bigobj for the translation units that include third_party/json.hpp (tools/jepa-worldmodel.cpp,
-# tests/test-parity.cpp, tests/test-video.cpp), which otherwise overflow the object file's section
-# limit (C1128).
+# tools/jepa-server.cpp, tests/test-parity.cpp, tests/test-video.cpp, tests/test-server.cpp), which
+# otherwise overflow the object file's section limit (C1128).
 if(MSVC)
   add_compile_options(/utf-8 /bigobj)
   set(JEPA_WARN_FLAGS /W3)
@@ -69,7 +69,7 @@ target_compile_definitions(jepa PUBLIC JEPA_VERSION="${PROJECT_VERSION}")
 
 # --- tools -------------------------------------------------------------------
 if(JEPA_BUILD_TOOLS)
-  foreach(tool jepa-embed jepa-classify jepa-quantize jepa-bench jepa-info jepa-worldmodel)
+  foreach(tool jepa-embed jepa-classify jepa-quantize jepa-bench jepa-info jepa-worldmodel jepa-server)
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/${tool}.cpp)
       set(_tool_src tools/${tool}.cpp)
       # --video: ffmpeg is a *run-time* dependency of these two tools, never a build-time one, so
@@ -81,6 +81,17 @@ if(JEPA_BUILD_TOOLS)
       add_executable(${tool} ${_tool_src})
       target_link_libraries(${tool} PRIVATE jepa)
       target_include_directories(${tool} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party ${CMAKE_CURRENT_SOURCE_DIR}/src)
+      target_compile_options(${tool} PRIVATE ${JEPA_WARN_FLAGS})
+      # cpp-httplib runs the accept loop on its own threads and wants an explicit pthreads link on
+      # the toolchains that do not imply one; the server also needs ws2_32 on Windows.
+      if(tool STREQUAL "jepa-server")
+        target_include_directories(${tool} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cpp-httplib)
+        find_package(Threads REQUIRED)
+        target_link_libraries(${tool} PRIVATE Threads::Threads)
+        if(WIN32)
+          target_link_libraries(${tool} PRIVATE ws2_32)
+        endif()
+      endif()
     endif()
   endforeach()
 endif()
@@ -274,6 +285,35 @@ if(JEPA_BUILD_TESTS)
       endif()
     endforeach()
     add_test(NAME errors COMMAND test-errors ${_err_args})
+  endif()
+  # jepa-server end to end: a real server on a loopback port the server picks, HTTP in, the
+  # embeddings compared bit for bit against the jepa-embed binary of the same build. Registered only
+  # when the tool, the small model and the fixture images are all there; the binary itself prints a
+  # skip line and exits 0 otherwise, so a checkout without weights costs nothing. ~5 s.
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-server.cpp AND TARGET jepa-server)
+    add_executable(test-server tests/test-server.cpp)
+    target_link_libraries(test-server PRIVATE jepa)
+    target_include_directories(test-server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+                                                   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cpp-httplib
+                                                   ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test-server PRIVATE Threads::Threads)
+    if(WIN32)
+      target_link_libraries(test-server PRIVATE ws2_32)
+    endif()
+    set(_srv_images "")
+    foreach(_img coco_000000000139.jpg coco_000000000285.jpg coco_000000000632.jpg coco_000000000724.jpg)
+      if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/media/${_img})
+        list(APPEND _srv_images --image ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/media/${_img})
+      endif()
+    endforeach()
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf AND _srv_images)
+      add_test(NAME server COMMAND test-server
+               --server $<TARGET_FILE:jepa-server> --embed $<TARGET_FILE:jepa-embed>
+               --model ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf
+               ${_srv_images})
+      set_tests_properties(server PROPERTIES TIMEOUT 120)
+    endif()
   endif()
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-threads.cpp)
     add_executable(test-threads tests/test-threads.cpp)
