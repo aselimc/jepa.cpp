@@ -276,9 +276,10 @@ that happened, not the batching `--max-batch` allowed.*
 
 ### What the numbers say
 
-**Batching pays under load and costs at idle.** At 32 concurrent clients it is worth 1.42× on the
-CPU (75.3 → 106.8 req/s) and 1.43× on the GPU (61.0 → 87.2), and it takes p50 down with it — 424 →
-290 ms and 523 → 364 ms — because a queue that drains in groups drains faster. At one client it is a
+**Batching pays under load and costs at idle.** At 32 concurrent clients the default
+`--max-batch 8` is worth 1.41× on the CPU (75.3 → 106.0 req/s) and 1.43× on the GPU (61.0 → 87.2),
+and it takes p50 down with it — 424 → 297 ms and 523 → 364 ms — because a queue that drains in
+groups drains faster. At one client it is a
 pure loss: the mean batch is 1.0, because there is nothing to group with, and every request pays
 `--max-wait-ms` waiting for company that never arrives — which is exactly the 5 ms the p50 column
 moves by, on both backends. `--max-wait-ms 0` is the right setting for a latency-sensitive,

@@ -33,9 +33,9 @@ across releases.
   `jepa-info --devices` and answers with `"backend": "CUDA0"`.
 - **A serving load test**, `scripts/bench_server.py` into `tests/results/server-bench.json`, and the
   [Serving](docs/serving.md) page it renders into (`scripts/render_serving_md.py --check` gates the
-  tables). With one worker, batching takes 32 concurrent clients from 75.3 to 106.8 req/s (1.42×) on
-  LeJEPA-S f16 at 32 CPU threads and from 61.0 to 87.2 (1.43×) on I-JEPA ViT-H f16 on one GPU, and
-  cuts p50 from 424 to 290 ms and 523 to 364 ms with it. `--max-batch 32` buys nothing over 8 on
+  tables). With one worker, the default `--max-batch 8` takes 32 concurrent clients from 75.3 to
+  106.0 req/s (1.41×) on LeJEPA-S f16 at 32 CPU threads and from 61.0 to 87.2 (1.43×) on I-JEPA
+  ViT-H f16 on one GPU, and cuts p50 from 424 to 297 ms and 523 to 364 ms with it. `--max-batch 32` buys nothing over 8 on
   either. At one client the same setting *costs* 5 ms of p50 on both — `--max-wait-ms` spent waiting
   for company that never arrives. Each concurrent V-JEPA 2-AC planner (K=16) costs a flat 347 MiB of
   device memory beyond the 2519 MiB of shared weights and adds no throughput past the first: 1.98,
