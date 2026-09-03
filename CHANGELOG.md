@@ -8,6 +8,10 @@ across releases.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.4.1] — 2026-09-03
+
 ### Added
 
 - **`--files-root DIR` for `jepa-server`**: server-local path inputs confined to one directory. It
