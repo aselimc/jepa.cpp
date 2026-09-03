@@ -8,7 +8,13 @@ across releases.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **README rewritten around the model zoo**, with the hub link, size and licence of every bundle up
+  front and the explanations left to the documentation site. The lead figure is redrawn as three
+  line panels — latency on a CPU and on one GPU against PyTorch, and accuracy on Imagenette,
+  UCF-101 and the full SSv2 validation split — every value still read from `tests/results/*.json`
+  by `scripts/gen_hero_figure.py`, which CI keeps checking.
 
 ## [0.4.1] — 2026-09-03
 

@@ -1,7 +1,7 @@
 # jepa.cpp
 
-jepa.cpp runs Meta's JEPA vision models — I-JEPA, V-JEPA 2, V-JEPA 2.1 — plus LeJEPA-style ViTs,
-LeVJEPA and LeWorldModel on a plain CPU, in C/C++ on [ggml](https://github.com/ggml-org/ggml), with an optional
+jepa.cpp runs the JEPA family of vision models — I-JEPA, V-JEPA 2 / 2.1 / 2-AC, LeJEPA,
+LeVJEPA and LeWorldModel — on a plain CPU, in C/C++ on [ggml](https://github.com/ggml-org/ggml), with an optional
 CUDA backend. Each checkpoint is converted once into a single [GGUF](gguf-schema.md) file that carries
 the weights *and* everything needed to run them — dimensions, positional-encoding scheme,
 preprocessing recipe, class labels — so at run time the requirement is one binary and one file. There
@@ -14,13 +14,12 @@ Python package (`pip install jepa-cpp`) that wraps that header and returns numpy
 converted files are published on Hugging Face under [**jepacpp**](https://huggingface.co/jepacpp), so
 converting anything yourself is optional: `scripts/download_models.sh` fetches them.
 
-![jepa.cpp in four numbers: the same SSv2 validation top-1 as PyTorch, faster on a CPU,
-much faster on one GPU, and half the weights at q8_0, over a bar chart of one image
-through V-JEPA 2.1 ViT-B on PyTorch, on jepa.cpp's CPU engine and on its CUDA engine](assets/hero.svg)
+![Three panels: latency per image or clip on a 32-thread CPU, jepa.cpp f16 against PyTorch f32;
+latency on one RTX 4500 Ada, jepa.cpp CUDA against PyTorch fp16 and fp32; and accuracy on
+Imagenette, UCF-101 and the full SSv2 validation split, PyTorch against jepa.cpp](assets/hero.svg)
 
-*Every number on it is read from `tests/results/*.json` and the GPU tables of
-[performance.md](performance.md), measured on a 96-core Threadripper 7995WX and two RTX 4500 Ada;
-`scripts/gen_hero_figure.py` redraws it.*
+*Every number on it is read from `tests/results/*.json`, measured on a 96-core Threadripper 7995WX
+and one RTX 4500 Ada; `scripts/gen_hero_figure.py` redraws it.*
 
 ## Where to go
 
