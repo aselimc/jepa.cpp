@@ -424,12 +424,16 @@ reference is [`python/README.md`](https://github.com/aselimc/jepa.cpp/blob/main/
 ctest --test-dir build
 ```
 
-Seventeen suites with every asset present: nine parity and predictor replays of the PyTorch golden
-dumps, plus `batch` (batched vs per-item bit-exactness), `ops` (3-D RoPE against generated vectors),
-`attn` (flash vs naive attention against a double-precision reference), `video` (`--video` decode and
-sampling against the reference dumps' PyAV frames), `backend` (GPU graph validation and CPU/GPU
-agreement, which exits 0 with a skip line when the build has no GPU, so one `ctest` invocation covers
-both kinds of machine), `server` (a real [`jepa-server`](serving.md) on a loopback port, its
+Nineteen suites with every asset present: eleven parity and predictor replays of the PyTorch golden
+dumps — nine on the CPU, plus `parity-lejepa-vits16-gpu` and `parity-levjepa-vitl16-gpu`, which run
+the two families whose GPU `mul_mat` accumulation defaults to f16 (`hfvit` and `levjepa`,
+[parity](parity.md#accumulation-precision-per-family)) at that default and judge them with the GPU
+threshold column. Then `batch` (batched vs per-item bit-exactness), `ops` (3-D RoPE against
+generated vectors), `attn` (flash vs naive attention against a double-precision reference), `video`
+(`--video` decode and sampling against the reference dumps' PyAV frames), `backend` (GPU graph
+validation and CPU/GPU agreement, which exits 0 with a skip line when the build has no GPU, so one
+`ctest` invocation covers both kinds of machine — the two `parity-*-gpu` entries skip the same way),
+`server` (a real [`jepa-server`](serving.md) on a loopback port, its
 embeddings compared bit for bit against the `jepa-embed` binary of the same build),
 `errors` (malformed GGUFs it forges itself, and the NULL / oversized / budget guards of the inference
 entry points) and `threads` (the [thread contract](architecture.md#robustness), N threads sharing one

@@ -273,9 +273,11 @@ jobs:
           du -sh models/gguf tests/fixtures/ref
 
       # Configure after the download: the parity, predictor, batch and backend suites are registered
-      # at configure time from the files that exist (CMakeLists.txt). With this set that is nine
-      # suites — parity-lejepa-vits16, parity-lewm-pusht, predictor-lewm, batch, ops, backend, attn,
-      # errors and threads; the last two also run in the sanitizers job, there against forged files.
+      # at configure time from the files that exist (CMakeLists.txt). With this set that is eleven
+      # suites — parity-lejepa-vits16, parity-lewm-pusht, parity-lejepa-vits16-gpu, predictor-lewm,
+      # batch, ops, backend, server, attn, errors and threads; a hosted runner has no
+      # GPU, so parity-lejepa-vits16-gpu and backend print their SKIP line and exit 0. `errors` and
+      # `threads` also run in the sanitizers job, there against forged files.
       - name: configure
         if: steps.hub.outputs.ready == 'true'
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_LLAMAFILE=ON

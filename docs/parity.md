@@ -16,8 +16,10 @@ build/test-predictor --lewm  models/gguf/<lewm>.gguf   --ref tests/fixtures/ref/
 build/test-predictor --vjepa2 models/gguf/<vjepa2>.gguf --ref tests/fixtures/ref/<ref> --samples archery_f16 --threads 32
 ctest --test-dir build                                           # parity-lejepa-vits16, parity-lewm-pusht, (re-run cmake once GGUFs + refs exist — tests register at configure time)
                                                                  # parity-vjepa2_1-vitb-384-images, parity-levjepa-vitl16-clip,
-                                                                 # predictor-lewm, predictor-vjepa2, batch, ops, attn, backend — 10 tests, ~32 s
-                                                                 # (`backend` skips with exit 0 unless the build has a GPU; see "Parity on a GPU")
+                                                                 # parity-lejepa-vits16-gpu, parity-levjepa-vitl16-gpu,
+                                                                 # predictor-lewm, predictor-vjepa2, batch, ops, attn, backend — 12 tests, ~32 s
+                                                                 # (`backend` and the two `parity-*-gpu` entries skip with exit 0
+                                                                 #  unless the build has a GPU; see "Parity on a GPU")
 ```
 
 `test-parity` prints the threshold row it is judging with (backend × family class × file-type tier,
@@ -578,7 +580,14 @@ cmake -S . -B build-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DJEPA_CUDA=ON && c
 build-cuda/test-parity models/gguf/<model>.gguf tests/fixtures/ref/<ref> --gpu 0 [--json out.json]
 build-cuda/test-predictor --vjepa2 models/gguf/<model>.gguf --ref tests/fixtures/ref/<ref> --gpu 0
 build-cuda/test-backend models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf   # ctest "backend"
+ctest --test-dir build-cuda -R 'gpu|backend'     # parity-lejepa-vits16-gpu, parity-levjepa-vitl16-gpu, backend
 ```
+
+Three of those runs are registered with `ctest`: `backend`, and the two `parity-*-gpu` entries that
+run the f16 LeJEPA and LeVJEPA files on device 0 at the **shipped** accumulation default (see
+"Accumulation precision, per family"). All three exit 0 with a `SKIP` line on a build with no GPU
+backend or a box with no card, so they cost a CPU-only checkout one process start each and the same
+`ctest` invocation covers both kinds of machine. Everything else in this section is run by hand.
 
 ### There is no f32 tier on a GPU
 
@@ -701,6 +710,14 @@ tiers with it and are 1.11× and 1.06× faster
 ([performance.md](performance.md#accumulation-precision-on-a-gpu) has the milliseconds).
 `scripts/gpu_prec_sweep.sh` runs every family at every dtype at **both** settings and writes
 `tests/results/gpu-prec.json`; the bars are the ones above and are untouched.
+
+The two flipped defaults are the two the suite gates: `parity-lejepa-vits16-gpu` and
+`parity-levjepa-vitl16-gpu` run the f16 files with no precision flag and no `$JEPA_GPU_PREC`, so
+what `ctest` judges on a CUDA build is exactly what a caller gets. Measured there, against the bars
+of the table above: LeJEPA (all 8 samples, 197 tokens) worst sample `cos_mean` 0.999988,
+`cos_med` 0.999991, `cos_min` 0.999804, `rel_max` 6.25e-03 against 0.15; LeVJEPA (`archery_f16`,
+3137 tokens) `cos_mean` 0.999985, `cos_med` 0.999993, `cos_min` 0.993309, `rel_max` 1.24e-02
+against 0.5·√(3137/2048) = 0.62 — 24× and 50× of margin on the gate that carries the tier.
 
 Only f16 weights move. A quantized file takes `mmq` and never reaches cuBLAS, ggml's f32 path is
 TF32 either way, and the flash-attention accumulator is `GGML_PREC_F32` in both — the small

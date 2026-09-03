@@ -466,6 +466,7 @@ tools/jepa-quantize   f32/f16 GGUF -> q8_0 / q4_k / ...
 tools/jepa-bench      timing: encoder / head / predictor / lewm-step / lewm-rollout, --md / --json
 
 tests/test-parity     replay the golden dumps: cosine / max-abs / top-k, non-zero exit on regression
+                      (--gpu [N] judges the same run with the GPU threshold column; SKIPs without a GPU)
 tests/test-predictor  the same for the three predictors, against the reference encoder tokens
 tests/test-batch      batched vs per-item bit-exactness
 tests/test-attn       flash vs naive attention against a double-precision reference; K/V policy; timing
@@ -538,7 +539,12 @@ the RoPE tables against generated vectors and the block-causal mask (entry by en
 `jepa_build_attention` on both attention paths against a double-precision masked softmax, with an
 unmasked control that must disagree), `test-attn` flash attention against a double-precision
 reference including the K/V dtype policy, and `test-backend` the GPU graph validation plus CPU/GPU
-agreement. `test-predictor` adds structural checks the reference cannot provide: causal-prefix
-equality and rollout-versus-predict identity on LeWorldModel, which are bit-exact on both backends.
+agreement. The two `parity-*-gpu` entries add GPU parity for the two families whose `mul_mat`
+accumulation default is f16 rather than `GGML_PREC_F32` — `hfvit` (LeJEPA) and `levjepa` — running
+them at that default, so the shipped setting is gated rather than only measured
+([parity](parity.md#accumulation-precision-per-family)); like `backend` they exit 0 with a SKIP line
+on a build with no GPU. `test-predictor` adds structural checks the reference cannot provide:
+causal-prefix equality and rollout-versus-predict identity on LeWorldModel, which are bit-exact on
+both backends.
 
 Results: [Accuracy](accuracy.md) for the curated view, [parity](parity.md) for every row.

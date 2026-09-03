@@ -167,7 +167,11 @@ between nothing and 11 %.
 The two that flip gain little and lose nothing measurable: LeJEPA's token map moves from a mean of
 0.999994 to 0.999988 and `rel_max` from 5.8e-03 to 6.3e-03, LeVJEPA's `rel_max` from 4.1e-03 to
 1.6e-02 against a bar of 0.62 at 3 137 tokens, and their worst derived tensor stays at 0.999997 and
-0.999999.
+0.999999. Both flipped defaults are gated rather than only measured: the ctest entries
+`parity-lejepa-vits16-gpu` and `parity-levjepa-vitl16-gpu` replay the golden dumps on device 0 with
+no precision flag set, so a CUDA build's `ctest` judges the setting a caller actually gets
+([parity.md](parity.md#accumulation-precision-per-family)). They SKIP with exit 0 on a build without
+a GPU.
 
 ```bash
 # the parity half — every family, every dtype, both settings

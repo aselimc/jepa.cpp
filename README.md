@@ -181,7 +181,7 @@ policy, parity thresholds — is on the [documentation site](https://aselimc.git
 ## Testing
 
 ```bash
-ctest --test-dir build        # 17 suites: parity, predictors, batching, RoPE vectors + the block-causal mask, attention, backend, video ingest, error paths, threads, the HTTP server
+ctest --test-dir build        # 19 suites: parity (CPU and GPU), predictors, batching, RoPE vectors + the block-causal mask, attention, backend, video ingest, error paths, threads, the HTTP server
 ```
 
 `test-parity` replays PyTorch golden dumps through the engine and gates per-token cosine, pooled

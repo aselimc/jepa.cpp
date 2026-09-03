@@ -1,7 +1,11 @@
 // test-parity: run a jepa.cpp GGUF against the PyTorch golden dumps of tests/fixtures/ref/<model>/.
 //
 //   test-parity MODEL.gguf REF_DIR [--threads N] [--no-flash] [--kv-f32] [--json out.json]
-//               [--pre manifest|model] [--rgb-dir DIR] [--samples a,b,c] [--quiet]
+//               [--pre manifest|model] [--rgb-dir DIR] [--samples a,b,c] [--gpu N] [--quiet]
+//
+// `--gpu [N]` loads the weights on GPU N and judges the run with the GPU threshold column (see
+// POLICY below); it exits 0 with a "SKIP" line when the build has no GPU backend or the device is
+// absent, so a `--gpu` entry can be registered with ctest unconditionally.
 //
 // Per sample it
 //   (a) feeds the stored `input` tensor (bypassing our preprocessing) and compares `last_hidden_state`
@@ -370,6 +374,14 @@ int main(int argc, char ** argv) {
         else if (a == "--samples") sample_filter = next();
         else if (a == "--quiet") quiet = true;
         else { fprintf(stderr, "unknown argument %s\n", argv[i]); return 2; }
+    }
+
+    // --gpu on a build with no GPU backend (or a box with no card) is a skip, not a failure — the
+    // same contract as tests/test-backend.cpp, so the `parity-*-gpu` ctest entries can live in the
+    // normal suite and cost a CPU-only checkout one process start.
+    if (mp.device >= 0 && jepa_device_count() <= mp.device) {
+        printf("SKIP no GPU device %d (this build has %d) — nothing to check\n", mp.device, jepa_device_count());
+        return 0;
     }
 
     json manifest;

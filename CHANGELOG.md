@@ -23,6 +23,19 @@ across releases.
   The `server` ctest covers the accepted and the refused shapes, symlink included;
   [docs/serving.md](docs/serving.md#security) states the contract.
 
+- **GPU parity in `ctest` for the two families whose GPU `mul_mat` accumulation defaults to f16.**
+  v0.3.0 made f16 accumulation the default for `hfvit` (LeJEPA) and `levjepa` — measured, but not
+  gated by any registered test. `parity-lejepa-vits16-gpu` and `parity-levjepa-vitl16-gpu` now
+  replay the golden dumps through `test-parity --gpu` on the f16 files with **no** precision flag
+  and no `$JEPA_GPU_PREC`, so what `ctest` judges on a CUDA build is the setting a caller gets.
+  Measured against the GPU threshold column: LeJEPA (8 samples, 197 tokens) `cos_mean` 0.999988,
+  `cos_min` 0.999804, `rel_max` 6.25e-03 against 0.15; LeVJEPA (`archery_f16`, 3137 tokens)
+  `cos_mean` 0.999985, `cos_min` 0.993309, `rel_max` 1.24e-02 against 0.62 — 24× and 50× of margin.
+  `test-parity --gpu` now exits 0 with a `SKIP` line when the build has no GPU backend or the
+  device is absent, the same contract `test-backend` already had, so both entries register whenever
+  the assets are present and cost a CPU-only checkout one process start each. No threshold moved:
+  the suite is 19 tests with every asset present, 19/19 on a CPU build and on a CUDA one.
+
 ## [0.4.0] — 2026-09-02
 
 ### Added

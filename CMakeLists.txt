@@ -158,6 +158,29 @@ if(JEPA_BUILD_TESTS)
                        ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/levjepa-vitl16 --threads 8 --quiet
                        --samples archery_f16)
     endif()
+    # --- GPU parity on the two families whose GPU mul_mat accumulation defaults to f16 -----------
+    # `hfvit` (LeJEPA) and `levjepa` are the two families jepa_gpu_prec_f32_default() answers false
+    # for (src/jepa.cpp; docs/performance.md "Accumulation precision on a GPU"), so they are the two
+    # whose shipped GPU default is NOT the conservative GGML_PREC_F32 one. These entries run the
+    # default — no --gpu-prec, no $JEPA_GPU_PREC — against the same golden dumps and the GPU
+    # threshold column, which is what makes the flipped default a tested claim rather than a
+    # measured one. f16 files on purpose: accumulation precision only reaches an f16 weight (a
+    # quantized one takes mmq, an f32 one is TF32 either way). Like `backend`, both are registered
+    # whenever the assets are there and exit 0 with a SKIP line on a build with no GPU backend or a
+    # box with no card, so a CPU-only checkout pays one process start each.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/lejepa-vits16/manifest.json)
+      add_test(NAME parity-lejepa-vits16-gpu
+               COMMAND test-parity ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf
+                       ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/lejepa-vits16 --gpu --threads 8 --quiet)
+    endif()
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/levjepa-vitl16-f16.gguf AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/levjepa-vitl16/manifest.json)
+      add_test(NAME parity-levjepa-vitl16-gpu
+               COMMAND test-parity ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/levjepa-vitl16-f16.gguf
+                       ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/levjepa-vitl16 --gpu --threads 8 --quiet
+                       --samples archery_f16)
+    endif()
   endif()
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-predictor.cpp)
     add_executable(test-predictor tests/test-predictor.cpp)
