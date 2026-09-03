@@ -1,7 +1,7 @@
 // jepa-server: an HTTP front end for one GGUF model, over the public C API.
 //
 //   jepa-server -m lejepa-vits16-pretrain-in1k-f16.gguf [--port 8080] [--workers 4] [--max-batch 8]
-//   jepa-server -m vjepa2-vitl-fpc16-256-ssv2-f16.gguf --allow-local-files
+//   jepa-server -m vjepa2-vitl-fpc16-256-ssv2-f16.gguf --files-root /srv/frames
 //   jepa-server -m vjepa2-ac-vitg-f16.gguf --gpu 1 --workers 2
 //
 // Endpoints
@@ -60,6 +60,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -94,6 +95,7 @@ struct Options {
     int  max_wait_ms = 5;
     int  device = -1;
     bool allow_local_files = false;
+    std::string files_root;                  // --files-root: the canonical dir paths must stay inside
     bool verbose = false;
     size_t max_body_mb = 32;
     int  max_items = 64;                     // items per request
@@ -114,6 +116,10 @@ static void usage(const char * argv0) {
         "  --max-wait-ms N   how long a partial batch waits for company (default 5; 0 = never wait)\n"
         "  --model-name S    the id /v1/models reports (default: the file's base name)\n"
         "  --allow-local-files  accept server-local paths as input, not just {\"b64\": ...}\n"
+        "                    (unbounded: any image file this process can open — prefer --files-root)\n"
+        "  --files-root DIR  the same, confined to DIR (and implies --allow-local-files): a request\n"
+        "                    path is resolved against DIR rather than the cwd and must still be\n"
+        "                    inside it once symlinks and \"..\" are resolved\n"
         "  --max-body-mb N   request body limit (default 32)\n"
         "  --max-items N     items per request (default 64)\n"
         "  --max-frames N    frames per item (default 128)\n"
@@ -820,11 +826,53 @@ static bool decode_image_bytes(const std::vector<uint8_t> & bytes, Frame & out, 
     return true;
 }
 
-static bool load_local_file(const std::string & path, Frame & out, std::string & err) {
+// Every refusal under --files-root carries this one message and nothing else: "outside the root",
+// "no such file", "cannot open" and "not a decodable image" have to read alike, or a client can walk
+// the filesystem by the differences between them. The real reason goes to the server's own stderr
+// under -v, which is where an operator debugging their own root should be looking anyway.
+static const char * FILES_ROOT_REFUSAL =
+    "that path does not name a readable image inside the server's --files-root directory";
+
+// Resolve one requested path against the root: a relative path is taken from the root and never from
+// the cwd, then the whole thing is canonicalised — symlinks followed, ".." collapsed — and the result
+// has to still be under the root. std::filesystem::canonical is the portable realpath(), so this
+// compiles the same on Windows; it also fails outright on a path that does not exist, which is a
+// refusal like any other. The test is on the resolved path, so a symlink that lives inside the root
+// and points out of it is refused.
+static bool resolve_under_root(const std::string & root, const std::string & req, std::string & out) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path p(req);
+    if (p.is_relative()) p = fs::path(root) / p;
+    const fs::path full = fs::canonical(p, ec);
+    if (ec) return false;
+    const fs::path rel = full.lexically_relative(fs::path(root));
+    if (rel.empty()) return false;                        // no relation at all (another root name)
+    const std::string first = rel.begin()->string();
+    if (first == ".." || first == ".") return false;      // above the root, or the root itself
+    out = full.string();
+    return true;
+}
+
+static bool load_local_file(const Options & opt, const std::string & path, Frame & out, std::string & err) {
+    std::string real = path;
+    const bool confined = !opt.files_root.empty();
+    if (confined && !resolve_under_root(opt.files_root, path, real)) {
+        if (opt.verbose) {
+            fprintf(stderr, "refused \"%s\": it does not resolve inside %s\n", path.c_str(), opt.files_root.c_str());
+        }
+        err = FILES_ROOT_REFUSAL;
+        return false;
+    }
     int h = 0, w = 0;
     jepa_error_reset();
-    uint8_t * rgb = jepa_load_image_rgb(path.c_str(), &h, &w);
-    if (!rgb) { err = engine_error("cannot read " + path); return false; }
+    uint8_t * rgb = jepa_load_image_rgb(real.c_str(), &h, &w);
+    if (!rgb) {
+        if (!confined) { err = engine_error("cannot read " + path); return false; }
+        if (opt.verbose) fprintf(stderr, "refused \"%s\": %s\n", path.c_str(), engine_error("cannot read it").c_str());
+        err = FILES_ROOT_REFUSAL;
+        return false;
+    }
     out.rgb.assign(rgb, rgb + (size_t) h * w * 3);
     out.h = h; out.w = w;
     jepa_free(rgb);
@@ -840,7 +888,7 @@ static bool parse_frame(const json & v, const Options & opt, Frame & out, ApiErr
             return false;
         }
         std::string why;
-        if (!load_local_file(v.get<std::string>(), out, why)) { err = bad_request(why); return false; }
+        if (!load_local_file(opt, v.get<std::string>(), out, why)) { err = bad_request(why); return false; }
         return true;
     }
     if (!v.is_object()) {
@@ -867,7 +915,7 @@ static bool parse_frame(const json & v, const Options & opt, Frame & out, ApiErr
             return false;
         }
         std::string why;
-        if (!load_local_file(v["path"].get<std::string>(), out, why)) { err = bad_request(why); return false; }
+        if (!load_local_file(opt, v["path"].get<std::string>(), out, why)) { err = bad_request(why); return false; }
         return true;
     }
     err = bad_request("an input object needs \"b64\" or \"path\"");
@@ -1044,6 +1092,13 @@ int main(int argc, char ** argv) {
         else if (a == "--max-wait-ms") opt.max_wait_ms = atoi(next("--max-wait-ms"));
         else if (a == "--model-name") opt.model_name = next("--model-name");
         else if (a == "--allow-local-files") opt.allow_local_files = true;
+        // An empty value would leave files_root unset while allow_local_files was on — that is, it
+        // would silently turn the bounded flag into the unbounded one, so it is an error instead.
+        else if (a == "--files-root") {
+            opt.files_root = next("--files-root");
+            if (opt.files_root.empty()) { fprintf(stderr, "--files-root needs a directory\n"); return 1; }
+            opt.allow_local_files = true;
+        }
         else if (a == "--max-body-mb") opt.max_body_mb = (size_t) atoi(next("--max-body-mb"));
         else if (a == "--max-items") opt.max_items = atoi(next("--max-items"));
         else if (a == "--max-frames") opt.max_frames = atoi(next("--max-frames"));
@@ -1066,6 +1121,22 @@ int main(int argc, char ** argv) {
     if (opt.max_wait_ms < 0) opt.max_wait_ms = 0;
     if (opt.max_items < 1) opt.max_items = 1;
     if (opt.max_frames < 1) opt.max_frames = 1;
+    // The root is canonicalised once, here, so that every later comparison is between two resolved
+    // absolute paths. A root that is missing or is not a directory is an operator error: the process
+    // says so and stops, rather than serving a confinement that confines nothing.
+    if (!opt.files_root.empty()) {
+        std::error_code ec;
+        const std::filesystem::path root = std::filesystem::canonical(opt.files_root, ec);
+        if (ec) {
+            fprintf(stderr, "--files-root %s: %s\n", opt.files_root.c_str(), ec.message().c_str());
+            return 1;
+        }
+        if (!std::filesystem::is_directory(root, ec)) {
+            fprintf(stderr, "--files-root %s is not a directory\n", opt.files_root.c_str());
+            return 1;
+        }
+        opt.files_root = root.string();
+    }
     std::string model_basename = opt.model_path;
     {
         const size_t slash = model_basename.find_last_of("/\\");
@@ -1523,8 +1594,15 @@ int main(int argc, char ** argv) {
     printf("jepa-server %s: %s (%s, %s, %s) on http://%s:%d\n", jepa_version(), opt.model_name.c_str(),
            eng.family.c_str(), jepa_model_file_type_name(eng.model), jepa_model_device_name(eng.model),
            opt.host.c_str(), port);
+    std::string local_files = "refused";
+    if (!opt.files_root.empty())     local_files = "confined to " + opt.files_root;
+    else if (opt.allow_local_files)  local_files = "allowed";
     printf("  workers %d x %d threads | max-batch %d | max-wait %d ms | local files %s\n",
-           opt.workers, n_threads, eng.eff_max_batch, opt.max_wait_ms, opt.allow_local_files ? "allowed" : "refused");
+           opt.workers, n_threads, eng.eff_max_batch, opt.max_wait_ms, local_files.c_str());
+    if (opt.allow_local_files && opt.files_root.empty()) {
+        printf("  WARNING: --allow-local-files with no --files-root is unbounded read access — a request\n"
+               "           may name any image file this process can open. --files-root DIR confines it.\n");
+    }
     if (opt.host != "127.0.0.1" && opt.host != "localhost" && opt.host != "::1") {
         printf("  WARNING: %s is not loopback. This server has no TLS and no authentication — put it\n"
                "           behind something that does before anything but you can reach it.\n", opt.host.c_str());

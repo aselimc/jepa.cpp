@@ -22,6 +22,10 @@
 //   * a body that is not JSON, an unknown model name and a truncated base64 image are all 4xx, and
 //     the server still serves /health afterwards;
 //   * /metrics is Prometheus text and records the batch sizes that actually happened;
+//   * a second server, started with --files-root, serves a path inside its root and refuses a
+//     ".." escape, an absolute path outside it, a sibling directory whose name merely starts with
+//     the root's, and a symlink inside the root that points out of it — every refusal carrying one
+//     message that never says whether the path exists;
 //   * the process exits 0 on SIGTERM.
 //
 // Everything runs on 127.0.0.1 and finishes in a few seconds on the small models. With no --model
@@ -33,6 +37,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -426,6 +431,135 @@ int main(int argc, char ** argv) {
                 check(total > at_most_1, "at least one graph carried more than one item");
             }
         }
+    }
+
+    // ---- --files-root confinement -----------------------------------------------------------------
+    // A second server, this one with a root, because confinement is a property of how it was started.
+    // The tree goes next to the cwd — the build directory, where the reference .npy also lands:
+    //
+    //   test-server-files-root/inside.jpg         a copy of the first fixture image
+    //   test-server-files-root/sub/nested.jpg     the same, one level down
+    //   test-server-files-root/escape.jpg         a symlink out of the root (skipped where it fails)
+    //   test-server-files-outside/outside.jpg     a perfectly readable image that is still refused
+    //   test-server-files-root-evil/outside.jpg   the root's name as a string prefix, not a parent
+    //
+    // Every refused case names a file that exists and can be read, so a 400 can only be the
+    // confinement; the last check is that a path which does not exist is refused in the same words.
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const fs::path root    = fs::absolute("test-server-files-root");
+        const fs::path outside = fs::absolute("test-server-files-outside");
+        const fs::path prefix  = fs::absolute("test-server-files-root-evil");
+        fs::remove_all(root, ec);
+        fs::remove_all(outside, ec);
+        fs::remove_all(prefix, ec);
+        bool built = true;
+        fs::create_directories(root / "sub", ec); built = built && !ec;
+        fs::create_directories(outside, ec);      built = built && !ec;
+        fs::create_directories(prefix, ec);       built = built && !ec;
+        const fs::path src = fs::absolute(images[0]);
+        const auto ow = fs::copy_options::overwrite_existing;
+        fs::copy_file(src, root / "inside.jpg", ow, ec);        built = built && !ec;
+        fs::copy_file(src, root / "sub" / "nested.jpg", ow, ec); built = built && !ec;
+        fs::copy_file(src, outside / "outside.jpg", ow, ec);    built = built && !ec;
+        fs::copy_file(src, prefix / "outside.jpg", ow, ec);     built = built && !ec;
+        std::error_code sym;
+        fs::create_symlink(outside / "outside.jpg", root / "escape.jpg", sym);
+        const bool have_symlink = !sym && fs::exists(root / "escape.jpg", sym);
+
+        if (!built) {
+            printf("  note: cannot build the --files-root fixture tree (%s), skipping those checks\n",
+                   ec.message().c_str());
+        } else {
+            Server srv2;
+            if (!srv2.start(server_exe, {"-m", model, "--host", "127.0.0.1", "--port", "0",
+                                         "--workers", "1", "--threads", "4",
+                                         "--model-name", "test-model",
+                                         "--files-root", root.string()})) {
+                fprintf(stderr, "cannot start %s with --files-root\n", server_exe.c_str());
+                return 1;
+            }
+            httplib::Client c2("127.0.0.1", srv2.port);
+            c2.set_read_timeout(120, 0);
+            c2.set_write_timeout(120, 0);
+
+            auto post_path = [&](const json & item) {
+                const json body{{"input", item}, {"pool", "cls"}};
+                return c2.Post("/v1/embeddings", body.dump(), "application/json");
+            };
+            auto message_of = [](const httplib::Result & res) -> std::string {
+                if (!res) return "";
+                const json e = json::parse(res->body, nullptr, false);
+                if (e.is_discarded() || !e.contains("error")) return "";
+                return e["error"].value("message", "");
+            };
+
+            {
+                auto res = c2.Get("/health");
+                check(res && res->status == 200, "the --files-root server answers /health");
+                if (res && res->status == 200) {
+                    const json h = json::parse(res->body, nullptr, false);
+                    check(!h.is_discarded() && h.value("allow_local_files", false) == true,
+                          "--files-root implies --allow-local-files");
+                }
+            }
+            {
+                auto res = post_path(json("inside.jpg"));
+                check(res && res->status == 200, "a relative path is resolved against the root and served");
+                if (res && res->status == 200) {
+                    const json r = json::parse(res->body, nullptr, false);
+                    check(n_bits_differ(to_vec(r["data"][0]["embedding"]), single[0]) == 0,
+                          "the file read out of the root is that image, bit for bit");
+                }
+            }
+            {
+                auto res = post_path(json((root / "inside.jpg").string()));
+                check(res && res->status == 200, "an absolute path inside the root is served");
+            }
+            {
+                auto res = post_path(json{{"path", "sub/nested.jpg"}});
+                check(res && res->status == 200, "a {\"path\": ...} one level down is served");
+            }
+
+            std::string refusal;
+            {
+                auto res = post_path(json("../test-server-files-outside/outside.jpg"));
+                check(res && res->status == 400, "a \"..\" escape is 400, readable file or not");
+                refusal = message_of(res);
+                check(!refusal.empty(), "the refusal is a JSON error object with a message");
+            }
+            {
+                auto res = post_path(json((outside / "outside.jpg").string()));
+                check(res && res->status == 400, "an absolute path outside the root is 400");
+                check(!refusal.empty() && message_of(res) == refusal, "and it is refused in the same words");
+            }
+            {
+                auto res = post_path(json((prefix / "outside.jpg").string()));
+                check(res && res->status == 400, "a sibling whose name starts with the root's is 400");
+            }
+            {
+                auto res = post_path(json("no-such-image.jpg"));
+                check(res && res->status == 400, "a path that does not exist inside the root is 400");
+                check(!refusal.empty() && message_of(res) == refusal,
+                      "a refusal never says whether the path exists");
+            }
+            if (have_symlink) {
+                auto res = post_path(json("escape.jpg"));
+                check(res && res->status == 400, "a symlink inside the root pointing out of it is 400");
+                check(!refusal.empty() && message_of(res) == refusal, "and it too is refused in the same words");
+            } else {
+                printf("  note: this filesystem would not make a symlink, skipping the symlink escape\n");
+            }
+            {
+                auto res = c2.Get("/health");
+                check(res && res->status == 200, "/health still answers after every refused path");
+            }
+            check(srv2.stop() == 0, "the --files-root server exits 0 on SIGTERM");
+        }
+        fs::remove_all(root, ec);
+        fs::remove_all(outside, ec);
+        fs::remove_all(prefix, ec);
     }
 
     // ---- clean shutdown ---------------------------------------------------------------------------

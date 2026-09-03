@@ -8,7 +8,20 @@ across releases.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`--files-root DIR` for `jepa-server`**: server-local path inputs confined to one directory. It
+  implies `--allow-local-files`; every path a request names is resolved against the root rather than
+  the process's cwd, canonicalised through `std::filesystem::canonical` (symlinks followed, `..`
+  collapsed) and served only when the result is still inside the canonical root — so a `..` escape,
+  an absolute path elsewhere, a symlink that lives in the root and points out of it, and a sibling
+  directory whose name merely starts with the root's are all 400s. Every refusal carries the same
+  sentence whether the path was outside the root, missing, unreadable or not an image, so the flag is
+  no longer an oracle for what exists on the server's disk; the real reason goes to the server's
+  stderr under `-v`. A root that is missing or is not a directory stops the process at startup.
+  `--allow-local-files` on its own keeps its unbounded behaviour and now warns about it on startup.
+  The `server` ctest covers the accepted and the refused shapes, symlink included;
+  [docs/serving.md](docs/serving.md#security) states the contract.
 
 ## [0.4.0] — 2026-09-02
 

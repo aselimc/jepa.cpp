@@ -58,7 +58,8 @@ are two processes, each with `--gpu N` and its own port.
 
 OpenAI-shaped. `input` is one item or an array of them; an item is a `{"b64": ...}` image, a
 `{"path": ...}` or bare-string server-local path (only when the server was started with
-`--allow-local-files`), or `{"frames": [...]}` for the frames of one clip. `pool` is `mean`, `cls`,
+`--allow-local-files` or `--files-root`, and under a root the path is resolved against that root
+rather than the server's cwd), or `{"frames": [...]}` for the frames of one clip. `pool` is `mean`, `cls`,
 `lewm` or `none`, defaulting to what `jepa-embed` picks: the CLS token when the model has one, the
 mean over patch tokens otherwise. `encoding_format` is `float` (default, an array of numbers) or
 `base64` (the little-endian float32 bytes — smaller, and free of any question about decimal
@@ -161,7 +162,8 @@ gauges.
 | `--max-wait-ms N` | `5` | how long a partial group waits; `0` never waits |
 | `--gpu [N]` | – | run on GPU device N (needs `-DJEPA_CUDA=ON`) |
 | `--model-name S` | the file's base name | the id `/v1/models` reports |
-| `--allow-local-files` | off | accept server-local paths, not only `{"b64": ...}` |
+| `--allow-local-files` | off | accept server-local paths, not only `{"b64": ...}` — unbounded, see [Security](#security) |
+| `--files-root DIR` | – | the same, confined to `DIR`; implies `--allow-local-files` |
 | `--max-body-mb N` | `32` | request body limit |
 | `--max-items N` | `64` | items per request |
 | `--max-frames N` | `128` | frames per item |
@@ -178,8 +180,9 @@ Every malformed request is a JSON error object, and none of them takes the proce
 refused encode explains itself. `type` follows the OpenAI vocabulary, so a client written against
 that API can branch on it. A body that is not JSON, a JSON array where an object belongs, a
 truncated base64 string, bytes that are not an image, an unknown model name, a local path without
-`--allow-local-files` and a `"url"` input (the server fetches nothing, ever) are all 4xx, and the
-`server` suite checks that `/health` still answers after each of them.
+`--allow-local-files`, a path that does not resolve inside `--files-root` and a `"url"` input (the
+server fetches nothing, ever) are all 4xx, and the `server` suite checks that `/health` still answers
+after each of them.
 
 A body over `--max-body-mb` never reaches a handler — the HTTP layer rejects it while reading — and
 so does a request line it cannot parse or a path it cannot route. Those refusals carry the same
@@ -199,15 +202,37 @@ with `413` for the body limit, `414` for an over-long URI, `400` for an unparsea
 behind something that has both, not an edge. Binding it elsewhere takes an explicit `--host`, which
 prints a warning naming what that means.
 
-**`--allow-local-files` is unbounded read access.** There is no root to confine paths to: a request
-may name any path the server process can open, absolute or relative, and a symlink is followed to
+Server-local paths are off by default: with no flag, a bare string or a `{"path": ...}` input is a
+400, and only `{"b64": ...}` bytes are read — which is what the Python client sends anyway.
+
+**`--files-root DIR` is the bounded way to turn them on.** It implies `--allow-local-files`. Every
+path a request names is then resolved against the root — a relative path from the root, never from
+the server's cwd — canonicalised with `std::filesystem::canonical` (symlinks followed, `..`
+collapsed) and served only when the result is still inside the canonical root. A `..` escape, an
+absolute path elsewhere, a symlink that lives in the root and points out of it, and a sibling
+directory whose name merely starts with the root's are all refused. The root itself must exist and
+be a directory, or the process says so and does not start.
+
+Every refusal under a root is the same 400 carrying the same sentence, deliberately:
+
+```json
+{"error": {"message": "that path does not name a readable image inside the server's --files-root directory",
+           "type": "invalid_request_error", "code": null}}
+```
+
+Outside the root, not there at all, there but unreadable, there but not a decodable image: one
+message for all four, because a caller who can tell them apart can map the filesystem with them.
+That does cost the honest caller the useful "this file is not a PNG" — the real reason goes to the
+server's own stderr under `-v`, where the operator who owns the root can read it. `{"b64": ...}`
+inputs keep their specific decode errors; those describe bytes the client already holds.
+
+**`--allow-local-files` on its own is still unbounded read access**, unchanged: a request may name
+any path the server process can open, absolute or relative to its cwd, and a symlink is followed to
 wherever it points. The server only ever *reads* — it never writes, and it never fetches a URL — but
-"reads" means every image file that uid can reach. The refusals leak a little beyond that: a path
-that exists but is not a decodable image fails differently from one that cannot be opened at all, so
-a caller can use the flag to test whether a path exists. Turn it on only where any client that can
-reach the port is already trusted with the filesystem the server runs on; otherwise send
-`{"b64": ...}`, which is what the Python client does by default and what needs no flag at all.
-(A `--files-root` confinement is not implemented.)
+"reads" means every image file that uid can reach, and the refusals differ enough that a caller can
+test whether a path exists. The startup banner says so. Use it only where any client that can reach
+the port is already trusted with the filesystem the server runs on; otherwise give it a
+`--files-root`, or send `{"b64": ...}`, which needs no flag at all.
 
 ## The Python client
 
