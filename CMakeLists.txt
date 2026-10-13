@@ -57,6 +57,7 @@ add_library(jepa STATIC
   src/rope3d.cpp
   src/predictor.cpp
   src/lewm.cpp
+  src/hjepa.cpp
   src/vjepa2_ac.cpp
 )
 target_include_directories(jepa PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -193,6 +194,18 @@ if(JEPA_BUILD_TESTS)
                COMMAND test-predictor --lewm ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lewm-pusht-f32.gguf
                        --ref ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/lewm-pusht --threads 8)
     endif()
+    # H-JEPA parity (f32) against the authors' modules, one run per architecture variant: the
+    # 3-level proprio-fusion hierarchy, the plain 2-level one, the HWM baseline (identity upper
+    # encoder) and the DROID causal-transformer predictor. Each is registered only when its
+    # git-ignored GGUF and reference dump exist (scripts/hjepa_reference.py).
+    foreach(_h ant_hjepa_l3-seed42 pusht_hjepa_l2-seed42 ant_hwm_l2-seed42 droid_hjepa_l2-seed1)
+      if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/${_h}-f32.gguf AND
+         EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/${_h}/manifest.json)
+        add_test(NAME predictor-hjepa-${_h}
+                 COMMAND test-predictor --hjepa ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/${_h}-f32.gguf
+                         --ref ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/${_h} --threads 8)
+      endif()
+    endforeach()
     # V-JEPA 2 masked predictor parity (f16) on the 16-frame archery sample
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/vjepa2-vitl-fpc64-256-f16.gguf AND
        EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2-vitl-fpc64-256/manifest.json)

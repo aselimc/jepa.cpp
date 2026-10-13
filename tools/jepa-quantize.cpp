@@ -96,6 +96,8 @@ bool is_quantizable(const std::string & name, int n_dims) {
     static const char * const KEEP[] = {
         "patch_embed", "pos_embed", "cls_token", "reg_tokens", "mask_tokens", "mod_embed",
         ".adaln.", "action_embed", "state_embed", ".ln1.", ".ln2.", ".norm.", "hier_norm", "ln_kv", "head.query",
+        // hjepa: the action path is a few thousand weights that every level above depends on
+        ".act_enc.", ".act_embed.", "act_queue",
     };
     for (const char * k : KEEP) {
         if (contains(name, k)) return false;
@@ -113,6 +115,15 @@ bool is_quantizable(const std::string & name, int n_dims) {
     };
     for (const char * p : PREFIXES) {
         if (starts_with(name, p)) return true;
+    }
+    // hjepa: the per-level projections (lvl.{k}.enc.* latent encoder, lvl.{k}.pred.* width changes)
+    static const char * const LEVEL_PARTS[] = {
+        ".enc.proj.", ".enc.fc1.", ".enc.fc2.", ".pred.proj.", ".pred.in_proj.", ".pred.cond_proj.", ".pred.out_proj.",
+    };
+    if (starts_with(name, "lvl.")) {
+        for (const char * c : LEVEL_PARTS) {
+            if (contains(name, c)) return true;
+        }
     }
     return false;
 }

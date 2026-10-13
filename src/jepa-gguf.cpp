@@ -20,6 +20,7 @@ jepa_family_id jepa_family_from_string(const std::string & s) {
     if (s == "levjepa")  return JEPA_FAMILY_LEVJEPA;
     if (s == "hfvit")    return JEPA_FAMILY_HFVIT;
     if (s == "lewm")     return JEPA_FAMILY_LEWM;
+    if (s == "hjepa")    return JEPA_FAMILY_HJEPA;
     return JEPA_FAMILY_UNKNOWN;
 }
 
@@ -29,7 +30,8 @@ jepa_act_id jepa_act_from_string(const std::string & s, bool * ok) {
     if (s == "gelu_erf" || s == "gelu")  return JEPA_ACT_GELU_ERF;
     if (s == "gelu_tanh" || s == "gelu_new" || s == "gelu_pytorch_tanh") return JEPA_ACT_GELU_TANH;
     if (s == "silu" || s == "swish")     return JEPA_ACT_SILU;
-    jepa_log("jepa: unknown activation '%s' (expected gelu_erf | gelu_tanh | silu)\n", s.c_str());
+    if (s == "relu")                     return JEPA_ACT_RELU;
+    jepa_log("jepa: unknown activation '%s' (expected gelu_erf | gelu_tanh | silu | relu)\n", s.c_str());
     if (ok) *ok = false;
     return JEPA_ACT_GELU_ERF;
 }
@@ -39,6 +41,7 @@ const char * jepa_act_name(jepa_act_id a) {
         case JEPA_ACT_GELU_ERF:  return "gelu_erf";
         case JEPA_ACT_GELU_TANH: return "gelu_tanh";
         case JEPA_ACT_SILU:      return "silu";
+        case JEPA_ACT_RELU:      return "relu";
     }
     return "?";
 }
@@ -484,6 +487,75 @@ bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp) {
         }
     }
 
+    // --- hjepa: per-level arrays, level 1 first
+    if (hp.family == JEPA_FAMILY_HJEPA) {
+        jepa_hjepa_hparams & hj = hp.hjepa;
+        const int n_levels = r.geti("jepa.hjepa.n_levels", 0);
+        if (!kv_range("jepa.hjepa.n_levels", n_levels, 1, JEPA_LIMIT_HJEPA_LEVELS)) return false;
+        hj.present        = true;
+        hj.ln_eps         = r.getf("jepa.hjepa.ln_eps", 1e-5f);
+        hj.adaln_eps      = r.getf("jepa.hjepa.adaln_eps", 1e-6f);
+        hj.proj_kind      = r.gets("jepa.hjepa.proj_kind", "identity");
+        hj.pixel_dim      = r.geti("jepa.hjepa.pixel_dim", 0);
+        hj.proprio_dim    = r.geti("jepa.hjepa.proprio_dim", 0);
+        hj.raw_action_dim = r.geti("jepa.hjepa.raw_action_dim", 0);
+        hj.frameskip      = r.geti("jepa.hjepa.frameskip", 0);
+        if (!kv_finite("jepa.hjepa.ln_eps",    hj.ln_eps,    0.0f, 1.0f) ||
+            !kv_finite("jepa.hjepa.adaln_eps", hj.adaln_eps, 0.0f, 1.0f) ||
+            !kv_range("jepa.hjepa.pixel_dim",      hj.pixel_dim,      1, JEPA_LIMIT_EMBED_DIM) ||
+            !kv_range("jepa.hjepa.proprio_dim",    hj.proprio_dim,    0, JEPA_LIMIT_EMBED_DIM) ||
+            !kv_range("jepa.hjepa.raw_action_dim", hj.raw_action_dim, 0, JEPA_LIMIT_EMBED_DIM) ||
+            !kv_range("jepa.hjepa.frameskip",      hj.frameskip,      0, JEPA_LIMIT_N_FRAMES)) {
+            return false;
+        }
+        hj.levels.resize((size_t) n_levels);
+        // every per-level key is an array with exactly one entry per level
+        struct int_key { const char * key; int jepa_hjepa_level::* field; int lo, hi; };
+        const int_key int_keys[] = {
+            { "jepa.hjepa.embed_dim",         &jepa_hjepa_level::embed_dim,         1, JEPA_LIMIT_EMBED_DIM },
+            { "jepa.hjepa.stride",            &jepa_hjepa_level::stride,            1, JEPA_LIMIT_N_FRAMES  },
+            { "jepa.hjepa.window",            &jepa_hjepa_level::window,            1, 1                    },
+            { "jepa.hjepa.target_length",     &jepa_hjepa_level::target_length,     0, JEPA_LIMIT_N_FRAMES  },
+            { "jepa.hjepa.action_dim",        &jepa_hjepa_level::action_dim,        1, JEPA_LIMIT_EMBED_DIM },
+            { "jepa.hjepa.act_embed_dim",     &jepa_hjepa_level::act_embed_dim,     1, JEPA_LIMIT_EMBED_DIM },
+            { "jepa.hjepa.act_enc_dim",       &jepa_hjepa_level::act_enc_dim,       0, JEPA_LIMIT_EMBED_DIM },
+            { "jepa.hjepa.act_enc_n_layer",   &jepa_hjepa_level::act_enc_n_layer,   0, JEPA_LIMIT_N_LAYER   },
+            { "jepa.hjepa.act_enc_n_head",    &jepa_hjepa_level::act_enc_n_head,    0, JEPA_LIMIT_N_HEAD    },
+            { "jepa.hjepa.act_enc_max_chunk", &jepa_hjepa_level::act_enc_max_chunk, 0, JEPA_LIMIT_N_FRAMES  },
+            { "jepa.hjepa.pred_dim",          &jepa_hjepa_level::pred_dim,          1, JEPA_LIMIT_EMBED_DIM },
+            { "jepa.hjepa.pred_n_layer",      &jepa_hjepa_level::pred_n_layer,      1, JEPA_LIMIT_N_LAYER   },
+            { "jepa.hjepa.pred_n_head",       &jepa_hjepa_level::pred_n_head,       1, JEPA_LIMIT_N_HEAD    },
+            { "jepa.hjepa.pred_head_dim",     &jepa_hjepa_level::pred_head_dim,     1, JEPA_LIMIT_EMBED_DIM },
+            { "jepa.hjepa.pred_ffn_dim",      &jepa_hjepa_level::pred_ffn_dim,      1, JEPA_LIMIT_FFN_DIM   },
+            { "jepa.hjepa.pred_n_frames",     &jepa_hjepa_level::pred_n_frames,     1, JEPA_LIMIT_N_FRAMES  },
+        };
+        for (const int_key & ik : int_keys) {
+            const std::vector<int> v = r.get_iarr(ik.key);
+            if ((int) v.size() != n_levels) {
+                jepa_log("jepa: %s holds %zu values, expected one per level (%d)\n", ik.key, v.size(), n_levels);
+                return false;
+            }
+            for (int i = 0; i < n_levels; i++) {
+                if (!kv_range(ik.key, v[(size_t) i], ik.lo, ik.hi)) return false;
+                hj.levels[(size_t) i].*ik.field = v[(size_t) i];
+            }
+        }
+        struct str_key { const char * key; std::string jepa_hjepa_level::* field; };
+        const str_key str_keys[] = {
+            { "jepa.hjepa.enc_kind",     &jepa_hjepa_level::enc_kind     },
+            { "jepa.hjepa.act_enc_kind", &jepa_hjepa_level::act_enc_kind },
+            { "jepa.hjepa.pred_kind",    &jepa_hjepa_level::pred_kind    },
+        };
+        for (const str_key & sk : str_keys) {
+            const std::vector<std::string> v = r.get_sarr(sk.key);
+            if ((int) v.size() != n_levels) {
+                jepa_log("jepa: %s holds %zu values, expected one per level (%d)\n", sk.key, v.size(), n_levels);
+                return false;
+            }
+            for (int i = 0; i < n_levels; i++) hj.levels[(size_t) i].*sk.field = v[(size_t) i];
+        }
+    }
+
     // --- head
     jepa_head_hparams & h = hp.head;
     h.kind = r.gets("jepa.head.kind", "none");
@@ -907,6 +979,8 @@ jepa_model * jepa_model_load_ex(const char * gguf_path, const jepa_model_params 
         ok = false;
     }
     if (m->pos_embed && !kv_range("enc.pos_embed rows", m->pos_embed->ne[1], 1, JEPA_LIMIT_N_TOKENS)) ok = false;
+
+    if (m->hp.hjepa.present && ok) ok = jepa_hjepa_bind(*m);
 
     // Predictor and head: the graph builders reach for these through m->require(), which aborts.
     // Check them here so an incomplete file is a refused load rather than a crash on first use.

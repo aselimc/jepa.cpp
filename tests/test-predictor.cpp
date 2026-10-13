@@ -4,6 +4,7 @@
 //   test-predictor --vjepa2 MODEL.gguf --ref tests/fixtures/ref/vjepa2-vitl-fpc64-256 [--samples a,b] [options]
 //   test-predictor --vjepa2 MODEL.gguf --case DIR        (numpy cross-check: DIR/{enc,ctx_idx,tgt_idx,pred}.npy)
 //   test-predictor --ac    MODEL.gguf --ref tests/fixtures/ref/vjepa2-ac-vitg [options]
+//   test-predictor --hjepa MODEL.gguf --ref tests/fixtures/ref/ant_hjepa_l3-seed42 [options]
 //   options: [--threads N] [--no-flash] [--kv-f32|--kv-f16] [--min-cos X] [--modality auto|video|image] [--quiet]
 //
 // LeWM (f32 thresholds cos >= 0.9999):
@@ -27,6 +28,14 @@
 //     _trim / jepa_ac_rollout_cached) shown to be bit-identical to the explicit-context path;
 //   * `cem`: jepa_ac_plan replaying the random draws Meta's own cem() made, against the plan it
 //     returned.
+// H-JEPA (jepa.family == "hjepa"), against a scripts/hjepa_reference.py dump of the authors' modules:
+//   * the encoder on every frame (token map of frame 0, the CLS rows) and jepa_hjepa_embed;
+//   * per level: jepa_hjepa_lift, jepa_hjepa_action_encode (including the short trailing chunk),
+//     jepa_hjepa_action_embed, jepa_hjepa_predict, and jepa_hjepa_rollout at each dumped history;
+//   * causality of every level's predictor (a prefix run reproduces the rows of the full run) and
+//     rollout step 0 == predict(T = 1);
+//   * the whole chain: frames -> level-1 states -> ... -> top-level states, with no reference
+//     tensor fed back in, against the top level's reference states.
 // --modality selects the V-JEPA 2.1 modality vector (pred.mod_embed_video / _img) for --case runs:
 //   the 576-token image case only reaches parity with `image` (see docs/parity.md, predictor table).
 // Exit status 1 on any failure.
@@ -140,6 +149,139 @@ static std::vector<float> load_f32(const std::string & path, int64_t * rows, int
 }
 
 static bool exists(const std::string & p) { std::ifstream f(p); return (bool) f; }
+
+// ------------------------------------------------------------------------------------------
+// H-JEPA
+// ------------------------------------------------------------------------------------------
+static void run_hjepa(jepa_context * ctx, jepa_model * model, const std::string & ref, const thresholds & thr, bool dtype_noise) {
+    const int n_levels = jepa_hjepa_n_levels(model);
+    if (n_levels < 1) { printf("  not an H-JEPA model\n"); g_fail++; return; }
+    const int Dv = jepa_model_embed_dim(model);
+    printf("H-JEPA: %d level%s, proprio %d-d, raw action %d-d x frameskip %d\n", n_levels, n_levels == 1 ? "" : "s",
+           jepa_hjepa_proprio_dim(model), jepa_hjepa_raw_action_dim(model), jepa_hjepa_frameskip(model));
+    const std::string s = ref + "/seq.";
+    char name[96];
+
+    // ---- encoder: every frame through jepa_encode; token map of frame 0 and the CLS rows
+    npy::Array inp = npy::load(s + "input.npy");
+    if (inp.shape.size() != 4) { printf("  seq.input.npy is not [T, C, H, W]\n"); g_fail++; return; }
+    const int T1 = (int) inp.shape[0];
+    jepa_input in = {};
+    in.data = inp.f32(); in.n_batch = T1; in.n_chans = (int) inp.shape[1]; in.n_frames = 1;
+    in.height = (int) inp.shape[2]; in.width = (int) inp.shape[3];
+    jepa_output enc = {};
+    if (jepa_encode(ctx, &in, &enc) != 0) { printf("  encode failed\n"); g_fail++; return; }
+    const int64_t n_tok = enc.n_tokens / T1;
+    int64_t r, d;
+    std::vector<float> lhs = load_f32(s + "last_hidden_state.npy", &r, &d);
+    if (r != n_tok || d != Dv) { printf("  last_hidden_state shape mismatch\n"); g_fail++; }
+    else check("encoder tokens (frame 0)", compare(enc.data, lhs.data(), r, d), thr, jepa_context_last_compute_ms(ctx));
+    std::vector<float> cls_ref = load_f32(s + "cls.npy", &r, &d), cls((size_t) T1 * Dv);
+    for (int t = 0; t < T1; t++) memcpy(cls.data() + (size_t) t * Dv, enc.data + (size_t) t * n_tok * Dv, (size_t) Dv * sizeof(float));
+    check("encoder CLS rows", compare(cls.data(), cls_ref.data(), T1, Dv), thr);
+    jepa_free(enc.data);
+
+    // ---- level 1 states
+    std::vector<float> proprio;
+    if (jepa_hjepa_proprio_dim(model) > 0) proprio = load_f32(s + "proprio.npy", nullptr, nullptr);
+    const float * pp = proprio.empty() ? nullptr : proprio.data();
+    std::vector<float> chain;   // our own states, level by level, never corrected with reference values
+    {
+        std::vector<float> st_ref = load_f32(s + "lvl1.state.npy", &r, &d);
+        jepa_output o = {};
+        if (jepa_hjepa_embed(ctx, cls_ref.data(), pp, T1, &o) != 0) { printf("  embed failed\n"); g_fail++; return; }
+        if (o.dim != d || o.n_tokens != r) { printf("  embed: shape mismatch\n"); g_fail++; return; }
+        check("L1 state = embed(reference CLS)", compare(o.data, st_ref.data(), r, d), thr);
+        jepa_free(o.data);
+        if (jepa_hjepa_embed(ctx, cls.data(), pp, T1, &o) != 0) { g_fail++; return; }
+        check("L1 state = embed(encoder CLS)", compare(o.data, st_ref.data(), r, d), thr);
+        chain.assign(o.data, o.data + (size_t) r * d);
+        jepa_free(o.data);
+    }
+
+    int64_t chain_rows = T1;
+    for (int k = 1; k <= n_levels; k++) {
+        const std::string l = s + "lvl" + std::to_string(k) + ".";
+        const int D = jepa_hjepa_embed_dim(model, k), A = jepa_hjepa_action_dim(model, k), E = jepa_hjepa_action_embed_dim(model, k);
+        int64_t Tk, dd;
+        std::vector<float> st = load_f32(l + "state.npy", &Tk, &dd);
+        if (dd != D) { printf("  L%d: state width %lld, model says %d\n", k, (long long) dd, D); g_fail++; return; }
+        std::vector<float> act = load_f32(l + "action.npy", &r, &dd);
+        if (r != Tk || dd != A) { printf("  L%d: action shape mismatch\n", k); g_fail++; return; }
+        std::vector<float> aemb = load_f32(l + "act_emb.npy", &r, &dd);
+        if (r != Tk || dd != E) { printf("  L%d: act_emb shape mismatch\n", k); g_fail++; return; }
+
+        if (k > 1) {
+            const std::string b = s + "lvl" + std::to_string(k - 1) + ".";
+            int64_t Tb, Db, Eb;
+            std::vector<float> st_b = load_f32(b + "state.npy", &Tb, &Db);
+            std::vector<float> ae_b = load_f32(b + "act_emb.npy", &Tb, &Eb);
+            jepa_output o = {};
+            snprintf(name, sizeof(name), "L%d state = lift(L%d reference)", k, k - 1);
+            if (jepa_hjepa_lift(ctx, k, st_b.data(), (int) Tb, &o) != 0 || o.n_tokens != Tk) { printf("  %s: failed\n", name); g_fail++; return; }
+            check(name, compare(o.data, st.data(), Tk, D), thr);
+            jepa_free(o.data);
+            snprintf(name, sizeof(name), "L%d action = action_encode(L%d)", k, k - 1);
+            if (jepa_hjepa_action_encode(ctx, k, ae_b.data(), (int) Tb, &o) != 0 || o.n_tokens != Tk) { printf("  %s: failed\n", name); g_fail++; return; }
+            check(name, compare(o.data, act.data(), Tk, A), thr);
+            jepa_free(o.data);
+            // the chain: our own states of the level below, lifted
+            if (jepa_hjepa_lift(ctx, k, chain.data(), (int) chain_rows, &o) != 0) { g_fail++; return; }
+            chain.assign(o.data, o.data + (size_t) o.n_tokens * o.dim);
+            chain_rows = o.n_tokens;
+            jepa_free(o.data);
+        }
+        {
+            jepa_output o = {};
+            snprintf(name, sizeof(name), "L%d action_embed", k);
+            if (jepa_hjepa_action_embed(ctx, k, act.data(), (int) Tk, &o) != 0) { printf("  %s: failed\n", name); g_fail++; return; }
+            check(name, compare(o.data, aemb.data(), Tk, E), thr);
+            jepa_free(o.data);
+        }
+
+        // ---- predictor: teacher-forced over the first T steps, every row against the dump
+        int64_t T;
+        std::vector<float> pred = load_f32(l + "pred.npy", &T, &dd);
+        jepa_output full = {};
+        snprintf(name, sizeof(name), "L%d predict (T=%lld)", k, (long long) T);
+        if (jepa_hjepa_predict(ctx, k, st.data(), act.data(), (int) T, &full) != 0) { printf("  %s: failed\n", name); g_fail++; return; }
+        check(name, compare(full.data, pred.data(), T, D), thr, jepa_context_last_compute_ms(ctx));
+        // causal: the run over steps 0..t ends in row t of the full run
+        for (int t = 0; t + 1 < T; t++) {
+            jepa_output pre = {};
+            if (jepa_hjepa_predict(ctx, k, st.data(), act.data(), t + 1, &pre) != 0) { g_fail++; continue; }
+            snprintf(name, sizeof(name), "L%d causal: prefix %d == row %d", k, t + 1, t);
+            check(name, compare(pre.data + (size_t) t * D, full.data + (size_t) t * D, 1, D), t == 0 && dtype_noise ? exact_dtype : exact);
+            jepa_free(pre.data);
+        }
+
+        // ---- rollouts from state 0 with every action of the level
+        for (int H = 1; H <= jepa_hjepa_n_frames(model, k); H++) {
+            const std::string f = l + "rollout_h" + std::to_string(H) + ".npy";
+            if (!exists(f)) continue;
+            std::vector<float> rr = load_f32(f, &r, &dd);
+            std::vector<float> ours((size_t) r * D);
+            snprintf(name, sizeof(name), "L%d rollout (%lld steps, history %d)", k, (long long) r, H);
+            if (jepa_hjepa_rollout(ctx, k, st.data(), 1, act.data(), (int) r, H, ours.data()) != 0) { printf("  %s: failed\n", name); g_fail++; continue; }
+            check(name, compare(ours.data(), rr.data(), r, D), thr, jepa_context_last_compute_ms(ctx));
+            if (H == 1) {
+                snprintf(name, sizeof(name), "L%d rollout step 0 == predict(T=1)", k);
+                jepa_output one = {};
+                if (jepa_hjepa_predict(ctx, k, st.data(), act.data(), 1, &one) == 0) {
+                    check(name, compare(ours.data(), one.data, 1, D), exact);
+                    jepa_free(one.data);
+                } else g_fail++;
+            }
+        }
+        jepa_free(full.data);
+
+        if (k == n_levels && k > 1) {
+            snprintf(name, sizeof(name), "chain: frames -> L%d states", k);
+            if (chain_rows != Tk) { printf("  %s: %lld rows, reference has %lld\n", name, (long long) chain_rows, (long long) Tk); g_fail++; }
+            else check(name, compare(chain.data(), st.data(), Tk, D), thr);
+        }
+    }
+}
 
 // ------------------------------------------------------------------------------------------
 // LeWM
@@ -934,7 +1076,7 @@ static void run_ac_context_loop(jepa_context * ctx, jepa_model * model, const st
 }
 
 int main(int argc, char ** argv) {
-    std::string lewm_path, vjepa2_path, ac_path, ref, case_dir, samples_arg = "archery_f16", modality_arg = "video";
+    std::string lewm_path, vjepa2_path, ac_path, hjepa_path, ref, case_dir, samples_arg = "archery_f16", modality_arg = "video";
     jepa_context_params cp = jepa_context_default_params();
     jepa_model_params   mp = jepa_model_default_params();
     double min_cos = -1, max_rel = -1;
@@ -942,6 +1084,7 @@ int main(int argc, char ** argv) {
         std::string a = argv[i];
         auto next = [&]() -> const char * { if (i + 1 >= argc) { fprintf(stderr, "%s needs a value\n", a.c_str()); exit(2); } return argv[++i]; };
         if (a == "--lewm") lewm_path = next();
+        else if (a == "--hjepa") hjepa_path = next();
         else if (a == "--vjepa2") vjepa2_path = next();
         else if (a == "--ac") ac_path = next();
         else if (a == "--ref") ref = next();
@@ -961,19 +1104,21 @@ int main(int argc, char ** argv) {
         else if (a == "-h" || a == "--help") {
             printf("usage: %s --lewm MODEL.gguf --ref REFDIR | --vjepa2 MODEL.gguf {--ref REFDIR [--samples a,b] | --case DIR}\n"
                    "       | --ac MODEL.gguf --ref REFDIR   (V-JEPA 2-AC world model)\n"
+                   "       | --hjepa MODEL.gguf --ref REFDIR   (H-JEPA hierarchy)\n"
                    "       [--threads N] [--gpu [N]] [--no-flash] [--kv-f32|--kv-f16] [--min-cos X]\n"
                    "       [--modality auto|video|image]   (V-JEPA 2.1 pred.mod_embed_*, default video)\n"
                    "       [--quiet]\n", argv[0]);
             return 0;
         } else { fprintf(stderr, "unknown argument %s\n", argv[i]); return 2; }
     }
-    const int n_modes = (int) !lewm_path.empty() + (int) !vjepa2_path.empty() + (int) !ac_path.empty();
-    if (n_modes != 1) { fprintf(stderr, "need exactly one of --lewm / --vjepa2 / --ac\n"); return 2; }
+    const int n_modes = (int) !lewm_path.empty() + (int) !vjepa2_path.empty() + (int) !ac_path.empty() + (int) !hjepa_path.empty();
+    if (n_modes != 1) { fprintf(stderr, "need exactly one of --lewm / --vjepa2 / --ac / --hjepa\n"); return 2; }
     const int modality = modality_arg == "auto" ? JEPA_MODALITY_AUTO : modality_arg == "image" ? JEPA_MODALITY_IMAGE
                        : modality_arg == "video" ? JEPA_MODALITY_VIDEO : -1;
     if (modality < 0) { fprintf(stderr, "--modality must be auto, video or image (got '%s')\n", modality_arg.c_str()); return 2; }
 
-    const std::string model_path = !lewm_path.empty() ? lewm_path : !vjepa2_path.empty() ? vjepa2_path : ac_path;
+    const std::string model_path = !lewm_path.empty() ? lewm_path : !vjepa2_path.empty() ? vjepa2_path
+                                 : !ac_path.empty() ? ac_path : hjepa_path;
     jepa_model * model = jepa_model_load_ex(model_path.c_str(), &mp);
     if (!model) return 2;
     jepa_context * c = jepa_context_new(model, cp);
@@ -988,6 +1133,7 @@ int main(int argc, char ** argv) {
            thr.max_rel > 0 ? ", rel <= bound*max(1,sqrt(rows/2048))" : "");
 
     if (!lewm_path.empty()) run_lewm(c, model, ref, thr, ftype != 0);
+    if (!hjepa_path.empty()) run_hjepa(c, model, ref, thr, ftype != 0);
     if (!ac_path.empty()) {
         run_ac(c, model, ref, thr, jepa_model_is_gpu(model));
         run_ac_seed2(c, model, ref, thr, jepa_model_is_gpu(model));

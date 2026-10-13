@@ -214,6 +214,63 @@ int jepa_lewm_predict(jepa_context * ctx, const float * embs, const float * acti
 int jepa_lewm_rollout(jepa_context * ctx, const float * embs, int n_seed,
                       const float * actions, int n_steps, float * out);
 
+// --- H-JEPA hierarchical world model (jepa.family == "hjepa") --------------------------
+// arXiv 2610.06805: a stack of LeWM-style world models. Level 1 predicts one environment step
+// ahead in the space of the image encoder; level k >= 2 re-encodes every stride-th state of level
+// k-1 and predicts one of ITS steps ahead, conditioned on a latent macro-action that summarises the
+// `stride` actions of the level below. Levels are 1-based; a 1-level file is the flat LeWM baseline.
+//
+//   jepa_encode -> CLS rows -> jepa_hjepa_embed -> level-1 states -> jepa_hjepa_lift -> level-2 states -> ...
+//   level-1 actions -> jepa_hjepa_action_embed -> jepa_hjepa_action_encode(level 2) -> level-2 actions -> ...
+//
+// Every model input is in the units the model was trained on: frames preprocessed as jepa.pre.*
+// says, actions and proprioception z-scored with the training statistics (jepa_hjepa_norm_stats).
+// A level-1 action is jepa_hjepa_frameskip() consecutive raw actions stacked into one vector.
+int jepa_hjepa_n_levels(const jepa_model * model);                  // 0 for any other family
+int jepa_hjepa_embed_dim(const jepa_model * model, int level);      // width of the level's state
+int jepa_hjepa_action_dim(const jepa_model * model, int level);     // width of the level's action
+int jepa_hjepa_action_embed_dim(const jepa_model * model, int level);  // width of jepa_hjepa_action_embed's rows
+int jepa_hjepa_stride(const jepa_model * model, int level);         // steps of level-1 below per step here (1 at level 1)
+int jepa_hjepa_n_frames(const jepa_model * model, int level);       // the predictor's context window
+int jepa_hjepa_proprio_dim(const jepa_model * model);               // 0: the state is pixels only
+int jepa_hjepa_raw_action_dim(const jepa_model * model);            // one environment action (0: not recorded)
+int jepa_hjepa_frameskip(const jepa_model * model);                 // raw actions per level-1 action (0: not recorded)
+// Training mean / std of `column` ("action": per raw action dim, "proprio"). Returns the number of
+// values, 0 when the file has none; nothing is written when capacity is smaller than that.
+int jepa_hjepa_norm_stats(const jepa_model * model, const char * column, float * mean, float * std, int capacity);
+// Latent actions of `level` recorded during training, [n, action_dim]: the distribution the
+// reference planner initialises its candidates from. Returns n (0: none); writes only if capacity >= n rows.
+int jepa_hjepa_action_prior(const jepa_model * model, int level, float * out, int capacity);
+
+// Level-1 states from encoder CLS rows.
+//   cls_rows : [n_rows, enc embed_dim] — row 0 of each frame's jepa_encode output
+//   proprio  : [n_rows, proprio_dim] z-scored, or NULL when jepa_hjepa_proprio_dim() == 0
+//   out      : [n_rows, embed_dim(1)]
+int jepa_hjepa_embed(jepa_context * ctx, const float * cls_rows, const float * proprio, int n_rows, jepa_output * out);
+// States of `level` (>= 2) from consecutive states of level - 1: rows 0, stride, 2*stride, ... re-encoded.
+//   below : [n_rows, embed_dim(level-1)]      out : [(n_rows-1)/stride + 1, embed_dim(level)]
+int jepa_hjepa_lift(jepa_context * ctx, int level, const float * below, int n_rows, jepa_output * out);
+// The level's action embedding (what its predictor is conditioned on, and what level + 1 pools).
+//   actions : [n_rows, action_dim(level)]     out : [n_rows, action_embed_dim(level)]
+int jepa_hjepa_action_embed(jepa_context * ctx, int level, const float * actions, int n_rows, jepa_output * out);
+// Actions of `level` (>= 2) from consecutive action embeddings of level - 1, `stride` at a time:
+// action T summarises rows T*stride .. T*stride + stride - 1. A short last chunk is encoded as is.
+//   below_act_emb : [n_rows, action_embed_dim(level-1)]     out : [ceil(n_rows / stride), action_dim(level)]
+int jepa_hjepa_action_encode(jepa_context * ctx, int level, const float * below_act_emb, int n_rows, jepa_output * out);
+// One predictor call over `n_frames` (<= jepa_hjepa_n_frames) consecutive steps of `level`.
+//   states  : [n_frames, embed_dim(level)]    actions : [n_frames, action_dim(level)], one per step
+//   out     : [n_frames, embed_dim(level)]; causal over steps, so row t is the predicted state t+1
+//             given steps 0..t and the LAST row is the next-step prediction.
+int jepa_hjepa_predict(jepa_context * ctx, int level, const float * states, const float * actions,
+                       int n_frames, jepa_output * out);
+// Autoregressive rollout in the level's latent space (the reference's JEPA.rollout).
+//   states  : [n_seed, embed_dim(level)] known states
+//   actions : [n_seed + n_steps - 1, action_dim(level)]; row j conditions step j of the growing sequence
+//   history : context window, 1..jepa_hjepa_n_frames (the reference planner uses 1)
+//   out     : [n_steps, embed_dim(level)], caller-allocated: the predicted states
+int jepa_hjepa_rollout(jepa_context * ctx, int level, const float * states, int n_seed,
+                       const float * actions, int n_steps, int history, float * out);
+
 // --- V-JEPA 2-AC action-conditioned world model (jepa.pred.kind == "ac") ---------------
 // The predictor of facebookresearch/vjepa2's `vjepa2_ac_vit_giant`: it takes the encoder latents
 // of T context frames plus a 7-d end-effector action and a 7-d state (pose) per frame, and

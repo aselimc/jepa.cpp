@@ -1,6 +1,7 @@
-// Internal declarations shared by the two predictors:
+// Internal declarations shared by the predictors:
 //   src/predictor.cpp — V-JEPA 2 / 2.1 masked predictor (jepa.pred.kind = "masked")
 //   src/lewm.cpp      — LeWM AdaLN-zero world model  (jepa.pred.kind = "lewm")
+//   src/hjepa.cpp     — H-JEPA: one LeWM-style predictor per level (jepa.family = "hjepa")
 // Public entry points live in include/jepa.h; everything here is jepa.cpp-internal.
 #pragma once
 #include "jepa-internal.h"
@@ -29,6 +30,32 @@ ggml_tensor * jepa_build_predictor_masked(jepa_context * ctx, ggml_tensor * inp,
 // ---------------------------------------------------------------------------------------------
 // LeWM world model (lewm.cpp)
 // ---------------------------------------------------------------------------------------------
+// The adaLN-zero causal transformer LeWM introduced, as a list of tensors: the LeWM predictor
+// (pred.*) and every level of an H-JEPA hierarchy (lvl.{k}.pred.*) are both one of these.
+// Optional tensors are nullptr.
+struct jepa_adaln_spec {
+    ggml_tensor * pos = nullptr;                                   // [D_state, n_frames] added to the states
+    ggml_tensor * in_w = nullptr,   * in_b = nullptr;              // state -> transformer width (H-JEPA)
+    ggml_tensor * cond_w = nullptr, * cond_b = nullptr;            // conditioning -> transformer width (H-JEPA)
+    const std::vector<jepa_layer> * layers = nullptr;              // ln1 / ln2 may be absent (adaln_bare)
+    ggml_tensor * norm_w = nullptr, * norm_b = nullptr;            // final LayerNorm
+    ggml_tensor * out_w = nullptr,  * out_b = nullptr;             // transformer width -> output (H-JEPA)
+    ggml_tensor * proj0_w = nullptr, * proj0_b = nullptr;          // projector MLP on the output
+    ggml_tensor * proj2_w = nullptr, * proj2_b = nullptr;
+    int   n_head = 0, head_dim = 0;
+    float ln_eps = 1e-5f, adaln_eps = 1e-6f;
+    jepa_act_id act = JEPA_ACT_GELU_ERF, proj_act = JEPA_ACT_GELU_ERF;
+};
+
+// Build that transformer on ctx->ctx_g. emb: [D_state, T] F32 states, cond: [D_cond, T] F32 the
+// per-step conditioning (the embedded action), mask: [T, T] causal additive mask or nullptr for
+// T == 1. Returns [D_state, T] F32, row t = the predicted next state given steps 0..t.
+ggml_tensor * jepa_build_adaln(jepa_context * ctx, const jepa_adaln_spec & s, ggml_tensor * emb,
+                               ggml_tensor * cond, ggml_tensor * mask);
+
+// The [T, T] F16 causal mask those graphs take (query i sees key j iff j <= i), as host data.
+void jepa_causal_mask_f16(int64_t T, std::vector<ggml_fp16_t> & out);
+
 // Build the LeWM predictor graph on ctx->ctx_g. emb: [D, T] F32, act: [action_dim, T] F32,
 // mask: [T, T] causal additive mask (F16 for flash, F32 for the naive path) or nullptr for T == 1.
 // Returns [D, T] F32: row t is pred.proj(...) of frame t, i.e. the predicted *next* projected
