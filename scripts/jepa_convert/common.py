@@ -97,6 +97,34 @@ HPARAM_TYPES: dict[str, str] = {
     "jepa.pred.qkv_bias": BOOL,
     "jepa.pred.action_act": STR,       # lewm: activation inside pred.action_embed
     "jepa.pred.proj_act": STR,         # lewm: activation inside pred.proj.* MLP
+    # hjepa: one entry per level (level 1 first); see docs/gguf-schema.md "hjepa"
+    "jepa.hjepa.n_levels": U32,
+    "jepa.hjepa.ln_eps": F32,
+    "jepa.hjepa.adaln_eps": F32,
+    "jepa.hjepa.proj_kind": STR,       # level-1 pixel projector: mlp | layernorm | identity
+    "jepa.hjepa.pixel_dim": U32,
+    "jepa.hjepa.proprio_dim": U32,
+    "jepa.hjepa.raw_action_dim": U32,
+    "jepa.hjepa.frameskip": U32,
+    "jepa.hjepa.embed_dim": AU32,
+    "jepa.hjepa.stride": AU32,
+    "jepa.hjepa.window": AU32,
+    "jepa.hjepa.target_length": AU32,
+    "jepa.hjepa.action_dim": AU32,
+    "jepa.hjepa.act_embed_dim": AU32,
+    "jepa.hjepa.act_enc_dim": AU32,
+    "jepa.hjepa.act_enc_n_layer": AU32,
+    "jepa.hjepa.act_enc_n_head": AU32,
+    "jepa.hjepa.act_enc_max_chunk": AU32,
+    "jepa.hjepa.pred_dim": AU32,
+    "jepa.hjepa.pred_n_layer": AU32,
+    "jepa.hjepa.pred_n_head": AU32,
+    "jepa.hjepa.pred_head_dim": AU32,
+    "jepa.hjepa.pred_ffn_dim": AU32,
+    "jepa.hjepa.pred_n_frames": AU32,
+    "jepa.hjepa.enc_kind": ASTR,       # vit | vit_proprio | latent_mlp | identity
+    "jepa.hjepa.act_enc_kind": ASTR,   # none | seq | mlp
+    "jepa.hjepa.pred_kind": ASTR,      # adaln | adaln_bare
     # head
     "jepa.head.kind": STR,
     "jepa.head.n_classes": U32,

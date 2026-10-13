@@ -5,6 +5,7 @@ Examples
   scripts/convert.py --family ijepa --src models/facebook/ijepa_vith14_1k --ftype f16
   scripts/convert.py --family hfvit --src models/OK-AI/lejepa-vits16-pretrain-in1k --ftype f32
   scripts/convert.py --family lewm  --src models/quentinll/lewm-pusht --out models/gguf/lewm-pusht-f32.gguf
+  scripts/convert.py --family hjepa --src models/jepa-world-models/h-jepa/ant/ant_hjepa_l3/seed42/ant_hjepa_l3_object.ckpt
   scripts/convert.py --family vjepa2   --src models/facebook/vjepa2-vitl-fpc64-256
   scripts/convert.py --family vjepa2_1 --src models/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt
   scripts/convert.py --family levjepa --src models/galilai-group/LeVJEPA-VideoMix-Large --ftype f32
@@ -34,8 +35,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from jepa_convert.common import FTYPES, default_output_path, log  # noqa: E402
 
-FAMILIES = ("ijepa", "hfvit", "lewm", "vjepa2", "vjepa2_1", "levjepa", "vjepa2_ac")
-LOCAL_FAMILIES = ("ijepa", "hfvit", "lewm")
+FAMILIES = ("ijepa", "hfvit", "lewm", "hjepa", "vjepa2", "vjepa2_1", "levjepa", "vjepa2_ac")
+LOCAL_FAMILIES = ("ijepa", "hfvit", "lewm", "hjepa")
 
 
 def _dispatch_external(family: str, src: Path, out: Path, ftype: str, name: str | None) -> None:
@@ -79,7 +80,13 @@ def main(argv: list[str] | None = None) -> int:
     src = Path(args.src)
     if not src.exists():
         raise SystemExit(f"--src {src} does not exist")
-    out = Path(args.out) if args.out else default_output_path(args.family, src, args.ftype)
+    if args.out:
+        out = Path(args.out)
+    elif args.family == "hjepa":   # every H-JEPA file is "<run>_object.ckpt" under .../<run>/seed<N>/
+        from jepa_convert.hjepa import default_name
+        out = default_output_path(args.family, default_name(src), args.ftype)
+    else:
+        out = default_output_path(args.family, src, args.ftype)
     out.parent.mkdir(parents=True, exist_ok=True)
     log(f"convert: family={args.family} src={src} -> {out} (ftype={args.ftype})")
 
