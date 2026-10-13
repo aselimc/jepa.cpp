@@ -17,6 +17,9 @@
 //
 // The attention is causal over frames, so row t of the output only depends on frames 0..t: one call
 // with T frames yields the prediction after every prefix, and the last row is the next-frame state.
+//
+// jepa_build_adaln is that graph over a list of tensors rather than over pred.*, because every
+// level of an H-JEPA hierarchy is the same transformer under another name (src/hjepa.cpp).
 #include "predictor-internal.h"
 
 #include <cmath>
@@ -27,27 +30,22 @@
 // ---------------------------------------------------------------------------------------------
 // graph
 // ---------------------------------------------------------------------------------------------
-ggml_tensor * jepa_build_lewm(jepa_context * ctx, ggml_tensor * emb, ggml_tensor * act, ggml_tensor * mask) {
-    const jepa_model * m = ctx->model;
-    const jepa_pred_hparams & p = m->hp.pred;
+ggml_tensor * jepa_build_adaln(jepa_context * ctx, const jepa_adaln_spec & s, ggml_tensor * emb,
+                               ggml_tensor * c, ggml_tensor * mask) {
     ggml_context * g = ctx->ctx_g;
-    const int64_t D = p.embed_dim;
     const int64_t T = emb->ne[1];
     const size_t es = sizeof(float);
 
-    // action embedding (SiLU inside the 2-layer MLP)
-    ggml_tensor * c = jepa_build_mlp2(g, act,
-                                      m->require("pred.action_embed.0.weight"), m->get("pred.action_embed.0.bias"),
-                                      m->require("pred.action_embed.2.weight"), m->get("pred.action_embed.2.bias"),
-                                      p.action_act);
-    ggml_set_name(c, "act_emb");
-
     // x = emb + pos_embed[:T]
     ggml_tensor * x = emb;
-    if (ggml_tensor * pos = m->get("pred.pos_embed")) {
-        ggml_tensor * pv = T == pos->ne[1] ? pos : ggml_view_2d(g, pos, D, T, pos->nb[1], 0);
+    if (s.pos) {
+        ggml_tensor * pv = T == s.pos->ne[1] ? s.pos : ggml_view_2d(g, s.pos, s.pos->ne[0], T, s.pos->nb[1], 0);
         x = ggml_add(g, x, pv);
     }
+    // H-JEPA runs the transformer at its own width: states and conditioning are projected in
+    if (s.in_w)   x = jepa_build_linear(g, x, s.in_w, s.in_b);
+    if (s.cond_w) c = jepa_build_linear(g, c, s.cond_w, s.cond_b);
+    const int64_t D = x->ne[0];
 
     ggml_tensor * cs = jepa_build_act(g, c, JEPA_ACT_SILU);   // silu(c), shared by every block's adaLN
 
@@ -61,8 +59,7 @@ ggml_tensor * jepa_build_lewm(jepa_context * ctx, ggml_tensor * emb, ggml_tensor
     attn.kv_type = ctx->is_gpu ? GGML_TYPE_F16 : GGML_TYPE_F32;
     attn.mask = mask;
 
-    for (int i = 0; i < p.n_layer; i++) {
-        const jepa_layer & L = m->pred_layers[i];
+    for (const jepa_layer & L : *s.layers) {
         ggml_tensor * mod = jepa_build_linear(g, cs, L.adaln_w, L.adaln_b);   // [6D, T]
         ggml_tensor * six[6];
         for (int k = 0; k < 6; k++) {
@@ -72,32 +69,65 @@ ggml_tensor * jepa_build_lewm(jepa_context * ctx, ggml_tensor * emb, ggml_tensor
         ggml_tensor * sh_m = six[3], * sc_m = six[4], * g_m = six[5];
 
         // attention half
-        ggml_tensor * h = ggml_norm(g, x, p.adaln_eps);                       // LN without affine
+        ggml_tensor * h = ggml_norm(g, x, s.adaln_eps);                       // LN without affine
         h = ggml_mul(g, h, ggml_scale_bias(g, sc_a, 1.0f, 1.0f));             // * (1 + scale)
         h = ggml_add(g, h, sh_a);                                             // + shift
-        h = jepa_build_layer_norm(g, h, L.ln1_w, L.ln1_b, p.ln_eps);
+        if (L.ln1_w) h = jepa_build_layer_norm(g, h, L.ln1_w, L.ln1_b, s.ln_eps);
         ggml_tensor * q, * k, * v;
-        jepa_build_qkv(g, h, L, p.n_head, p.head_dim_eff(), &q, &k, &v);
+        jepa_build_qkv(g, h, L, s.n_head, s.head_dim, &q, &k, &v);
         ggml_tensor * a = jepa_build_attention(g, q, k, v, attn);             // [n_head*head_dim, T]
         a = jepa_build_linear(g, a, L.out_w, L.out_b);                        // [D, T]
         x = ggml_add(g, x, ggml_mul(g, a, g_a));
 
         // mlp half
-        h = ggml_norm(g, x, p.adaln_eps);
+        h = ggml_norm(g, x, s.adaln_eps);
         h = ggml_mul(g, h, ggml_scale_bias(g, sc_m, 1.0f, 1.0f));
         h = ggml_add(g, h, sh_m);
-        h = jepa_build_layer_norm(g, h, L.ln2_w, L.ln2_b, p.ln_eps);
-        ggml_tensor * f = jepa_build_mlp2(g, h, L.up_w, L.up_b, L.down_w, L.down_b, p.act);
+        if (L.ln2_w) h = jepa_build_layer_norm(g, h, L.ln2_w, L.ln2_b, s.ln_eps);
+        ggml_tensor * f = jepa_build_mlp2(g, h, L.up_w, L.up_b, L.down_w, L.down_b, s.act);
         x = ggml_add(g, x, ggml_mul(g, f, g_m));
     }
 
-    x = jepa_build_layer_norm(g, x, m->require("pred.norm.weight"), m->get("pred.norm.bias"), p.ln_eps);
-    ggml_tensor * out = jepa_build_mlp2(g, x,
-                                        m->require("pred.proj.0.weight"), m->get("pred.proj.0.bias"),
-                                        m->require("pred.proj.2.weight"), m->get("pred.proj.2.bias"), p.proj_act);
-    ggml_set_name(out, "pred_next");
-    ggml_set_output(out);
-    return out;
+    x = jepa_build_layer_norm(g, x, s.norm_w, s.norm_b, s.ln_eps);
+    if (s.out_w)   x = jepa_build_linear(g, x, s.out_w, s.out_b);
+    if (s.proj0_w) x = jepa_build_mlp2(g, x, s.proj0_w, s.proj0_b, s.proj2_w, s.proj2_b, s.proj_act);
+    ggml_set_name(x, "pred_next");
+    ggml_set_output(x);
+    return x;
+}
+
+void jepa_causal_mask_f16(int64_t T, std::vector<ggml_fp16_t> & out) {
+    const ggml_fp16_t zero = ggml_fp32_to_fp16(0.0f), ninf = ggml_fp32_to_fp16(-INFINITY);
+    out.resize((size_t) T * T);
+    for (int64_t i = 0; i < T; i++) {
+        for (int64_t j = 0; j < T; j++) out[(size_t) i * T + j] = j <= i ? zero : ninf;
+    }
+}
+
+ggml_tensor * jepa_build_lewm(jepa_context * ctx, ggml_tensor * emb, ggml_tensor * act, ggml_tensor * mask) {
+    const jepa_model * m = ctx->model;
+    const jepa_pred_hparams & p = m->hp.pred;
+
+    // action embedding (SiLU inside the 2-layer MLP)
+    ggml_tensor * c = jepa_build_mlp2(ctx->ctx_g, act,
+                                      m->require("pred.action_embed.0.weight"), m->get("pred.action_embed.0.bias"),
+                                      m->require("pred.action_embed.2.weight"), m->get("pred.action_embed.2.bias"),
+                                      p.action_act);
+    ggml_set_name(c, "act_emb");
+
+    jepa_adaln_spec s;
+    s.pos      = m->get("pred.pos_embed");
+    s.layers   = &m->pred_layers;
+    s.norm_w   = m->require("pred.norm.weight");   s.norm_b  = m->get("pred.norm.bias");
+    s.proj0_w  = m->require("pred.proj.0.weight"); s.proj0_b = m->get("pred.proj.0.bias");
+    s.proj2_w  = m->require("pred.proj.2.weight"); s.proj2_b = m->get("pred.proj.2.bias");
+    s.n_head   = p.n_head;
+    s.head_dim = p.head_dim_eff();
+    s.ln_eps   = p.ln_eps;
+    s.adaln_eps = p.adaln_eps;
+    s.act      = p.act;
+    s.proj_act = p.proj_act;
+    return jepa_build_adaln(ctx, s, emb, c, mask);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -160,11 +190,7 @@ extern "C" int jepa_lewm_predict(jepa_context * ctx, const float * embs, const f
     if (T > 1 && p.frame_causal) {
         mask = ggml_new_tensor_2d(g, GGML_TYPE_F16, T, T);
         ggml_set_input(mask);
-        const ggml_fp16_t zero = ggml_fp32_to_fp16(0.0f), ninf = ggml_fp32_to_fp16(-INFINITY);
-        mdata.resize((size_t) T * T);
-        for (int64_t i = 0; i < T; i++) {
-            for (int64_t j = 0; j < T; j++) mdata[(size_t) i * T + j] = j <= i ? zero : ninf;
-        }
+        jepa_causal_mask_f16(T, mdata);
     }
 
     ggml_tensor * y = jepa_build_lewm(ctx, emb, act, mask);

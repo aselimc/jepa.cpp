@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -58,12 +59,14 @@ enum jepa_family_id {
     JEPA_FAMILY_LEVJEPA,   // rope3d (tiled) + CLS (no position) + block-causal mask, tubelet 1
     JEPA_FAMILY_HFVIT,     // DINOv2-style: CLS + learned pos (LeJEPA)
     JEPA_FAMILY_LEWM,      // hfvit encoder + projector MLP + adaLN predictor
+    JEPA_FAMILY_HJEPA,     // hfvit encoder + a stack of LeWM-style levels (H-JEPA), src/hjepa.cpp
 };
 
 enum jepa_act_id {
     JEPA_ACT_GELU_ERF = 0,
     JEPA_ACT_GELU_TANH,
     JEPA_ACT_SILU,
+    JEPA_ACT_RELU,
 };
 
 enum jepa_pos_id {
@@ -95,6 +98,7 @@ const char *   jepa_act_name(jepa_act_id a);
 #define JEPA_LIMIT_N_FRAMES     65536
 #define JEPA_LIMIT_IN_CHANS      1024
 #define JEPA_LIMIT_N_TOKENS   4194304   // pos-table rows, registers, class counts, mask tokens
+#define JEPA_LIMIT_HJEPA_LEVELS    64   // the released H-JEPA hierarchies have 1 to 4
 
 struct jepa_enc_hparams {
     int   embed_dim    = 0;
@@ -187,6 +191,30 @@ struct jepa_pre_hparams {
     float rescale = 1.0f / 255.0f;
 };
 
+// jepa.hjepa.* — one level of an H-JEPA hierarchy (docs/gguf-schema.md "hjepa"). Level k's tensors
+// live under "lvl.{k}." (k is 1-based); the ViT that level 1 reads is the ordinary enc.*.
+struct jepa_hjepa_level {
+    int embed_dim = 0;            // width of the level's state
+    int stride = 1, window = 1;   // level k reads every stride-th state of level k-1 (window is 1)
+    int target_length = 0;        // training clip length at this level (history + 1); informational
+    int action_dim = 0;           // the level's action: stacked raw actions (1) or a latent macro-action (2+)
+    int act_embed_dim = 0;        // width of act_embed(action): the predictor's conditioning
+    std::string enc_kind;         // vit | vit_proprio (level 1) ; latent_mlp | identity (levels 2+)
+    std::string act_enc_kind;     // none (level 1) ; seq | mlp (levels 2+)
+    int act_enc_dim = 0, act_enc_n_layer = 0, act_enc_n_head = 0, act_enc_max_chunk = 0;
+    std::string pred_kind;        // adaln (inner LayerNorms + projector MLP) | adaln_bare (neither)
+    int pred_dim = 0, pred_n_layer = 0, pred_n_head = 0, pred_head_dim = 0, pred_ffn_dim = 0, pred_n_frames = 0;
+};
+
+struct jepa_hjepa_hparams {
+    bool present = false;
+    float ln_eps = 1e-5f, adaln_eps = 1e-6f;
+    std::string proj_kind;        // level-1 pixel projector: mlp | layernorm | identity
+    int pixel_dim = 0, proprio_dim = 0;
+    int raw_action_dim = 0, frameskip = 0;   // level-1 action = frameskip stacked raw actions (0 = not recorded)
+    std::vector<jepa_hjepa_level> levels;    // [0] is level 1
+};
+
 struct jepa_hparams {
     std::string arch, name, license, source_url, description;
     uint32_t file_type = 0;          // general.file_type (0 f32, 1 f16, 7 q8_0, ...)
@@ -197,6 +225,7 @@ struct jepa_hparams {
     jepa_pred_hparams pred;
     jepa_head_hparams head;
     jepa_pre_hparams  pre;
+    jepa_hjepa_hparams hjepa;
     // every general.* / jepa.* key rendered as text, in file order (jepa-info)
     std::vector<std::pair<std::string, std::string>> raw_kv;
 };
@@ -248,6 +277,9 @@ struct jepa_model {
     std::vector<jepa_layer> pred_layers;
     // head
     std::vector<jepa_layer> head_layers;
+    // hjepa: per level, the predictor blocks (lvl.{k}.pred.blk.*) and the action-encoder blocks
+    // (lvl.{k}.act_enc.blk.*); index 0 is level 1
+    std::vector<std::vector<jepa_layer>> hj_pred_layers, hj_act_enc_layers;
 
     ggml_tensor * get(const std::string & name) const;      // nullptr if absent
     ggml_tensor * require(const std::string & name) const;  // logs + aborts if absent
@@ -259,6 +291,9 @@ struct jepa_model {
 bool jepa_hparams_from_gguf(const gguf_context * gg, jepa_hparams & hp);
 // Fill the per-block tensor bundle for `prefix` (e.g. "enc.blk.3.").
 jepa_layer jepa_layer_from_model(const jepa_model & m, const std::string & prefix);
+// hjepa: fill hj_pred_layers / hj_act_enc_layers and check every lvl.* tensor the graph builders
+// of src/hjepa.cpp touch (presence, shape, dtype). False = refuse the file. Implemented in hjepa.cpp.
+bool jepa_hjepa_bind(jepa_model & m);
 // Human-readable dtype name for a file_type value (f32 / f16 / q8_0 / ...).
 const char * jepa_file_type_name(uint32_t ftype);
 
@@ -283,6 +318,7 @@ struct jepa_context {
     int                 max_batch = 0;       // image items per encoder graph (0 -> JEPA_DEFAULT_MAX_BATCH)
     int                 last_batch = 1;      // items in the graph built last (jepa_context_last_batch)
     size_t              max_graph_bytes = 0; // refuse a batched graph bigger than this (0 -> default)
+    std::shared_ptr<void> hjepa_plan;        // src/hjepa-plan.cpp: the f32 weights the planner differentiates through
 };
 
 // Image items folded into one encoder graph unless the caller says otherwise. Measured peak-RSS

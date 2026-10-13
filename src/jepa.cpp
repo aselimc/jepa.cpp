@@ -379,6 +379,7 @@ ggml_tensor * jepa_build_act(ggml_context * ctx, ggml_tensor * x, jepa_act_id ac
         case JEPA_ACT_GELU_ERF:  return ggml_gelu_erf(ctx, x);
         case JEPA_ACT_GELU_TANH: return ggml_gelu(ctx, x);
         case JEPA_ACT_SILU:      return ggml_silu(ctx, x);
+        case JEPA_ACT_RELU:      return ggml_relu(ctx, x);
     }
     return x;
 }
@@ -1203,6 +1204,7 @@ int jepa_encode(jepa_context * ctx, const jepa_input * in, jepa_output * out) {
         case JEPA_FAMILY_IJEPA:
         case JEPA_FAMILY_HFVIT:
         case JEPA_FAMILY_LEWM:
+        case JEPA_FAMILY_HJEPA:
             // every (batch, frame) slice is encoded independently, rows concatenated in that order;
             // up to jepa_context_max_batch() of them share one graph (the ggml batch dimension)
             return jepa_encode_image(ctx, in, out);

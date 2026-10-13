@@ -462,6 +462,7 @@ tools/jepa-embed      image/video -> features (.npy / text)
 tools/jepa-classify   video -> top-k labels (attentive-pool head)
 tools/video-decode.*  --video: an ffmpeg subprocess -> sampled THWC uint8 frames (tools only)
 tools/jepa-worldmodel LeWM: image -> state -> K-step action rollout; --ref-check against fixtures
+tools/jepa-plan       H-JEPA: observation + goal image -> one top-down planner call -> level-1 actions
 tools/jepa-quantize   f32/f16 GGUF -> q8_0 / q4_k / ...
 tools/jepa-bench      timing: encoder / head / predictor / lewm-step / lewm-rollout, --md / --json
 

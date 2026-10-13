@@ -129,6 +129,7 @@ jepa.cpp's own code is MIT.
 | I-JEPA ViT-H/14 | **CC BY-NC 4.0** | [model card](https://huggingface.co/facebook/ijepa_vith14_1k) + the full CC text as [LICENSE](https://github.com/facebookresearch/ijepa/blob/main/LICENSE) | permitted for **non-commercial** use, with attribution to Meta and a note that the file is modified |
 | LeJEPA ViT-S/16 | Apache-2.0 | [model card](https://huggingface.co/OK-AI/lejepa-vits16-pretrain-in1k) metadata (the repo ships no `LICENSE` file) | permitted, with attribution |
 | LeWorldModel Push-T | MIT | [model card](https://huggingface.co/quentinll/lewm-pusht) + [le-wm](https://github.com/lucas-maes/le-wm) | permitted, keep the notice |
+| H-JEPA | MIT | [model card](https://huggingface.co/jepa-world-models/h-jepa) + [H-JEPA](https://github.com/kevinghst/H-JEPA) | permitted, keep the notice |
 | V-JEPA 2 ViT-L/16 (fpc64) | MIT | [model card](https://huggingface.co/facebook/vjepa2-vitl-fpc64-256) + [LICENSE](https://github.com/facebookresearch/vjepa2/blob/main/LICENSE) | permitted, keep the notice |
 | V-JEPA 2 ViT-L SSv2 | MIT | [model card](https://huggingface.co/facebook/vjepa2-vitl-fpc16-256-ssv2) + the same LICENSE | permitted, keep the notice |
 | V-JEPA 2.1 ViT-B/16 @384 | MIT | the [checkpoint table](https://github.com/facebookresearch/vjepa2#v-jepa-21-pretrained-checkpoints) of `facebookresearch/vjepa2`; the `.pt` on `dl.fbaipublicfiles.com` carries no metadata of its own, so this is the repository-level grant | permitted, keep the notice |
@@ -163,6 +164,7 @@ position tables, tokens) as F32; `--ftype f32` stores everything as F32. Quantiz
 |---|---|---|
 | LeJEPA ViT-S/16 | `lejepa` | `python scripts/convert.py --family hfvit --src models/OK-AI/lejepa-vits16-pretrain-in1k --ftype f16` |
 | LeWorldModel Push-T | `lewm` | `python scripts/convert.py --family lewm --src models/quentinll/lewm-pusht --ftype f16` |
+| H-JEPA (any released run) | `hjepa` | `python scripts/convert.py --family hjepa --src models/jepa-world-models/h-jepa/ant/ant_hjepa_l3/seed42/ant_hjepa_l3_object.ckpt --ftype f16` |
 | V-JEPA 2.1 ViT-B/16 @384 | `vjepa21` | `python scripts/convert.py --family vjepa2_1 --src models/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt --out models/gguf/vjepa2_1-vitb-384-f16.gguf` |
 | I-JEPA ViT-H/14 | `ijepa` | `python scripts/convert.py --family ijepa --src models/facebook/ijepa_vith14_1k --ftype f16` |
 | V-JEPA 2 ViT-L/16 (fpc64) | `vjepa2` | `python scripts/convert.py --family vjepa2 --src models/facebook/vjepa2-vitl-fpc64-256 --ftype f16` |
@@ -309,6 +311,27 @@ It encodes the image, projects the CLS token to the world-model state, rolls the
 the actions and prints the L2 and cosine drift per step. `--actions '0.1,0.2,…;0.3,…'` supplies real
 actions; `--ref-check tests/fixtures/ref/lewm-pusht` replays the PyTorch reference and exits non-zero
 on a mismatch.
+
+### `jepa-plan` — from two images to actions (H-JEPA)
+
+```bash
+scripts/download_models.sh hjepa                       # ant_hjepa_l3-seed42-f16.gguf
+build/jepa-plan -m models/gguf/ant_hjepa_l3-seed42-f16.gguf \
+    --obs now.png --goal goal.png --horizons 2,2,5 --samples 100,100,400 -t 32
+```
+
+One call of the paper's top-down planner. The observation and the goal are encoded at every level;
+the top level optimises its macro-actions towards the goal by gradient descent through its world
+model, and each level below is asked to reach the first state the level above predicted. It prints
+what every level did (horizon, iterations, cost, the latent space the cost was measured in) and the
+level-1 plan, in the model's units and as raw environment actions. Per-level lists (`--horizons`,
+`--samples`, `--lr`, `--cost-last-n`, `--action-cost`, `--subgoals`, …) take level 1 first; the
+values in the authors' `h_jepa/config/eval/*.yaml` map onto them one to one. `--budget N --step K
+--interval R` plans as call `K / R` of an `N`-step episode, with the horizons the reference's
+schedule gives that call. A controller executes the first actions, observes, and calls again.
+
+The planner's gradient runs on the CPU threads whatever device the model is on, and its result
+does not depend on the thread count.
 
 ### `jepa-quantize` — make a file smaller
 

@@ -57,11 +57,30 @@ add_library(jepa STATIC
   src/rope3d.cpp
   src/predictor.cpp
   src/lewm.cpp
+  src/hjepa.cpp
+  src/hjepa-plan.cpp
   src/vjepa2_ac.cpp
 )
+# The H-JEPA planner differentiates through the predictor on the host, in plain loops the compiler
+# vectorises; like ggml's own kernels it is built for the host CPU unless JEPA_NATIVE is off.
+# Contraction is off for that file whatever the target: a fused multiply-add in a loop's vector
+# body and a separate multiply and add in its scalar remainder made the planner's last bits depend
+# on buffer alignment. MSVC does not contract under its default /fp:precise.
+if(NOT MSVC)
+  include(CheckCXXCompilerFlag)
+  set(_plan_flags -ffp-contract=off)
+  check_cxx_compiler_flag(-march=native JEPA_HAS_MARCH_NATIVE)
+  if(JEPA_NATIVE AND JEPA_HAS_MARCH_NATIVE)
+    list(APPEND _plan_flags -march=native)
+  endif()
+  set_source_files_properties(src/hjepa-plan.cpp PROPERTIES COMPILE_OPTIONS "${_plan_flags}")
+endif()
 target_include_directories(jepa PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(jepa PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
 target_link_libraries(jepa PUBLIC ggml)
+# src/hjepa-plan.cpp spreads the planner's candidates over std::thread workers
+find_package(Threads REQUIRED)
+target_link_libraries(jepa PUBLIC Threads::Threads)
 target_compile_options(jepa PRIVATE ${JEPA_WARN_FLAGS})
 # jepa_version() reports the project version above, so a release binary cannot disagree with the tag.
 # src/jepa-internal.h keeps a fallback for a build that does not come through this file.
@@ -69,7 +88,7 @@ target_compile_definitions(jepa PUBLIC JEPA_VERSION="${PROJECT_VERSION}")
 
 # --- tools -------------------------------------------------------------------
 if(JEPA_BUILD_TOOLS)
-  foreach(tool jepa-embed jepa-classify jepa-quantize jepa-bench jepa-info jepa-worldmodel jepa-server)
+  foreach(tool jepa-embed jepa-classify jepa-quantize jepa-bench jepa-info jepa-worldmodel jepa-plan jepa-server)
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/${tool}.cpp)
       set(_tool_src tools/${tool}.cpp)
       # --video: ffmpeg is a *run-time* dependency of these two tools, never a build-time one, so
@@ -193,6 +212,18 @@ if(JEPA_BUILD_TESTS)
                COMMAND test-predictor --lewm ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/lewm-pusht-f32.gguf
                        --ref ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/lewm-pusht --threads 8)
     endif()
+    # H-JEPA parity (f32) against the authors' modules, one run per architecture variant: the
+    # 3-level proprio-fusion hierarchy, the plain 2-level one, the HWM baseline (identity upper
+    # encoder) and the DROID causal-transformer predictor. Each is registered only when its
+    # git-ignored GGUF and reference dump exist (scripts/hjepa_reference.py).
+    foreach(_h ant_hjepa_l3-seed42 pusht_hjepa_l2-seed42 ant_hwm_l2-seed42 droid_hjepa_l2-seed1)
+      if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/${_h}-f32.gguf AND
+         EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/${_h}/manifest.json)
+        add_test(NAME predictor-hjepa-${_h}
+                 COMMAND test-predictor --hjepa ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/${_h}-f32.gguf
+                         --ref ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/${_h} --threads 8)
+      endif()
+    endforeach()
     # V-JEPA 2 masked predictor parity (f16) on the 16-frame archery sample
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/vjepa2-vitl-fpc64-256-f16.gguf AND
        EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ref/vjepa2-vitl-fpc64-256/manifest.json)

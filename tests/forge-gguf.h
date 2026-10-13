@@ -33,6 +33,16 @@ struct forge_opts {
     int  ac_action_dim = 4, ac_state_dim = 4, ac_cond_tokens = 2, ac_grid = 2, ac_frames = 5;
     bool ac_drop_tensors = false;      // metadata promises a predictor the file does not carry
     bool ac_bad_action_shape = false;  // pred.action_embed.weight with the wrong input width
+    // A complete, loadable 2-level H-JEPA hierarchy (jepa.family = "hjepa"): identity pixel
+    // projector, a latent-MLP level 2 at stride 2 with a 'seq' action encoder, adaLN predictors.
+    // Small enough to run every jepa_hjepa_* graph under ASAN. One knob per broken invariant.
+    bool hjepa = false;
+    bool hj_proprio = false;           // level 1 = [pixel | proprio]: exercises in_proj / cond_proj / out_proj
+    bool hj_drop_level2 = false;       // metadata promises a second level the file does not carry
+    bool hj_short_array = false;       // a per-level array with one entry too few
+    int  hj_window = 1;                // anything but 1 is unsupported and has to be refused
+    bool hj_bad_qkv_shape = false;     // lvl.1.pred.blk.0.attn_qkv.weight at the wrong width
+    bool hj_stride_past_chunk = false; // level-2 stride larger than the action encoder's position table
     int  n_registers = 0;
     int  extra_patch_in = 0;            // +N on enc.patch_embed.weight ne[0]: a shape mismatch
     int  ln1_len = 0;                   // 0 = embed_dim; anything else is a norm weight that cannot broadcast
@@ -56,7 +66,8 @@ static ggml_tensor * add_t(ggml_context * ctx, gguf_context * gg, const char * n
     float * d = (float *) t->data;
     if (type == GGML_TYPE_F32) {
         const size_t n = (size_t) ggml_nelements(t);
-        for (size_t i = 0; i < n; i++) d[i] = 0.05f * (float) ((i * 37 % 41) - 20);
+        // (int): the subtraction is meant to go negative, which it cannot do in size_t
+        for (size_t i = 0; i < n; i++) d[i] = 0.05f * (float) ((int) (i * 37 % 41) - 20);
     } else {
         memset(t->data, 0, ggml_nbytes(t));
     }
@@ -114,6 +125,41 @@ static void forge(const std::string & path, const forge_opts & o) {
         gguf_set_val_f32(gg, "jepa.pred.norm_reps_eps", 1e-5f);
     }
     if (o.head_kind) gguf_set_val_str(gg, "jepa.head.kind", o.head_kind);
+    // hjepa: level 1 state is d1-wide (the encoder's D, plus 4 with a proprio stream); the
+    // predictors are HJ_P wide, so with proprio the width-changing projections all exist
+    enum { HJ_P = 8, HJ_PH = 4, HJ_PF = 16, HJ_A1 = 3, HJ_A2 = 2, HJ_AE = 4, HJ_PROPRIO = 3 };
+    const int64_t hj_d1 = o.embed_dim + (o.hj_proprio ? 4 : 0);
+    if (o.hjepa) {
+        const int stride2 = o.hj_stride_past_chunk ? 3 : 2;
+        const int32_t two[2][16] = {
+            { (int32_t) hj_d1, 1,       1,           4, HJ_A1, (int32_t) hj_d1, 0,     0, 0, 0, HJ_P, 1, 2, HJ_PH, HJ_PF, 3 },
+            { HJ_P,            stride2, o.hj_window, 4, HJ_A2, HJ_P,            HJ_AE, 1, 2, 2, HJ_P, 1, 2, HJ_PH, HJ_PF, 3 },
+        };
+        const char * keys[16] = {
+            "embed_dim", "stride", "window", "target_length", "action_dim", "act_embed_dim", "act_enc_dim",
+            "act_enc_n_layer", "act_enc_n_head", "act_enc_max_chunk", "pred_dim", "pred_n_layer", "pred_n_head",
+            "pred_head_dim", "pred_ffn_dim", "pred_n_frames",
+        };
+        gguf_set_val_u32(gg, "jepa.hjepa.n_levels", 2);
+        gguf_set_val_f32(gg, "jepa.hjepa.ln_eps", 1e-5f);
+        gguf_set_val_f32(gg, "jepa.hjepa.adaln_eps", 1e-6f);
+        gguf_set_val_str(gg, "jepa.hjepa.proj_kind", "identity");
+        gguf_set_val_u32(gg, "jepa.hjepa.pixel_dim", (uint32_t) o.embed_dim);
+        gguf_set_val_u32(gg, "jepa.hjepa.proprio_dim", o.hj_proprio ? HJ_PROPRIO : 0);
+        gguf_set_val_u32(gg, "jepa.hjepa.raw_action_dim", HJ_A1);
+        gguf_set_val_u32(gg, "jepa.hjepa.frameskip", 1);
+        for (int i = 0; i < 16; i++) {
+            const int32_t v[2] = { two[0][i], two[1][i] };
+            const bool cut = o.hj_short_array && i == 0;
+            gguf_set_arr_data(gg, (std::string("jepa.hjepa.") + keys[i]).c_str(), GGUF_TYPE_INT32, v, cut ? 1 : 2);
+        }
+        const char * enc_kind[2] = { o.hj_proprio ? "vit_proprio" : "vit", "latent_mlp" };
+        const char * act_enc_kind[2] = { "none", "seq" };
+        const char * pred_kind[2] = { "adaln", "adaln" };
+        gguf_set_arr_str(gg, "jepa.hjepa.enc_kind", enc_kind, 2);
+        gguf_set_arr_str(gg, "jepa.hjepa.act_enc_kind", act_enc_kind, 2);
+        gguf_set_arr_str(gg, "jepa.hjepa.pred_kind", pred_kind, 2);
+    }
 
     const float mean[3] = { 0.485f, 0.456f, 0.406f };
     const float stdv[3] = { o.pre_std0, 0.224f, 0.225f };
@@ -194,6 +240,65 @@ static void forge(const std::string & path, const forge_opts & o) {
         add_t(ctx, gg, "pred.norm.bias", Dp, 0);
         add_t(ctx, gg, "pred.proj.weight", Dp, D);
         add_t(ctx, gg, "pred.proj.bias", D, 0);
+    }
+
+    if (o.hjepa) {
+        auto lin = [&](const std::string & n, int64_t n_in, int64_t n_out, bool bias = true) {
+            add_t(ctx, gg, (n + ".weight").c_str(), n_in, n_out);
+            if (bias) add_t(ctx, gg, (n + ".bias").c_str(), n_out, 0);
+        };
+        auto norm = [&](const std::string & n, int64_t d) {
+            add_t(ctx, gg, (n + ".weight").c_str(), d, 0);
+            add_t(ctx, gg, (n + ".bias").c_str(), d, 0);
+        };
+        auto predictor = [&](const std::string & p, int64_t d_state, bool bad_qkv) {
+            add_t(ctx, gg, (p + "pos_embed").c_str(), d_state, 3);
+            if (d_state != HJ_P) {
+                lin(p + "in_proj", d_state, HJ_P);
+                lin(p + "cond_proj", d_state, HJ_P);
+                lin(p + "out_proj", HJ_P, d_state);
+            }
+            const std::string q = p + "blk.0.";
+            lin(q + "adaln", HJ_P, 6 * HJ_P);
+            norm(q + "ln1", HJ_P);
+            lin(q + "attn_qkv", HJ_P, 3 * 2 * HJ_PH + (bad_qkv ? 3 : 0), false);
+            lin(q + "attn_out", 2 * HJ_PH, HJ_P);
+            norm(q + "ln2", HJ_P);
+            lin(q + "ffn_up", HJ_P, HJ_PF);
+            lin(q + "ffn_down", HJ_PF, HJ_P);
+            norm(p + "norm", HJ_P);
+            lin(p + "proj.0", d_state, 10);
+            lin(p + "proj.2", 10, d_state);
+        };
+        if (o.hj_proprio) {
+            lin("lvl.1.enc.proprio.0", HJ_PROPRIO, 4);
+            norm("lvl.1.enc.proprio.ln", 4);
+            lin("lvl.1.enc.proprio.2", 4, 4);
+        }
+        lin("lvl.1.act_embed.0", HJ_A1, 6);
+        lin("lvl.1.act_embed.2", 6, hj_d1);
+        predictor("lvl.1.pred.", hj_d1, o.hj_bad_qkv_shape);
+        if (!o.hj_drop_level2) {
+            norm("lvl.2.enc.in_norm", hj_d1);
+            lin("lvl.2.enc.fc1", hj_d1, 10);
+            lin("lvl.2.enc.fc2", 10, HJ_P);
+            lin("lvl.2.act_enc.step", hj_d1, HJ_AE);
+            add_t(ctx, gg, "lvl.2.act_enc.pos", HJ_AE, 3);     // CLS + max_chunk 2
+            norm("lvl.2.act_enc.blk.0.ln1", HJ_AE);
+            lin("lvl.2.act_enc.blk.0.attn_qkv", HJ_AE, 3 * HJ_AE);
+            lin("lvl.2.act_enc.blk.0.attn_out", HJ_AE, HJ_AE);
+            norm("lvl.2.act_enc.blk.0.ln2", HJ_AE);
+            lin("lvl.2.act_enc.blk.0.ffn_up", HJ_AE, 8);
+            lin("lvl.2.act_enc.blk.0.ffn_down", 8, HJ_AE);
+            lin("lvl.2.act_enc.head.0", HJ_AE, HJ_AE);
+            norm("lvl.2.act_enc.head.ln", HJ_AE);
+            lin("lvl.2.act_enc.head.2", HJ_AE, HJ_A2);
+            norm("lvl.2.act_enc.out_norm", HJ_A2);
+            lin("lvl.2.act_embed.0", HJ_A2, 6);
+            lin("lvl.2.act_embed.2", 6, HJ_P);
+            add_t(ctx, gg, "lvl.2.act_queue", HJ_A2, 5);
+            predictor("lvl.2.pred.", HJ_P, false);
+        }
     }
 
     if (!gguf_write_to_file(gg, path.c_str(), false)) {

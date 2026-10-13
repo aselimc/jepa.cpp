@@ -451,6 +451,198 @@ static void test_loader() {
 }
 
 // --------------------------------------------------------------------------------------------
+// 1b. H-JEPA: the per-level metadata and tensors, then the entry points on a forged hierarchy
+// --------------------------------------------------------------------------------------------
+static void test_hjepa() {
+    forge_opts o;
+    auto base = [&]() { o = forge_opts{}; o.family = "hjepa"; o.hjepa = true; };
+
+    // every invariant jepa_hjepa_bind checks, broken one at a time: without it the graph builders
+    // would matmul a missing tensor or view past the end of a position table
+    base(); o.hj_drop_level2 = true;
+    forge(tmp("h1.gguf"), o); load_case("load/hjepa-level-without-tensors", tmp("h1.gguf"));
+    base(); o.hj_short_array = true;
+    forge(tmp("h2.gguf"), o); load_case("load/hjepa-per-level-array-too-short", tmp("h2.gguf"));
+    base(); o.hj_window = 2;
+    forge(tmp("h3.gguf"), o); load_case("load/hjepa-window-not-1", tmp("h3.gguf"));
+    base(); o.hj_bad_qkv_shape = true;
+    forge(tmp("h4.gguf"), o); load_case("load/hjepa-predictor-qkv-shape", tmp("h4.gguf"));
+    base(); o.hj_stride_past_chunk = true;
+    forge(tmp("h5.gguf"), o); load_case("load/hjepa-stride-past-action-chunk", tmp("h5.gguf"));
+    o = forge_opts{}; o.family = "hjepa";               // the family with none of its metadata
+    forge(tmp("h6.gguf"), o); load_case("load/hjepa-without-levels", tmp("h6.gguf"));
+
+    // the two loadable shapes, run end to end: with and without a proprio stream (the latter is
+    // the one whose predictor width differs from its state width)
+    for (int proprio = 0; proprio < 2; proprio++) {
+        base(); o.hj_proprio = proprio != 0;
+        const std::string path = tmp(proprio ? "h8.gguf" : "h7.gguf");
+        forge(path, o);
+        jepa_error_reset();
+        jepa_model * m = jepa_model_load(path.c_str(), false);
+        jepa_context * c = m ? jepa_context_new(m, jepa_context_default_params()) : nullptr;
+        if (!c) {
+            printf("FAIL %-34s the forged H-JEPA model did not load: %s\n", "hjepa/forged-model-loads", jepa_error_text());
+            g_fail++;
+            jepa_model_free(m);
+            continue;
+        }
+        const int D0 = jepa_model_embed_dim(m), D1 = jepa_hjepa_embed_dim(m, 1), D2 = jepa_hjepa_embed_dim(m, 2);
+        const int A1 = jepa_hjepa_action_dim(m, 1), A2 = jepa_hjepa_action_dim(m, 2), P = jepa_hjepa_proprio_dim(m);
+        const int T = 5;
+        std::vector<float> cls((size_t) T * D0), pr((size_t) T * (P > 0 ? P : 1)), act((size_t) T * A1);
+        for (size_t i = 0; i < cls.size(); i++) cls[i] = 0.01f * (float) ((i * 13) % 29) - 0.1f;
+        for (size_t i = 0; i < pr.size(); i++)  pr[i]  = 0.02f * (float) ((i * 7) % 17) - 0.15f;
+        for (size_t i = 0; i < act.size(); i++) act[i] = 0.03f * (float) ((i * 5) % 11) - 0.12f;
+        const char * tag = proprio ? "hjepa/proprio-chain-runs" : "hjepa/chain-runs";
+        jepa_output s1 = {}, s2 = {}, e1 = {}, a2 = {}, p1 = {}, p2 = {};
+        // each step named, so a failure says which entry point it was
+        int step = 0;
+        bool ok = true;
+        auto must = [&](bool cond) { if (ok) { step++; ok = cond; } };
+        must(jepa_hjepa_n_levels(m) == 2 && jepa_hjepa_stride(m, 2) == 2);
+        must(jepa_hjepa_embed(c, cls.data(), P > 0 ? pr.data() : nullptr, T, &s1) == 0 && s1.n_tokens == T && s1.dim == D1);
+        must(jepa_hjepa_lift(c, 2, s1.data, T, &s2) == 0 && s2.n_tokens == 3 && s2.dim == D2);
+        must(jepa_hjepa_action_embed(c, 1, act.data(), T, &e1) == 0 && e1.n_tokens == T);
+        // 5 rows at stride 2: two full chunks and a one-step trailing chunk
+        must(jepa_hjepa_action_encode(c, 2, e1.data, T, &a2) == 0 && a2.n_tokens == 3 && a2.dim == A2);
+        must(jepa_hjepa_predict(c, 1, s1.data, act.data(), 3, &p1) == 0 && p1.n_tokens == 3 && p1.dim == D1);
+        must(jepa_hjepa_predict(c, 2, s2.data, a2.data, 3, &p2) == 0 && p2.n_tokens == 3 && p2.dim == D2);
+        std::vector<float> ro((size_t) 3 * D2);
+        must(jepa_hjepa_rollout(c, 2, s2.data, 1, a2.data, 3, 1, ro.data()) == 0);
+        bool finite = true;
+        for (size_t i = 0; ok && i < ro.size(); i++) finite = finite && std::isfinite(ro[i]);
+        must(finite);
+        // rollout step 0 is predict(T = 1), and T = 1 is row 0 of the causal T = 3 run
+        bool same = true;
+        for (int i = 0; ok && i < D2; i++) same = same && std::fabs(ro[(size_t) i] - p2.data[i]) <= 1e-4f * (1.0f + std::fabs(p2.data[i]));
+        must(same);
+        if (!ok) printf("     %s stopped at step %d\n", tag, step);
+        check_ok(tag, ok);
+
+        if (ok) {
+            // The planner, end to end on the forged hierarchy: both levels solve, the result is
+            // finite, and it is the same bytes on one thread and on four.
+            jepa_hjepa_level_plan lp[2] = { jepa_hjepa_level_plan_default(), jepa_hjepa_level_plan_default() };
+            lp[0].horizon = 4; lp[0].n_samples = 6; lp[0].n_steps = 5; lp[0].cost_last_n = 2; lp[0].action_cost_weight = 0.2f;
+            lp[1].horizon = 2; lp[1].n_samples = 5; lp[1].n_steps = 5; lp[1].action_noise = 0.01f;
+            const float * stp[2] = { s1.data, s2.data };
+            const float * glp[2] = { s1.data + (size_t) (T - 1) * D1, s2.data + (size_t) 2 * D2 };
+            std::vector<float> pa((size_t) 4 * A1), pb((size_t) 4 * A1, 1.0f);
+            jepa_hjepa_plan_info pi;
+            jepa_context_params cp4 = jepa_context_default_params();
+            cp4.n_threads = 4;
+            jepa_context_params cp1 = cp4;
+            cp1.n_threads = 1;
+            jepa_context * c4 = jepa_context_new(m, cp4), * c1 = jepa_context_new(m, cp1);
+            bool pok = c4 && c1 && jepa_hjepa_plan(c4, stp, glp, lp, 2, nullptr, nullptr, pa.data(), &pi) == 0
+                    && pi.planned[0] && pi.planned[1] && pi.goal_level[0] == 2 && pi.goal_level[1] == 2
+                    && jepa_hjepa_plan(c1, stp, glp, lp, 2, nullptr, nullptr, pb.data(), nullptr) == 0;
+            for (size_t i = 0; pok && i < pa.size(); i++) pok = std::isfinite(pa[i]) && pa[i] == pb[i];
+            check_ok(proprio ? "hjepa/proprio-plan-runs-thread-invariant" : "hjepa/plan-runs-thread-invariant", pok);
+            // a skipped upper level: level 1 is then scored against the goal in level-2 space, densely
+            lp[1].horizon = 1; lp[1].horizon_one_goal_upper = 1; lp[0].horizon = 3;
+            pok = c4 && jepa_hjepa_plan(c4, stp, glp, lp, 2, nullptr, nullptr, pa.data(), &pi) == 0
+               && !pi.planned[1] && pi.planned[0] && pi.goal_level[0] == 2;
+            check_ok(proprio ? "hjepa/proprio-plan-skips-horizon-1" : "hjepa/plan-skips-horizon-1", pok);
+            if (!proprio && c4) {
+                jepa_hjepa_goal g = { glp[1], 1, 2, 0, nullptr };
+                std::vector<float> cand((size_t) 2 * 4 * A1, 0.1f), costs(2), grad(cand.size());
+                jepa_error_reset();
+                check("hjepa/plan-cost-level-out-of-range", jepa_hjepa_plan_cost(c4, 3, s1.data, &g, nullptr, cand.data(), 2, 4, costs.data(), nullptr) != 0);
+                g.level = 1; g.states = glp[1];
+                jepa_error_reset();
+                g.level = 3;
+                check("hjepa/plan-cost-goal-level-out-of-range", jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 4, costs.data(), nullptr) != 0);
+                g.level = 2;
+                jepa_error_reset();
+                check("hjepa/plan-cost-horizon-zero", jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 0, costs.data(), nullptr) != 0);
+                jepa_error_reset();   // stride 2: one level-1 step does not reach a level-2 state
+                check("hjepa/plan-cost-horizon-below-stride", jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 1, costs.data(), nullptr) != 0);
+                g.n_states = 3;       // three goals for the single scored state
+                jepa_error_reset();
+                check("hjepa/plan-cost-goal-count", jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 4, costs.data(), nullptr) != 0);
+                g.n_states = 1; g.level = 1; g.dense = 1;
+                jepa_error_reset();
+                check("hjepa/plan-cost-dense-without-upper-goal", jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 4, costs.data(), nullptr) != 0);
+                g.dense = 0; g.level = 2;
+                jepa_error_reset();
+                check("hjepa/plan-cost-null-actions", jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, nullptr, 2, 4, costs.data(), nullptr) != 0, false);
+                jepa_error_reset();
+                check("hjepa/plan-wrong-level-count", jepa_hjepa_plan(c4, stp, glp, lp, 1, nullptr, nullptr, pa.data(), nullptr) != 0);
+                lp[0].n_samples = 0;
+                jepa_error_reset();
+                check("hjepa/plan-zero-samples", jepa_hjepa_plan(c4, stp, glp, lp, 2, nullptr, nullptr, pa.data(), nullptr) != 0);
+                lp[0].n_samples = 6;
+                int hz[2];
+                jepa_error_reset();
+                check("hjepa/horizons-past-budget", jepa_hjepa_horizons(m, lp, 2, 2, 10, 10, hz) != 0);
+                jepa_error_reset();
+                check("hjepa/horizons-zero-interval", jepa_hjepa_horizons(m, lp, 2, 0, 10, 0, hz) != 0);
+                // and the gradient is the derivative of the cost: a central difference on one coordinate
+                g = { glp[1], 1, 2, 0, nullptr };
+                for (size_t i = 0; i < cand.size(); i++) cand[i] = 0.02f * (float) ((i * 7) % 13) - 0.1f;
+                bool fd = jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 4, costs.data(), grad.data()) == 0;
+                const size_t probe = 5;
+                const float eps = 1e-2f, keep = cand[probe];
+                float cp_[2], cm_[2];
+                cand[probe] = keep + eps;
+                fd = fd && jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 4, cp_, nullptr) == 0;
+                cand[probe] = keep - eps;
+                fd = fd && jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 4, cm_, nullptr) == 0;
+                const float num = (cp_[0] - cm_[0]) / (2.0f * eps);
+                fd = fd && std::fabs(num - grad[probe]) <= 2e-2f * (std::fabs(num) + std::fabs(grad[probe])) + 1e-4f;
+                check_ok("hjepa/plan-gradient-matches-finite-difference", fd);
+            }
+            jepa_context_free(c4);
+            jepa_context_free(c1);
+        }
+        if (!proprio && ok) {
+            jepa_output x = {};
+            std::vector<float> prior(16);
+            check_ok("hjepa/action-prior-rows", jepa_hjepa_action_prior(m, 2, prior.data(), 8) == 5
+                                                 && jepa_hjepa_action_prior(m, 1, prior.data(), 8) == 0);
+            jepa_error_reset();
+            check("hjepa/level-out-of-range", jepa_hjepa_predict(c, 3, s2.data, a2.data, 1, &x) != 0);
+            jepa_error_reset();
+            check("hjepa/level-zero", jepa_hjepa_lift(c, 0, s1.data, T, &x) != 0);
+            jepa_error_reset();
+            check("hjepa/lift-level-1", jepa_hjepa_lift(c, 1, s1.data, T, &x) != 0);
+            jepa_error_reset();
+            check("hjepa/action-encode-level-1", jepa_hjepa_action_encode(c, 1, e1.data, T, &x) != 0);
+            jepa_error_reset();
+            check("hjepa/predict-past-position-slots", jepa_hjepa_predict(c, 1, s1.data, act.data(), 4, &x) != 0);
+            jepa_error_reset();
+            check("hjepa/rollout-history-past-slots", jepa_hjepa_rollout(c, 2, s2.data, 1, a2.data, 1, 4, ro.data()) != 0);
+            jepa_error_reset();
+            check("hjepa/rollout-history-zero", jepa_hjepa_rollout(c, 2, s2.data, 1, a2.data, 1, 0, ro.data()) != 0);
+            jepa_error_reset();
+            check("hjepa/predict-null-states", jepa_hjepa_predict(c, 1, nullptr, act.data(), 1, &x) != 0, false);
+            jepa_error_reset();
+            check("hjepa/embed-zero-rows", jepa_hjepa_embed(c, cls.data(), nullptr, 0, &x) != 0, false);
+            jepa_error_reset();
+            check("hjepa/lewm-predict-refuses-hjepa", jepa_lewm_predict(c, s1.data, act.data(), 1, &x) != 0);
+            // the rollout's sequence buffer is sized from two caller-supplied ints
+            errs_setenv("JEPA_MAX_GRAPH_MIB", "1");
+            jepa_context * tight = jepa_context_new(m, jepa_context_default_params());
+            jepa_error_reset();
+            check_msg("hjepa/absurd-rollout-length",
+                      !tight || jepa_hjepa_rollout(tight, 2, s2.data, 1, a2.data, 1 << 24, 1, ro.data()) != 0, "JEPA_MAX_GRAPH_MIB");
+            jepa_context_free(tight);
+            errs_unsetenv("JEPA_MAX_GRAPH_MIB");
+        }
+        if (proprio && ok) {
+            jepa_output x = {};
+            jepa_error_reset();
+            check("hjepa/embed-without-proprio", jepa_hjepa_embed(c, cls.data(), nullptr, T, &x) != 0);
+        }
+        jepa_free(s1.data); jepa_free(s2.data); jepa_free(e1.data); jepa_free(a2.data); jepa_free(p1.data); jepa_free(p2.data);
+        jepa_context_free(c);
+        jepa_model_free(m);
+    }
+}
+
+// --------------------------------------------------------------------------------------------
 // 2. the API's own guards — NULL handles, empty and impossible shapes
 // --------------------------------------------------------------------------------------------
 static void test_api_guards(jepa_model * m, jepa_context * ctx) {
@@ -704,6 +896,7 @@ int main(int argc, char ** argv) {
     }
 
     test_loader();
+    test_hjepa();
 
     // Cases that need a real model. The forged one is fine for most of them and is what runs when
     // no --model was given, so this block runs everywhere; --model is repeatable because the budget

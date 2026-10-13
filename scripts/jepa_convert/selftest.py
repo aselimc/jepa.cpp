@@ -25,6 +25,7 @@ embedding, 3-D RoPE in the tiled layout with an identity row for CLS, and the bl
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 from pathlib import Path
@@ -576,6 +577,51 @@ def check_ac(m: Model, ref: Path, tol: float | None) -> bool:
 
 
 # ----------------------------------------------------------------------------- main
+def check_hjepa(m: Model, ref: Path, tol: float | None) -> bool:
+    """Every hjepa graph against a scripts/hjepa_reference.py dump (the authors' PyTorch modules)."""
+    from . import hjepa_numpy_ref as HJ
+
+    man = json.loads((ref / "manifest.json").read_text())
+    types = m.tensor_types()
+    is_q = any(k not in ("F32", "F16") for k in types)
+    tol = tol if tol is not None else (1e-1 if is_q else 2e-2 if "F16" in types else 1e-4)
+    print(f"hjepa {m.hp['general.name']}: {m.hp['jepa.hjepa.n_levels']} levels, tensor types={types} tol(rel)={tol}")
+
+    def ld(name):
+        f = ref / f"seq.{name}.npy"
+        return np.load(f) if f.exists() else None
+
+    ok = True
+    tokens = encoder_forward(m, ld("input")[0])
+    ok &= report("ViT tokens (frame 0)", tokens, ld("last_hidden_state"), tol)
+    state = HJ.embed(m, ld("cls"), ld("proprio"))
+    ok &= report("level 1 state = embed(CLS[, proprio])", state, ld("lvl1.state"), tol)
+    act_emb = None
+    for lv in man["levels"]:
+        k = lv["level"]
+        s_ref, a_ref, e_ref = ld(f"lvl{k}.state"), ld(f"lvl{k}.action"), ld(f"lvl{k}.act_emb")
+        if k > 1:
+            ok &= report(f"level {k} state = lift(level {k - 1})", HJ.lift(m, k, ld(f"lvl{k - 1}.state")), s_ref, tol)
+            chunks, n_valid = HJ.act_chunks(ld(f"lvl{k - 1}.act_emb"), lv["stride"])
+            if not np.array_equal(n_valid, ld(f"lvl{k}.n_valid")):
+                print(f"  level {k}: chunk lengths {n_valid} != reference {ld(f'lvl{k}.n_valid')}  FAIL")
+                ok = False
+            ok &= report(f"level {k} latent action = act_encode", HJ.act_encode(m, k, chunks, n_valid), a_ref, tol)
+        ok &= report(f"level {k} act_embed", HJ.act_embed(m, k, a_ref), e_ref, tol)
+        T = lv["pred_steps"]
+        pred = HJ.predict(m, k, s_ref[:T], a_ref[:T])
+        ok &= report(f"level {k} predict ({T} steps)", pred, ld(f"lvl{k}.pred"), tol)
+        if T > 1:   # causality: a different last action must leave the earlier rows alone
+            a2 = a_ref[:T].copy(); a2[-1] += 0.5
+            ok &= report(f"level {k} causal (rows 0..{T - 2})", HJ.predict(m, k, s_ref[:T], a2)[:-1], pred[:-1], 1e-6)
+        for H in lv["rollout_history"]:
+            # a rollout feeds its own outputs back, so the error of one step is amplified by the next
+            ok &= report(f"level {k} rollout history {H}", HJ.rollout(m, k, s_ref[:1], a_ref, H),
+                         ld(f"lvl{k}.rollout_h{H}"), tol * 10)
+    print("SELFTEST", "PASSED" if ok else "FAILED")
+    return ok
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--gguf", required=True)
@@ -584,6 +630,9 @@ def main(argv=None) -> int:
                     help="V-JEPA 2-AC: check ac_predictor_forward against a dump from "
                          "scripts/dump_reference.py --model vjepa2-ac-vitg (tests/fixtures/ref/vjepa2-ac-vitg). "
                          "Needs no PyTorch and no source checkpoint.")
+    ap.add_argument("--hjepa-ref", default=None, metavar="REFDIR",
+                    help="H-JEPA: check hjepa_numpy_ref against a dump from scripts/hjepa_reference.py "
+                         "(tests/fixtures/ref/<run>-<seed>). Needs no source checkpoint.")
     ap.add_argument("--lewm-src", default=None, help="checkout of stable-worldmodel (for the LeWM predictor reference)")
     ap.add_argument("--n-images", type=int, default=3)
     ap.add_argument("--tol", type=float, default=None, help="max relative error (default 1e-4 f32 / 2e-2 f16)")
@@ -593,8 +642,10 @@ def main(argv=None) -> int:
     m = Model(args.gguf)
     if args.ac_ref:
         return 0 if check_ac(m, Path(args.ac_ref), args.tol) else 1
+    if args.hjepa_ref:
+        return 0 if check_hjepa(m, Path(args.hjepa_ref), args.tol) else 1
     if not args.src:
-        ap.error("--src is required unless --ac-ref is given")
+        ap.error("--src is required unless --ac-ref or --hjepa-ref is given")
 
     import torch
     torch.set_num_threads(args.threads)

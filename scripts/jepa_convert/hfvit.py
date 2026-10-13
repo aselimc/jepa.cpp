@@ -11,6 +11,7 @@ Two *source* layouts are understood, both written to the same `enc.*` GGUF layou
   blocks.i.norm1 / norm2                         encoder.layer.i.layernorm_before / _after
   blocks.i.attn.qkv (fused) / attn.proj          encoder.layer.i.attention.attention.{query,key,value} / attention.output.dense
   blocks.i.mlp.fc1 / fc2                         encoder.layer.i.intermediate.dense / output.dense
+                                                 (transformers >= 5: layers.i.attention.{q,k,v,o}_proj, layers.i.mlp.fc1 / fc2)
   blocks.i.ls1.gamma / ls2.gamma                 -
   norm                                           layernorm
 
@@ -87,7 +88,8 @@ def map_timm_vit(st: SourceTensors, w: JepaWriter, prefix: str, *, n_layer: int,
 
 def map_hf_vit(st: SourceTensors, w: JepaWriter, prefix: str, *, n_layer: int, embed_dim: int,
                ffn_dim: int) -> None:
-    """Emit enc.* from a HF ViTModel state dict (transformers <= 4.x on-disk names) rooted at `prefix`."""
+    """Emit enc.* from a HF ViTModel state dict rooted at `prefix`: either the transformers <= 4.x
+    names (`encoder.layer.i.attention.attention.query`, ...) or the >= 5 ones (`layers.i.attention.q_proj`, ...)."""
     D = embed_dim
     pw = st.take(prefix + "embeddings.patch_embeddings.projection.weight")
     if pw.ndim != 4 or pw.shape[0] != D:
@@ -98,23 +100,31 @@ def map_hf_vit(st: SourceTensors, w: JepaWriter, prefix: str, *, n_layer: int, e
     w.add_tensor("enc.pos_embed", st.take(prefix + "embeddings.position_embeddings").reshape(-1, D), False)
     st.drop(prefix + "embeddings.mask_token")  # iBOT-style mask token, unused at inference
 
+    # transformers >= 5 renamed the block modules; the math is unchanged
+    v5 = prefix + "layers.0.attention.q_proj.weight" in st
     for i in range(n_layer):
-        s = f"{prefix}encoder.layer.{i}."
+        s = f"{prefix}layers.{i}." if v5 else f"{prefix}encoder.layer.{i}."
         b = f"enc.blk.{i}."
-        a = s + "attention.attention."
+        if v5:
+            a = s + "attention."
+            q, k, v, o = a + "q_proj", a + "k_proj", a + "v_proj", a + "o_proj"
+            up, down = s + "mlp.fc1", s + "mlp.fc2"
+        else:
+            a = s + "attention.attention."
+            q, k, v, o = a + "query", a + "key", a + "value", s + "attention.output.dense"
+            up, down = s + "intermediate.dense", s + "output.dense"
         w.add_norm(b + "ln1", st.take(s + "layernorm_before.weight"), st.take(s + "layernorm_before.bias"))
         w.add_linear(b + "attn_qkv",
-                     fuse_qkv(st.take(a + "query.weight"), st.take(a + "key.weight"), st.take(a + "value.weight")),
-                     fuse_qkv(st.take(a + "query.bias"), st.take(a + "key.bias"), st.take(a + "value.bias")),
+                     fuse_qkv(st.take(q + ".weight"), st.take(k + ".weight"), st.take(v + ".weight")),
+                     fuse_qkv(st.take(q + ".bias"), st.take(k + ".bias"), st.take(v + ".bias")),
                      True)
-        w.add_linear(b + "attn_out", st.take(s + "attention.output.dense.weight"),
-                     st.take(s + "attention.output.dense.bias"), True)
+        w.add_linear(b + "attn_out", st.take(o + ".weight"), st.take(o + ".bias"), True)
         w.add_norm(b + "ln2", st.take(s + "layernorm_after.weight"), st.take(s + "layernorm_after.bias"))
-        fc1 = st.take(s + "intermediate.dense.weight")
+        fc1 = st.take(up + ".weight")
         if fc1.shape != (ffn_dim, D):
-            raise SystemExit(f"layer {i}: intermediate.dense.weight shape {fc1.shape} != {(ffn_dim, D)}")
-        w.add_linear(b + "ffn_up", fc1, st.take(s + "intermediate.dense.bias"), True)
-        w.add_linear(b + "ffn_down", st.take(s + "output.dense.weight"), st.take(s + "output.dense.bias"), True)
+            raise SystemExit(f"layer {i}: {up}.weight shape {fc1.shape} != {(ffn_dim, D)}")
+        w.add_linear(b + "ffn_up", fc1, st.take(up + ".bias"), True)
+        w.add_linear(b + "ffn_down", st.take(down + ".weight"), st.take(down + ".bias"), True)
 
     w.add_norm("enc.norm", st.take(prefix + "layernorm.weight"), st.take(prefix + "layernorm.bias"))
 

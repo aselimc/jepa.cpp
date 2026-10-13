@@ -15,7 +15,7 @@ writes them is in [Converter](converter.md).
 | `general.source_url` | str | HF repo or download URL |
 | `general.file_type` | u32 | ggml ftype (0 = f32, 1 = f16, 7 = q8_0, ...) |
 | `jepa.schema_version` | u32 | `1` |
-| `jepa.family` | str | `ijepa` · `vjepa` · `vjepa2` · `vjepa2_1` · `levjepa` · `hfvit` (LeJEPA-style / LeWM encoder) · `lewm` |
+| `jepa.family` | str | `ijepa` · `vjepa` · `vjepa2` · `vjepa2_1` · `levjepa` · `hfvit` (LeJEPA-style / LeWM encoder) · `lewm` · `hjepa` (H-JEPA hierarchy, see the family note) |
 | `jepa.modality` | str | `image` · `video` · `image+video` |
 
 ## Encoder (`jepa.enc.*`)
@@ -156,7 +156,7 @@ Video tokens are **T-major, then H, then W** (`i = t*gh*gw + h*gw + w`). Image t
 
 ## Quantization rules
 
-Quantize only 2-D weight matrices of `*.attn_qkv` / `attn_q` / `attn_k` / `attn_v` / `attn_out`, `*.ffn_up` / `ffn_down`, `pred.proj*` (incl. `pred.proj_context`), `pred.embed*`, `enc.proj.*`, `head.blk.*`, `head.xattn.{q,k,v}`, `head.cls`. `pred.action_embed` / `pred.state_embed` are matmul weights too, but their 7-wide rows are not a multiple of 32, so every quantizer falls back to F16 for them. K-quants need `ne[0] % 256 == 0`; fall back per tensor to q8_0 (or the q4_0/q5_0 sibling) otherwise.
+Quantize only 2-D weight matrices of `*.attn_qkv` / `attn_q` / `attn_k` / `attn_v` / `attn_out`, `*.ffn_up` / `ffn_down`, `pred.proj*` (incl. `pred.proj_context`), `pred.embed*`, `enc.proj.*`, the `hjepa` per-level projections (`lvl.{k}.enc.{proj,fc1,fc2}`, `lvl.{k}.pred.{proj,in_proj,cond_proj,out_proj}`), `head.blk.*`, `head.xattn.{q,k,v}`, `head.cls`. `pred.action_embed` / `pred.state_embed` are matmul weights too, but their 7-wide rows are not a multiple of 32, so every quantizer falls back to F16 for them. K-quants need `ne[0] % 256 == 0`; fall back per tensor to q8_0 (or the q4_0/q5_0 sibling) otherwise.
 
 Everything else stays **F32**, and this is a requirement rather than a convention: norms, biases, layer scales, position tables, CLS / register / mask / modality tokens and `pred.blk.*.adaln` biases reach ggml as the right-hand side of an `add`, a `mul` or a `concat`, and those ops take an f32 operand and assert on anything else. The loader checks it and refuses a file that gets it wrong (docs/architecture.md ["Robustness"](architecture.md#robustness)). Patch embeddings and `pred.action_embed.*` are matmul weights and so *may* be F16, but the converter writes them F32 today.
 
@@ -304,3 +304,64 @@ Rollout: append `pred_{T-1}` as the next `emb`, slide a window of `n_frames`. Te
 `pred.pos_embed`, `pred.blk.{i}.{adaln,ln1,attn_qkv,attn_out,ln2,ffn_up,ffn_down}`, `pred.norm`,
 `pred.action_embed.{0,2}`, `pred.proj.{0,2}`. Preprocessing: ImageNet mean/std, bilinear resize to 224 (square renders).
 `scripts/jepa_convert/selftest.py::lewm_predictor_forward` is the executable reference of this graph.
+
+### hjepa (jepa-world-models/h-jepa — H-JEPA, HWM and flat LeWM runs)
+
+[H-JEPA](https://arxiv.org/abs/2610.06805) is a stack of LeWM-style world models. Level 1 predicts one environment
+step ahead in the latent space of the image encoder; level *k* ≥ 2 re-encodes every `stride`-th state of level *k* − 1
+and predicts one of *its* steps ahead, conditioned on a latent macro-action that summarises the `stride` actions of the
+level below. A 1-level file is the paper's flat LeWM baseline; `hwm_*` runs are the HWM baseline, whose upper encoders
+are the identity.
+
+The encoder is an HF `ViTModel` in the `hfvit` layout (`enc.*`, LN eps 1e-12) and `jepa.pred.kind` is absent: the
+hierarchy has its own metadata, one array entry per level (level 1 first), and its tensors live under `lvl.{k}.`
+(*k* is 1-based).
+
+| key | type | notes |
+|---|---|---|
+| `jepa.hjepa.n_levels` | u32 | 1 – 4 in the released files |
+| `jepa.hjepa.ln_eps` / `adaln_eps` | f32 | `1e-5` (every affine LayerNorm outside the ViT) / `1e-6` (the non-affine adaLN norms) |
+| `jepa.hjepa.proj_kind` | str | level-1 pixel projector on the CLS token: `mlp` (BatchNorm folded) · `layernorm` · `identity` |
+| `jepa.hjepa.pixel_dim` / `proprio_dim` | u32 | width of the projected CLS / of the proprio input (0 = none) |
+| `jepa.hjepa.raw_action_dim` / `frameskip` | u32 | a level-1 action is `frameskip` raw actions stacked (0 = not recorded) |
+| `jepa.hjepa.embed_dim` | [u32] | width of each level's state |
+| `jepa.hjepa.stride` / `window` | [u32] | level *k* reads every `stride`-th state of the level below; `window` is 1 (the loader refuses anything else) |
+| `jepa.hjepa.target_length` | [u32] | training clip length at the level (history + 1); informational |
+| `jepa.hjepa.enc_kind` | [str] | level 1: `vit` · `vit_proprio`; above: `latent_mlp` · `identity` |
+| `jepa.hjepa.action_dim` / `act_embed_dim` | [u32] | width of the level's action / of its embedding |
+| `jepa.hjepa.act_enc_kind` | [str] | `none` (level 1) · `seq` (one-layer transformer over the chunk) · `mlp` (flattened chunk) |
+| `jepa.hjepa.act_enc_{dim,n_layer,n_head,max_chunk}` | [u32] | the `seq` encoder; 0 where there is none |
+| `jepa.hjepa.pred_kind` | [str] | `adaln` (the LeWM predictor) · `adaln_bare` (DROID: no inner LayerNorms, no projector, own action embedder) |
+| `jepa.hjepa.pred_{dim,n_layer,n_head,head_dim,ffn_dim,n_frames}` | [u32] | each level's predictor; `pred_dim` may differ from `embed_dim` |
+
+```
+level 1   pix  = proj( ViT(pixels)[CLS] )                      # lvl.1.enc.proj.{0,2} | lvl.1.enc.proj_ln | identity
+          s1   = pix                                            # enc_kind vit
+          s1   = concat( pix, proprio.2( gelu( proprio.ln( proprio.0( proprio ) ) ) ) )     # vit_proprio
+level k   sk_T = [out_norm]( fc2( gelu( fc1( in_norm( s{k-1}_{T*stride} ) ) ) ) )           # latent_mlp; identity: a copy
+actions   e_t  = act_embed.2( silu( act_embed.0( a_t ) ) )      # absent tensors = identity
+          seq: x = [ pos[0] ; step( e{k-1}_{T*stride + i} ) + pos[1 + i] ],  i < stride     # a CLS row, then the chunk
+               x = pre-LN transformer layers (ReLU FFN, every row sees every row)
+               ak_T = out_norm( head.2( head.ln( gelu( head.0( x[CLS] ) ) ) ) )             # out_norm eps 1e-6
+          mlp: ak_T = [out_norm]( fc2( relu( fc1( flatten(chunk) ) ) ) )                    # short chunks zero-padded
+predict   x = in_proj( s + pos_embed[:T] ) ; c = cond_proj( e )        # both projections optional
+          adaln_bare: c = pred.act_embed.2( silu( pred.act_embed.0( e ) ) )
+          blocks as in the lewm section (adaln_bare has no ln1 / ln2), then norm
+          next = proj.2( gelu( proj.0( out_proj( x ) ) ) )              # out_proj and proj optional
+```
+
+A `seq` chunk shorter than `stride` (the tail of a stream) is encoded at its true length. The reference pads it and
+masks the padding as attention keys; only the CLS row is read, so the two are the same function.
+
+Tensor names, all under `lvl.{k}.`: `enc.proj.{0,2}` · `enc.proj_ln` · `enc.proprio.{0,ln,2}` (level 1);
+`enc.{in_norm,fc1,fc2,out_norm}` (above); `act_embed.{0,2}`; `act_enc.{step,pos,blk.{i}.*,head.{0,ln,2},out_norm}` or
+`act_enc.{fc1,fc2,out_norm}`; `act_queue` `[n, action_dim]`, the latent actions seen in training, which the reference
+planner samples its initial candidates from; `pred.{pos_embed,in_proj,cond_proj,out_proj,norm,proj.{0,2},act_embed.{0,2}}`
+and `pred.blk.{i}.{adaln,ln1,attn_qkv,attn_out,ln2,ffn_up,ffn_down}`. Outside the levels: `norm.action.{mean,std}` and
+`norm.proprio.{mean,std}`, the z-score statistics the model's action and proprio inputs were normalised with.
+
+Folds done by the converter: eval-mode BatchNorm1d of every `mlp` projector into the Linear before it; the Conv1d(k=1)
+of an action `Embedder` into the Linear after it. Preprocessing: ImageNet mean/std, bilinear squash to the encoder's
+image size (the datasets are stored at that size). The source files are pickled module objects;
+`scripts/jepa_convert/torch_object.py` reads them without running any code they name.
+`scripts/jepa_convert/hjepa_numpy_ref.py` is the executable reference of these graphs.

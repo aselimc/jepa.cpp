@@ -9,6 +9,9 @@ scripts/jepa_convert/common.py  JepaWriter, sincos tables, qkv fusing, BN foldin
 scripts/jepa_convert/ijepa.py   facebook/ijepa_*             (HF IJepaModel safetensors)
 scripts/jepa_convert/hfvit.py   OK-AI/lejepa-*, DINOv2-style (timm layout safetensors)  + HF-ViT source mapper
 scripts/jepa_convert/lewm.py    quentinll/lewm-*             (weights.pt: HF ViT encoder + adaLN predictor)
+scripts/jepa_convert/hjepa.py   jepa-world-models/h-jepa     (*_object.ckpt: pickled H-JEPA / HWM / LeWM hierarchies)
+scripts/jepa_convert/torch_object.py  reads a torch.save()'d module object as data, running none of its code
+scripts/jepa_convert/hjepa_numpy_ref.py  numpy spec of the hjepa graphs (selftest.py --hjepa-ref)
 scripts/jepa_convert/selftest.py numpy forward straight from a GGUF vs. the PyTorch reference
 scripts/jepa_convert/vjepa2.py, vjepa2_1.py   standalone video-family converters (separate owner)
 scripts/jepa_convert/levjepa.py galilai-group/LeVJEPA-*      (custom HF architecture; reuses vjepa2.py's writer)
@@ -23,7 +26,10 @@ $PY scripts/convert.py --family hfvit --src models/OK-AI/lejepa-vits16-pretrain-
 $PY scripts/convert.py --family lewm  --src models/quentinll/lewm-pusht                 --ftype f16
 $PY scripts/convert.py --family levjepa --src models/galilai-group/LeVJEPA-VideoMix-Large \
                        --out models/gguf/levjepa-vitl16-f32.gguf --ftype f32
+$PY scripts/convert.py --family hjepa \
+                       --src models/jepa-world-models/h-jepa/ant/ant_hjepa_l3/seed42/ant_hjepa_l3_object.ckpt --ftype f32
 # default output: models/gguf/<basename of --src>-<ftype>.gguf ; override with --out
+# (hjepa: models/gguf/<run>-seed<N>-<ftype>.gguf, since every source file is "<run>_object.ckpt")
 # --name overrides general.name ; --allow-unmapped tolerates unknown source tensors (default: hard error)
 ```
 

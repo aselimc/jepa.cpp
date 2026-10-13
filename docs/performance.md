@@ -582,6 +582,26 @@ JEPA_MAX_GRAPH_MIB=16384 build-cuda/jepa-bench -m models/gguf/vjepa2-ac-vitg-f16
 tmp/venv-cuda/bin/python scripts/torch_ac_baseline.py --device cuda:1 --candidates 16,64 --horizon 2 --cem
 ```
 
+### H-JEPA: what one planner call costs
+
+One `jepa_hjepa_plan` call (`tools/jepa-plan`) at the settings of the authors' eval configs, at the horizons of an
+episode's first call, f16 files, wall time in seconds, best of 2. Samples, horizons and iterations are listed level 1
+first; every level may run up to 90 iterations and stops early when its best cost stalls.
+`tests/results/hjepa-plan-timing.json`, written by `scripts/hjepa_batch.py time` on the AMD Ryzen Threadripper PRO 7995WX 96-Cores.
+
+| preset | samples | horizons | iterations run | 8 threads | 32 threads | 96 threads |
+|---|---|---|---|---:|---:|---:|
+| AntMaze, 3 levels (`ant_l3`) | 100 / 100 / 400 | 2 / 2 / 5 | 79 / 32 / 37 | 16.5 | 5.3 | 3.0 |
+| Push-T, 2 levels (`pusht_l2`) | 50 / 400 | 2 / 8 | 30 / 42 | 25.2 | 8.1 | 4.7 |
+| DROID, 2 levels (`droid_l2`) | 16 / 4 | 36 / 12 | 90 / 58 | 51.4 | 43.2 | 43.2 |
+| Push-T, flat LeWM (`pusht_flat`) | 800 | 15 | 36 | 33.3 | 10.9 | 7.3 |
+
+The planner's gradient is computed on the host, one tape per small group of candidates, so it scales with
+min(threads, candidates): the DROID preset optimises 16 and 4 candidates through a 12-layer predictor over 36 steps and
+has nothing for the other 80 threads to do. The result is the same bytes at every thread count. An episode calls the
+planner once per replanning interval — 35 times for the 350-step AntMaze evaluation — with horizons that shrink as the
+budget runs out, so later calls are cheaper than the first.
+
 ## GPU against PyTorch on the same card
 
 `VJEPA2Model(skip_predictor=True)` / `IJepaModel` / `LeVJEPAModel`, 3 warmup + 7 timed forwards with
