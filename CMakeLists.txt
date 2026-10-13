@@ -58,11 +58,29 @@ add_library(jepa STATIC
   src/predictor.cpp
   src/lewm.cpp
   src/hjepa.cpp
+  src/hjepa-plan.cpp
   src/vjepa2_ac.cpp
 )
+# The H-JEPA planner differentiates through the predictor on the host, in plain loops the compiler
+# vectorises; like ggml's own kernels it is built for the host CPU unless JEPA_NATIVE is off.
+# Contraction is off for that file whatever the target: a fused multiply-add in a loop's vector
+# body and a separate multiply and add in its scalar remainder made the planner's last bits depend
+# on buffer alignment. MSVC does not contract under its default /fp:precise.
+if(NOT MSVC)
+  include(CheckCXXCompilerFlag)
+  set(_plan_flags -ffp-contract=off)
+  check_cxx_compiler_flag(-march=native JEPA_HAS_MARCH_NATIVE)
+  if(JEPA_NATIVE AND JEPA_HAS_MARCH_NATIVE)
+    list(APPEND _plan_flags -march=native)
+  endif()
+  set_source_files_properties(src/hjepa-plan.cpp PROPERTIES COMPILE_OPTIONS "${_plan_flags}")
+endif()
 target_include_directories(jepa PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(jepa PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
 target_link_libraries(jepa PUBLIC ggml)
+# src/hjepa-plan.cpp spreads the planner's candidates over std::thread workers
+find_package(Threads REQUIRED)
+target_link_libraries(jepa PUBLIC Threads::Threads)
 target_compile_options(jepa PRIVATE ${JEPA_WARN_FLAGS})
 # jepa_version() reports the project version above, so a release binary cannot disagree with the tag.
 # src/jepa-internal.h keeps a fallback for a build that does not come through this file.
@@ -70,7 +88,7 @@ target_compile_definitions(jepa PUBLIC JEPA_VERSION="${PROJECT_VERSION}")
 
 # --- tools -------------------------------------------------------------------
 if(JEPA_BUILD_TOOLS)
-  foreach(tool jepa-embed jepa-classify jepa-quantize jepa-bench jepa-info jepa-worldmodel jepa-server)
+  foreach(tool jepa-embed jepa-classify jepa-quantize jepa-bench jepa-info jepa-worldmodel jepa-plan jepa-server)
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/${tool}.cpp)
       set(_tool_src tools/${tool}.cpp)
       # --video: ffmpeg is a *run-time* dependency of these two tools, never a build-time one, so

@@ -42,6 +42,7 @@
 #include "jepa.h"
 #include "npy.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -75,6 +76,10 @@ static metrics compare(const float * a, const float * b, int64_t rows, int64_t d
     m.cos_mean = rows ? cos_sum / rows : 0;
     m.rel_max = m.max_abs / (ref_max + 1e-30);
     return m;
+}
+
+static double now_ms() {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 static int g_fail = 0;
@@ -153,6 +158,169 @@ static bool exists(const std::string & p) { std::ifstream f(p); return (bool) f;
 // ------------------------------------------------------------------------------------------
 // H-JEPA
 // ------------------------------------------------------------------------------------------
+// jepa_hjepa_level_plan from one row of a `plan.*.plan` / `plan.hplan.levels` dump (the field order
+// is PLAN_FIELDS of scripts/hjepa_reference.py).
+static jepa_hjepa_level_plan plan_from_row(const float * r) {
+    jepa_hjepa_level_plan p = jepa_hjepa_level_plan_default();
+    p.horizon = (int) r[0];              p.pre_decay_horizon = (int) r[1];
+    p.n_samples = (int) r[2];            p.n_steps = (int) r[3];
+    p.lr = r[4];                         p.weight_decay = r[5];
+    p.var_scale = r[6];                  p.action_noise = r[7];
+    p.action_clip_sigma = r[8];          p.min_its = (int) r[9];
+    p.early_stop_patience = (int) r[10]; p.early_stop_rel_delta = r[11];
+    p.cost_last_n = (int) r[12];         p.intermediate_cost_weight = r[13];
+    p.action_cost_weight = r[14];        p.num_subgoals = (int) r[15];
+    p.horizon_one_goal_upper = (int) r[16];
+    return p;
+}
+
+// The reference's normal draws, handed back in the order it made them.
+struct noise_replay {
+    std::vector<float> data;
+    size_t pos = 0;
+    bool overrun = false;
+    static void fn(void * user, float * out, size_t n) {
+        noise_replay * self = (noise_replay *) user;
+        for (size_t i = 0; i < n; i++) {
+            if (self->pos < self->data.size()) out[i] = self->data[self->pos++];
+            else { out[i] = 0.0f; self->overrun = true; }
+        }
+    }
+    bool exact() const { return !overrun && pos == data.size(); }
+};
+
+// The planner against the authors' LevelCostModel / GradientSolver / HierarchicalSolver.
+//   cost  : costs of fixed candidates and their gradient vs autograd, per level and goal placement
+//   solve : a level's whole solve replayed on the reference's own noise: the chosen actions, the
+//           states they predict, the final cost and the number of iterations before early stopping
+//   hplan : the horizon schedule of an episode, and the level-1 plan of the top-down solve at three
+//           points of it
+// `solve_thr` is wider than `thr`: a solve is tens of AdamW steps, each dividing by sqrt(v), fed
+// back into itself.
+static void run_hjepa_plan(jepa_context * ctx, jepa_model * model, const std::string & ref, const thresholds & thr,
+                           const thresholds & solve_thr) {
+    const std::string p = ref + "/plan.";
+    if (!exists(p + "cost.L1.own.meta.npy")) { printf("  (no planner dump in %s: skipped)\n", ref.c_str()); return; }
+    const int n_levels = jepa_hjepa_n_levels(model);
+    char name[96];
+    std::vector<std::vector<float>> seq_state((size_t) n_levels);
+    for (int k = 1; k <= n_levels; k++) seq_state[(size_t) k - 1] = load_f32(ref + "/seq.lvl" + std::to_string(k) + ".state.npy", nullptr, nullptr);
+
+    auto load_goal = [&](const std::string & base, jepa_hjepa_goal & g, std::vector<float> & gs, std::vector<float> & ga,
+                         int n_goal, int level, int dense) {
+        gs = load_f32(base + "goal.npy", nullptr, nullptr);
+        g.states = gs.data(); g.n_states = n_goal; g.level = level; g.dense = dense; g.actions = nullptr;
+        if (exists(base + "goal_action.npy")) { ga = load_f32(base + "goal_action.npy", nullptr, nullptr); g.actions = ga.data(); }
+    };
+
+    // ---- cost and gradient
+    for (int k = 1; k <= n_levels; k++) {
+        for (const char * mode : { "own", "upper", "dense" }) {
+            const std::string b = p + "cost.L" + std::to_string(k) + "." + mode + ".";
+            if (!exists(b + "meta.npy")) continue;
+            npy::Array meta = npy::load(b + "meta.npy");
+            const int64_t * mi = meta.i64();
+            const int T = (int) mi[0], S = (int) mi[1];
+            std::vector<float> prow = load_f32(b + "plan.npy", nullptr, nullptr), gs, ga;
+            const jepa_hjepa_level_plan plan = plan_from_row(prow.data());
+            jepa_hjepa_goal goal;
+            load_goal(b, goal, gs, ga, (int) mi[2], (int) mi[3], (int) mi[4]);
+            std::vector<float> act = load_f32(b + "actions.npy", nullptr, nullptr);
+            std::vector<float> costs_ref = load_f32(b + "costs.npy", nullptr, nullptr), grad_ref = load_f32(b + "grad.npy", nullptr, nullptr);
+            std::vector<float> costs((size_t) S), grad(act.size());
+            snprintf(name, sizeof(name), "plan L%d %s: costs (T=%d)", k, mode, T);
+            if (jepa_hjepa_plan_cost(ctx, k, seq_state[(size_t) k - 1].data(), &goal, &plan, act.data(), S, T, costs.data(), grad.data()) != 0) {
+                printf("  %s: failed\n", name); g_fail++; continue;
+            }
+            check(name, compare(costs.data(), costs_ref.data(), 1, S), thr);
+            snprintf(name, sizeof(name), "plan L%d %s: gradient vs autograd", k, mode);
+            check(name, compare(grad.data(), grad_ref.data(), S, (int64_t) (act.size() / (size_t) S)), thr);
+        }
+    }
+
+    // ---- single-level solves on the reference's noise
+    for (int k = 1; k <= n_levels; k++) {
+        for (const char * tag : { "a", "b", "c" }) {
+            const std::string b = p + "solve.L" + std::to_string(k) + "." + tag + ".";
+            if (!exists(b + "meta.npy")) continue;
+            npy::Array meta = npy::load(b + "meta.npy");
+            const int64_t * mi = meta.i64();
+            std::vector<float> prow = load_f32(b + "plan.npy", nullptr, nullptr), gs, ga;
+            const jepa_hjepa_level_plan plan = plan_from_row(prow.data());
+            jepa_hjepa_goal goal;
+            load_goal(b, goal, gs, ga, (int) mi[0], (int) mi[1], 0);
+            noise_replay nz;
+            nz.data = load_f32(b + "noise.npy", nullptr, nullptr);
+            int64_t Tr, A, T1, D;
+            std::vector<float> act_ref = load_f32(b + "actions.npy", &Tr, &A), st_ref = load_f32(b + "states.npy", &T1, &D);
+            std::vector<float> cost_ref = load_f32(b + "cost.npy", nullptr, nullptr);
+            std::vector<float> act(act_ref.size()), st(st_ref.size());
+            float cost = 0; int iters = 0;
+            const double t0 = now_ms();
+            snprintf(name, sizeof(name), "solve L%d.%s: actions (S=%d, T=%d)", k, tag, plan.n_samples, plan.horizon);
+            if (jepa_hjepa_solve(ctx, k, seq_state[(size_t) k - 1].data(), &goal, &plan, noise_replay::fn, &nz,
+                                 act.data(), st.data(), &cost, &iters) != 0) { printf("  %s: failed\n", name); g_fail++; continue; }
+            check(name, compare(act.data(), act_ref.data(), 1, (int64_t) act.size()), solve_thr, now_ms() - t0);
+            snprintf(name, sizeof(name), "solve L%d.%s: predicted states", k, tag);
+            check(name, compare(st.data(), st_ref.data(), T1, D), solve_thr);
+            const bool same = iters == (int) mi[2] && nz.exact();
+            const double rel = std::fabs(cost - cost_ref[0]) / (std::fabs(cost_ref[0]) + 1e-30);
+            const bool cost_ok = rel <= 2e-2;
+            if (!same || !cost_ok) g_fail++;
+            if (!g_quiet || !same || !cost_ok) {
+                printf("  solve L%d.%s: %d iterations (reference %lld), noise %s, cost %.6g vs %.6g (rel %.1e)  %s\n", k, tag, iters,
+                       (long long) mi[2], nz.exact() ? "consumed exactly" : "MISMATCH", cost, cost_ref[0], rel, same && cost_ok ? "OK" : "FAIL");
+            }
+        }
+    }
+
+    // ---- the hierarchy: horizon schedule, then the top-down solve at the dumped calls
+    if (!exists(p + "hplan.levels.npy")) return;
+    int64_t nl, nf;
+    std::vector<float> rows = load_f32(p + "hplan.levels.npy", &nl, &nf);
+    std::vector<jepa_hjepa_level_plan> cfg;
+    for (int k = 0; k < n_levels; k++) cfg.push_back(plan_from_row(rows.data() + (size_t) k * nf));
+    npy::Array ep = npy::load(p + "hplan.episode.npy"), sched = npy::load(p + "hplan.schedule.npy"), calls = npy::load(p + "hplan.calls.npy");
+    const int interval = (int) ep.i64()[0], budget = (int) ep.i64()[1], n_calls = (int) ep.i64()[2];
+    bool sched_ok = true;
+    std::vector<int> h((size_t) n_levels);
+    for (int c = 0; c < n_calls; c++) {
+        if (jepa_hjepa_horizons(model, cfg.data(), n_levels, interval, budget, c * interval, h.data()) != 0) { sched_ok = false; break; }
+        for (int k = 0; k < n_levels; k++) sched_ok = sched_ok && h[(size_t) k] == (int) sched.i64()[(size_t) k * n_calls + c];
+    }
+    if (!sched_ok) g_fail++;
+    if (!g_quiet || !sched_ok) printf("  hplan: horizon schedule over %d calls x %d levels  %s\n", n_calls, n_levels, sched_ok ? "OK" : "FAIL");
+
+    std::vector<std::vector<float>> st((size_t) n_levels), gl((size_t) n_levels);
+    std::vector<const float *> stp, glp;
+    for (int k = 1; k <= n_levels; k++) {
+        st[(size_t) k - 1] = load_f32(p + "hplan.state_L" + std::to_string(k) + ".npy", nullptr, nullptr);
+        gl[(size_t) k - 1] = load_f32(p + "hplan.goal_L" + std::to_string(k) + ".npy", nullptr, nullptr);
+        stp.push_back(st[(size_t) k - 1].data());
+        glp.push_back(gl[(size_t) k - 1].data());
+    }
+    for (int64_t ci = 0; ci < calls.numel(); ci++) {
+        const int c = (int) calls.i64()[ci];
+        const std::string b = p + "hplan.c" + std::to_string(c) + ".";
+        std::vector<jepa_hjepa_level_plan> lp = cfg;
+        if (jepa_hjepa_horizons(model, cfg.data(), n_levels, interval, budget, c * interval, h.data()) != 0) { g_fail++; continue; }
+        std::string hs;
+        for (int k = 0; k < n_levels; k++) { lp[(size_t) k].horizon = h[(size_t) k]; hs += (k ? "," : "") + std::to_string(h[(size_t) k]); }
+        noise_replay nz;
+        nz.data = load_f32(b + "noise.npy", nullptr, nullptr);
+        std::vector<float> act_ref = load_f32(b + "actions.npy", nullptr, nullptr), act(act_ref.size());
+        jepa_hjepa_plan_info info;
+        const double t0 = now_ms();
+        snprintf(name, sizeof(name), "hplan call %d (horizons %s)", c, hs.c_str());
+        if ((size_t) h[0] * (size_t) jepa_hjepa_action_dim(model, 1) != act_ref.size() ||
+            jepa_hjepa_plan(ctx, stp.data(), glp.data(), lp.data(), n_levels, noise_replay::fn, &nz, act.data(), &info) != 0) {
+            printf("  %s: failed\n", name); g_fail++; continue;
+        }
+        check(name, compare(act.data(), act_ref.data(), 1, (int64_t) act.size()), solve_thr, now_ms() - t0);
+        if (!nz.exact()) { printf("  %s: the reference's noise was not consumed exactly  FAIL\n", name); g_fail++; }
+    }
+}
+
 static void run_hjepa(jepa_context * ctx, jepa_model * model, const std::string & ref, const thresholds & thr, bool dtype_noise, bool gpu) {
     const int n_levels = jepa_hjepa_n_levels(model);
     if (n_levels < 1) { printf("  not an H-JEPA model\n"); g_fail++; return; }
@@ -1136,7 +1304,12 @@ int main(int argc, char ** argv) {
            thr.max_rel > 0 ? ", rel <= bound*max(1,sqrt(rows/2048))" : "");
 
     if (!lewm_path.empty()) run_lewm(c, model, ref, thr, ftype != 0);
-    if (!hjepa_path.empty()) run_hjepa(c, model, ref, thr, ftype != 0, jepa_model_is_gpu(model));
+    if (!hjepa_path.empty()) {
+        run_hjepa(c, model, ref, thr, ftype != 0, jepa_model_is_gpu(model));
+        // The planner runs on the host in f32 whatever the device, so it is judged with the CPU bars.
+        const thresholds plan_thr = thresholds_for(ftype, false);
+        run_hjepa_plan(c, model, ref, plan_thr, {0.999, 0.999, -1.0});
+    }
     if (!ac_path.empty()) {
         run_ac(c, model, ref, thr, jepa_model_is_gpu(model));
         run_ac_seed2(c, model, ref, thr, jepa_model_is_gpu(model));

@@ -520,6 +520,83 @@ static void test_hjepa() {
         if (!ok) printf("     %s stopped at step %d\n", tag, step);
         check_ok(tag, ok);
 
+        if (ok) {
+            // The planner, end to end on the forged hierarchy: both levels solve, the result is
+            // finite, and it is the same bytes on one thread and on four.
+            jepa_hjepa_level_plan lp[2] = { jepa_hjepa_level_plan_default(), jepa_hjepa_level_plan_default() };
+            lp[0].horizon = 4; lp[0].n_samples = 6; lp[0].n_steps = 5; lp[0].cost_last_n = 2; lp[0].action_cost_weight = 0.2f;
+            lp[1].horizon = 2; lp[1].n_samples = 5; lp[1].n_steps = 5; lp[1].action_noise = 0.01f;
+            const float * stp[2] = { s1.data, s2.data };
+            const float * glp[2] = { s1.data + (size_t) (T - 1) * D1, s2.data + (size_t) 2 * D2 };
+            std::vector<float> pa((size_t) 4 * A1), pb((size_t) 4 * A1, 1.0f);
+            jepa_hjepa_plan_info pi;
+            jepa_context_params cp4 = jepa_context_default_params();
+            cp4.n_threads = 4;
+            jepa_context_params cp1 = cp4;
+            cp1.n_threads = 1;
+            jepa_context * c4 = jepa_context_new(m, cp4), * c1 = jepa_context_new(m, cp1);
+            bool pok = c4 && c1 && jepa_hjepa_plan(c4, stp, glp, lp, 2, nullptr, nullptr, pa.data(), &pi) == 0
+                    && pi.planned[0] && pi.planned[1] && pi.goal_level[0] == 2 && pi.goal_level[1] == 2
+                    && jepa_hjepa_plan(c1, stp, glp, lp, 2, nullptr, nullptr, pb.data(), nullptr) == 0;
+            for (size_t i = 0; pok && i < pa.size(); i++) pok = std::isfinite(pa[i]) && pa[i] == pb[i];
+            check_ok(proprio ? "hjepa/proprio-plan-runs-thread-invariant" : "hjepa/plan-runs-thread-invariant", pok);
+            // a skipped upper level: level 1 is then scored against the goal in level-2 space, densely
+            lp[1].horizon = 1; lp[1].horizon_one_goal_upper = 1; lp[0].horizon = 3;
+            pok = c4 && jepa_hjepa_plan(c4, stp, glp, lp, 2, nullptr, nullptr, pa.data(), &pi) == 0
+               && !pi.planned[1] && pi.planned[0] && pi.goal_level[0] == 2;
+            check_ok(proprio ? "hjepa/proprio-plan-skips-horizon-1" : "hjepa/plan-skips-horizon-1", pok);
+            if (!proprio && c4) {
+                jepa_hjepa_goal g = { glp[1], 1, 2, 0, nullptr };
+                std::vector<float> cand((size_t) 2 * 4 * A1, 0.1f), costs(2), grad(cand.size());
+                jepa_error_reset();
+                check("hjepa/plan-cost-level-out-of-range", jepa_hjepa_plan_cost(c4, 3, s1.data, &g, nullptr, cand.data(), 2, 4, costs.data(), nullptr) != 0);
+                g.level = 1; g.states = glp[1];
+                jepa_error_reset();
+                g.level = 3;
+                check("hjepa/plan-cost-goal-level-out-of-range", jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 4, costs.data(), nullptr) != 0);
+                g.level = 2;
+                jepa_error_reset();
+                check("hjepa/plan-cost-horizon-zero", jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 0, costs.data(), nullptr) != 0);
+                jepa_error_reset();   // stride 2: one level-1 step does not reach a level-2 state
+                check("hjepa/plan-cost-horizon-below-stride", jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 1, costs.data(), nullptr) != 0);
+                g.n_states = 3;       // three goals for the single scored state
+                jepa_error_reset();
+                check("hjepa/plan-cost-goal-count", jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 4, costs.data(), nullptr) != 0);
+                g.n_states = 1; g.level = 1; g.dense = 1;
+                jepa_error_reset();
+                check("hjepa/plan-cost-dense-without-upper-goal", jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 4, costs.data(), nullptr) != 0);
+                g.dense = 0; g.level = 2;
+                jepa_error_reset();
+                check("hjepa/plan-cost-null-actions", jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, nullptr, 2, 4, costs.data(), nullptr) != 0, false);
+                jepa_error_reset();
+                check("hjepa/plan-wrong-level-count", jepa_hjepa_plan(c4, stp, glp, lp, 1, nullptr, nullptr, pa.data(), nullptr) != 0);
+                lp[0].n_samples = 0;
+                jepa_error_reset();
+                check("hjepa/plan-zero-samples", jepa_hjepa_plan(c4, stp, glp, lp, 2, nullptr, nullptr, pa.data(), nullptr) != 0);
+                lp[0].n_samples = 6;
+                int hz[2];
+                jepa_error_reset();
+                check("hjepa/horizons-past-budget", jepa_hjepa_horizons(m, lp, 2, 2, 10, 10, hz) != 0);
+                jepa_error_reset();
+                check("hjepa/horizons-zero-interval", jepa_hjepa_horizons(m, lp, 2, 0, 10, 0, hz) != 0);
+                // and the gradient is the derivative of the cost: a central difference on one coordinate
+                g = { glp[1], 1, 2, 0, nullptr };
+                for (size_t i = 0; i < cand.size(); i++) cand[i] = 0.02f * (float) ((i * 7) % 13) - 0.1f;
+                bool fd = jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 4, costs.data(), grad.data()) == 0;
+                const size_t probe = 5;
+                const float eps = 1e-2f, keep = cand[probe];
+                float cp_[2], cm_[2];
+                cand[probe] = keep + eps;
+                fd = fd && jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 4, cp_, nullptr) == 0;
+                cand[probe] = keep - eps;
+                fd = fd && jepa_hjepa_plan_cost(c4, 1, s1.data, &g, nullptr, cand.data(), 2, 4, cm_, nullptr) == 0;
+                const float num = (cp_[0] - cm_[0]) / (2.0f * eps);
+                fd = fd && std::fabs(num - grad[probe]) <= 2e-2f * (std::fabs(num) + std::fabs(grad[probe])) + 1e-4f;
+                check_ok("hjepa/plan-gradient-matches-finite-difference", fd);
+            }
+            jepa_context_free(c4);
+            jepa_context_free(c1);
+        }
         if (!proprio && ok) {
             jepa_output x = {};
             std::vector<float> prior(16);

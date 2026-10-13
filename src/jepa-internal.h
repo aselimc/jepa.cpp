@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -317,6 +318,7 @@ struct jepa_context {
     int                 max_batch = 0;       // image items per encoder graph (0 -> JEPA_DEFAULT_MAX_BATCH)
     int                 last_batch = 1;      // items in the graph built last (jepa_context_last_batch)
     size_t              max_graph_bytes = 0; // refuse a batched graph bigger than this (0 -> default)
+    std::shared_ptr<void> hjepa_plan;        // src/hjepa-plan.cpp: the f32 weights the planner differentiates through
 };
 
 // Image items folded into one encoder graph unless the caller says otherwise. Measured peak-RSS
