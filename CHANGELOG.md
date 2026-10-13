@@ -17,15 +17,26 @@ across releases.
   and Push-T, and the DROID models with their causal-transformer predictor. New entry points
   `jepa_hjepa_embed`, `_lift`, `_action_embed`, `_action_encode`, `_predict` and `_rollout` work at
   any level, with `jepa_hjepa_norm_stats` and `jepa_hjepa_action_prior` for the training statistics
-  the files carry. The paper's top-down gradient planner is not implemented yet.
+  the files carry.
+- **The H-JEPA planner**, as in the paper: every level optimises a batch of candidate action
+  sequences by gradient descent through its own world model (AdamW, prior-based initialisation and
+  clipping, early stopping), and the levels run top-down, a level's first predicted states becoming
+  the goal of the level below. `jepa_hjepa_plan` is one planner call, `jepa_hjepa_solve` one level's
+  solve, `jepa_hjepa_plan_cost` the cost and its gradient, `jepa_hjepa_horizons` the decreasing
+  horizon schedule of an episode; `tools/jepa-plan` goes from an observation and a goal image to
+  actions. The gradient is a hand-written reverse mode on the host: inside the planner the rollout
+  has a context of one state, where causal attention reduces to its value projection. It is checked
+  against PyTorch autograd and against the authors' `GradientSolver` / `HierarchicalSolver` replayed
+  on their own random draws, and it returns the same bytes for any thread count.
 - **`scripts/jepa_convert/torch_object.py`**, a reader for `torch.save(module)` checkpoints that runs
   none of the code the pickle names: it resolves a short fixed list of constructors and replaces
   every other global with a data-only stub, so converting an H-JEPA file needs no PyTorch and no
   checkout of the training code.
-- `scripts/hjepa_reference.py` dumps reference activations from the authors' own modules and
-  `scripts/hjepa_batch.py` converts, verifies and publishes the checkpoints in bulk;
-  `tests/results/hjepa-parity.json` records the outcome per file. `test-predictor --hjepa` is the
-  gate, and `test-errors` covers the family on a forged hierarchy with no weights.
+- `scripts/hjepa_reference.py` dumps reference activations from the authors' own modules, planner
+  included, and `scripts/hjepa_batch.py` converts, verifies, times and publishes the checkpoints in
+  bulk; `tests/results/hjepa-parity.json` records the outcome per file and
+  `tests/results/hjepa-plan-timing.json` what a planner call costs. `test-predictor --hjepa` is the
+  gate, and `test-errors` covers the family, planner included, on a forged hierarchy with no weights.
 
 ### Fixed
 

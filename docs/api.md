@@ -4,7 +4,7 @@
 
 The whole public surface is this one header: C linkage, opaque handles (`jepa_model`, `jepa_context`), plain structs, `malloc`-returned buffers freed with `jepa_free`. Typical flow: `jepa_model_load` → `jepa_context_new` → `jepa_preprocess_*` → `jepa_encode` → `jepa_pool_*` / `jepa_head` / `jepa_predict*` / `jepa_lewm_*`.
 
-**Functions (109):** `jepa_ac_action_dim` · `jepa_ac_cem_default_params` · `jepa_ac_context_capacity` · `jepa_ac_context_free` · `jepa_ac_context_n_frames` · `jepa_ac_context_new` · `jepa_ac_context_trim` · `jepa_ac_context_update` · `jepa_ac_energy` · `jepa_ac_max_frames` · `jepa_ac_next_state` · `jepa_ac_normalize` · `jepa_ac_normalize_reps` · `jepa_ac_plan` · `jepa_ac_predict` · `jepa_ac_predict_all` · `jepa_ac_rollout` · `jepa_ac_rollout_cached` · `jepa_ac_rollout_ex` · `jepa_ac_state_dim` · `jepa_ac_tokens_per_frame` · `jepa_context_default_params` · `jepa_context_free` · `jepa_context_last_batch` · `jepa_context_last_compute_ms` · `jepa_context_max_batch` · `jepa_context_mul_mat_prec_f32` · `jepa_context_n_threads` · `jepa_context_new` · `jepa_context_set_max_batch` · `jepa_context_set_mul_mat_prec_f32` · `jepa_device_count` · `jepa_device_description` · `jepa_device_memory` · `jepa_device_name` · `jepa_encode` · `jepa_error_reset` · `jepa_error_text` · `jepa_free` · `jepa_head` · `jepa_head_ex` · `jepa_hjepa_action_dim` · `jepa_hjepa_action_embed` · `jepa_hjepa_action_embed_dim` · `jepa_hjepa_action_encode` · `jepa_hjepa_action_prior` · `jepa_hjepa_embed` · `jepa_hjepa_embed_dim` · `jepa_hjepa_frameskip` · `jepa_hjepa_lift` · `jepa_hjepa_n_frames` · `jepa_hjepa_n_levels` · `jepa_hjepa_norm_stats` · `jepa_hjepa_predict` · `jepa_hjepa_proprio_dim` · `jepa_hjepa_raw_action_dim` · `jepa_hjepa_rollout` · `jepa_hjepa_stride` · `jepa_lewm_action_dim` · `jepa_lewm_n_frames` · `jepa_lewm_predict` · `jepa_lewm_project` · `jepa_lewm_project_rows` · `jepa_lewm_rollout` · `jepa_load_image_rgb` · `jepa_model_default_params` · `jepa_model_device` · `jepa_model_device_name` · `jepa_model_embed_dim` · `jepa_model_family` · `jepa_model_file_type` · `jepa_model_file_type_name` · `jepa_model_free` · `jepa_model_has_cls` · `jepa_model_has_head` · `jepa_model_has_predictor` · `jepa_model_has_projector` · `jepa_model_img_size` · `jepa_model_is_gpu` · `jepa_model_label` · `jepa_model_load` · `jepa_model_load_ex` · `jepa_model_n_bytes` · `jepa_model_n_classes` · `jepa_model_n_frames` · `jepa_model_n_head` · `jepa_model_n_layer` · `jepa_model_n_prefix_tokens` · `jepa_model_n_registers` · `jepa_model_name` · `jepa_model_patch_size` · `jepa_model_tubelet_size` · `jepa_pool_cls` · `jepa_pool_mean` · `jepa_predict` · `jepa_predict_ex` · `jepa_predict_mod` · `jepa_preprocess_default_params` · `jepa_preprocess_frames_rgb` · `jepa_preprocess_frames_rgb_ex` · `jepa_preprocess_image_file` · `jepa_preprocess_image_rgb` · `jepa_preprocess_image_rgb_ex` · `jepa_print_system_info` · `jepa_resize_antialias_u8` · `jepa_softmax` · `jepa_token_grid` · `jepa_top_k` · `jepa_version`
+**Functions (114):** `jepa_ac_action_dim` · `jepa_ac_cem_default_params` · `jepa_ac_context_capacity` · `jepa_ac_context_free` · `jepa_ac_context_n_frames` · `jepa_ac_context_new` · `jepa_ac_context_trim` · `jepa_ac_context_update` · `jepa_ac_energy` · `jepa_ac_max_frames` · `jepa_ac_next_state` · `jepa_ac_normalize` · `jepa_ac_normalize_reps` · `jepa_ac_plan` · `jepa_ac_predict` · `jepa_ac_predict_all` · `jepa_ac_rollout` · `jepa_ac_rollout_cached` · `jepa_ac_rollout_ex` · `jepa_ac_state_dim` · `jepa_ac_tokens_per_frame` · `jepa_context_default_params` · `jepa_context_free` · `jepa_context_last_batch` · `jepa_context_last_compute_ms` · `jepa_context_max_batch` · `jepa_context_mul_mat_prec_f32` · `jepa_context_n_threads` · `jepa_context_new` · `jepa_context_set_max_batch` · `jepa_context_set_mul_mat_prec_f32` · `jepa_device_count` · `jepa_device_description` · `jepa_device_memory` · `jepa_device_name` · `jepa_encode` · `jepa_error_reset` · `jepa_error_text` · `jepa_free` · `jepa_head` · `jepa_head_ex` · `jepa_hjepa_action_dim` · `jepa_hjepa_action_embed` · `jepa_hjepa_action_embed_dim` · `jepa_hjepa_action_encode` · `jepa_hjepa_action_prior` · `jepa_hjepa_embed` · `jepa_hjepa_embed_dim` · `jepa_hjepa_frameskip` · `jepa_hjepa_horizons` · `jepa_hjepa_level_plan_default` · `jepa_hjepa_lift` · `jepa_hjepa_n_frames` · `jepa_hjepa_n_levels` · `jepa_hjepa_norm_stats` · `jepa_hjepa_plan` · `jepa_hjepa_plan_cost` · `jepa_hjepa_predict` · `jepa_hjepa_proprio_dim` · `jepa_hjepa_raw_action_dim` · `jepa_hjepa_rollout` · `jepa_hjepa_solve` · `jepa_hjepa_stride` · `jepa_lewm_action_dim` · `jepa_lewm_n_frames` · `jepa_lewm_predict` · `jepa_lewm_project` · `jepa_lewm_project_rows` · `jepa_lewm_rollout` · `jepa_load_image_rgb` · `jepa_model_default_params` · `jepa_model_device` · `jepa_model_device_name` · `jepa_model_embed_dim` · `jepa_model_family` · `jepa_model_file_type` · `jepa_model_file_type_name` · `jepa_model_free` · `jepa_model_has_cls` · `jepa_model_has_head` · `jepa_model_has_predictor` · `jepa_model_has_projector` · `jepa_model_img_size` · `jepa_model_is_gpu` · `jepa_model_label` · `jepa_model_load` · `jepa_model_load_ex` · `jepa_model_n_bytes` · `jepa_model_n_classes` · `jepa_model_n_frames` · `jepa_model_n_head` · `jepa_model_n_layer` · `jepa_model_n_prefix_tokens` · `jepa_model_n_registers` · `jepa_model_name` · `jepa_model_patch_size` · `jepa_model_tubelet_size` · `jepa_pool_cls` · `jepa_pool_mean` · `jepa_predict` · `jepa_predict_ex` · `jepa_predict_mod` · `jepa_preprocess_default_params` · `jepa_preprocess_frames_rgb` · `jepa_preprocess_frames_rgb_ex` · `jepa_preprocess_image_file` · `jepa_preprocess_image_rgb` · `jepa_preprocess_image_rgb_ex` · `jepa_print_system_info` · `jepa_resize_antialias_u8` · `jepa_softmax` · `jepa_token_grid` · `jepa_top_k` · `jepa_version`
 
 ## Types and handles
 
@@ -294,6 +294,110 @@ int jepa_hjepa_predict(jepa_context * ctx, int level, const float * states, cons
 //   out     : [n_steps, embed_dim(level)], caller-allocated: the predicted states
 int jepa_hjepa_rollout(jepa_context * ctx, int level, const float * states, int n_seed,
                        const float * actions, int n_steps, int history, float * out);
+```
+
+## H-JEPA planning: the paper's top-down gradient planner
+
+```c
+// Each level optimises a sequence of its own actions by gradient descent through its own world
+// model (AdamW on `n_samples` candidates in parallel, the reference's GradientSolver), and the levels
+// run top-down: the first state(s) a level predicts become the goal of the level below
+// (HierarchicalSolver). Level 1's actions are what the caller executes.
+//
+// The rollout inside the planner uses a context window of one state, as the reference does. The
+// gradient is computed on the host with the context's threads, whatever device the model is on;
+// the result does not depend on the thread count.
+#define JEPA_HJEPA_MAX_PLAN_LEVELS 8
+
+// One level's solver and cost settings (the levelN blocks of the reference's eval configs).
+typedef struct jepa_hjepa_level_plan {
+    int   horizon;                 // planning horizon of THIS call, in the level's own steps. A level
+                                   // above 1 whose horizon is 1 is skipped. jepa_hjepa_horizons()
+                                   // turns a configured horizon into the per-call value.
+    int   pre_decay_horizon;       // jepa_hjepa_horizons only: horizon held until the level above is
+                                   // down to 1 (0 = the stride of the level above)
+    int   n_samples;               // candidates optimised in parallel
+    int   n_steps;                 // gradient iterations at most
+    float lr, weight_decay;        // AdamW (betas 0.9 / 0.999, eps 1e-8)
+    float var_scale;               // std of the initial perturbation, in units of the action prior's std
+    float action_noise;            // std of the noise added to every candidate after each step (0 = none)
+    float action_clip_sigma;       // > 0: clip to prior mean +- sigma * std after each step;
+                                   // 0: clip to the 2 % .. 98 % range of the latent actions recorded in
+                                   //    training, when the level has them (jepa_hjepa_action_prior)
+    int   min_its;                 // iterations before early stopping may trigger
+    int   early_stop_patience;     // consecutive iterations without improvement that stop the solve (0 = never)
+    float early_stop_rel_delta;    // relative improvement of the best cost that counts as one
+    int   cost_last_n;             // how many of the last predicted states are scored
+    float intermediate_cost_weight;// weight of all scored states but the last (1 = equal)
+    float action_cost_weight;      // weight of the cost between this level's actions, pooled by the level
+                                   // above, and the macro-actions the level above chose (0 = off)
+    int   num_subgoals;            // of this level's predicted states, how many the level below must reach
+    int   horizon_one_goal_upper;  // when this level is skipped at horizon 1: 1 = the level below is scored
+                                   // against the real goal in THIS level's space, 0 = in its own space
+} jepa_hjepa_level_plan;
+// The reference's defaults: 100 samples, 90 steps, lr 0.1, weight decay 0.01, early stopping after
+// 30 iterations with patience 5 at 1 %, cost on the last state, one subgoal.
+jepa_hjepa_level_plan jepa_hjepa_level_plan_default(void);
+
+// Standard-normal draws. The planner calls it for the initial perturbation of the candidates
+// (n_samples - 1 of them, sample-major) and, with action_noise > 0, once per iteration.
+typedef void (*jepa_randn_fn)(void * user, float * out, size_t n);
+
+// What one level is asked to reach.
+typedef struct jepa_hjepa_goal {
+    const float * states;          // [n_states, embed_dim(level)]: 1, or one per scored prediction
+    int           n_states;
+    int           level;           // level the states live at: the planned level, or one above it
+                                   // (0 = the planned level). Predictions are encoded up to it first.
+    int           dense;           // 0: each level above reads every stride-th state, as in training;
+                                   // 1: stride 1 all the way up, so every predicted step is scored
+    const float * actions;         // [n_states, action_dim(level)] macro-actions to imitate, or NULL
+} jepa_hjepa_goal;
+
+// Cost of `n_samples` candidate action sequences at `level`, and its gradient.
+//   state   : [embed_dim(level)] the current state
+//   plan    : only cost_last_n, intermediate_cost_weight and action_cost_weight are read (NULL = defaults)
+//   actions : [n_samples, horizon, action_dim(level)]
+//   costs   : [n_samples];  grad : same shape as actions, or NULL
+int jepa_hjepa_plan_cost(jepa_context * ctx, int level, const float * state, const jepa_hjepa_goal * goal,
+                         const jepa_hjepa_level_plan * plan, const float * actions, int n_samples,
+                         int horizon, float * costs, float * grad);
+
+// One level's solve: plan->horizon actions that take `state` to `goal`.
+//   randn   : NULL = an internal generator with a fixed seed (the solve is deterministic)
+//   actions : [horizon, action_dim(level)] the lowest-cost candidate
+//   states  : [horizon + 1, embed_dim(level)] or NULL: `state`, then the states it predicts
+//   cost / iters : its cost and the iterations run, or NULL
+int jepa_hjepa_solve(jepa_context * ctx, int level, const float * state, const jepa_hjepa_goal * goal,
+                     const jepa_hjepa_level_plan * plan, jepa_randn_fn randn, void * randn_user,
+                     float * actions, float * states, float * cost, int * iters);
+
+// The per-call horizons of a receding-horizon episode. `levels[k].horizon` holds the CONFIGURED
+// horizon; `horizons[k]` receives the one to plan with after `steps_taken` environment steps: the
+// top level counts down to 1 over the episode, each level below holds its pre-decay horizon until
+// the level above reaches 1 and then counts down itself.
+//   replanning_interval : environment steps between two planner calls (receding horizon x action block)
+//   eval_budget         : environment steps in the episode
+int jepa_hjepa_horizons(const jepa_model * model, const jepa_hjepa_level_plan * levels, int n_levels,
+                        int replanning_interval, int eval_budget, int steps_taken, int * horizons);
+
+typedef struct jepa_hjepa_plan_info {
+    int   planned[JEPA_HJEPA_MAX_PLAN_LEVELS];     // 1 if the level ran a solve, 0 if it was skipped
+    int   goal_level[JEPA_HJEPA_MAX_PLAN_LEVELS];  // level whose latent space its cost was measured in
+    int   iters[JEPA_HJEPA_MAX_PLAN_LEVELS];
+    float cost[JEPA_HJEPA_MAX_PLAN_LEVELS];
+} jepa_hjepa_plan_info;
+
+// The whole hierarchy, top-down, for one planner call.
+//   states / goals : per level, [embed_dim(level)]: the current observation and the goal, encoded at
+//                    every level (jepa_hjepa_embed, then jepa_hjepa_lift on that one row)
+//   levels         : one plan per level, `horizon` already resolved for this call
+//   actions        : [levels[0].horizon, action_dim(1)] the level-1 plan, in the model's (z-scored,
+//                    frameskip-stacked) action units
+//   info           : per-level outcome, or NULL
+int jepa_hjepa_plan(jepa_context * ctx, const float * const * states, const float * const * goals,
+                    const jepa_hjepa_level_plan * levels, int n_levels, jepa_randn_fn randn,
+                    void * randn_user, float * actions, jepa_hjepa_plan_info * info);
 ```
 
 ## V-JEPA 2-AC action-conditioned world model (jepa.pred.kind == "ac")

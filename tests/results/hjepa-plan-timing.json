@@ -1,0 +1,139 @@
+{
+ "what": "wall time of one jepa_hjepa_plan call (tools/jepa-plan), best of 2; settings = the authors' eval configs at an episode's first call; fixture images as observation and goal",
+ "cpu": "AMD Ryzen Threadripper PRO 7995WX 96-Cores",
+ "engine_commit": "871b994",
+ "rows": [
+  {
+   "preset": "ant_l3",
+   "model": "ant_hjepa_l3-seed42-f16.gguf",
+   "threads": 8,
+   "ms": 16544,
+   "iterations_top_down": [
+    37,
+    32,
+    79
+   ],
+   "flags": "--horizons 2,2,5 --samples 100,100,400 --lr 0.06,0.1,0.1 --cost-last-n 2,1,1"
+  },
+  {
+   "preset": "ant_l3",
+   "model": "ant_hjepa_l3-seed42-f16.gguf",
+   "threads": 32,
+   "ms": 5322,
+   "iterations_top_down": [
+    37,
+    32,
+    79
+   ],
+   "flags": "--horizons 2,2,5 --samples 100,100,400 --lr 0.06,0.1,0.1 --cost-last-n 2,1,1"
+  },
+  {
+   "preset": "ant_l3",
+   "model": "ant_hjepa_l3-seed42-f16.gguf",
+   "threads": 96,
+   "ms": 3010,
+   "iterations_top_down": [
+    37,
+    32,
+    79
+   ],
+   "flags": "--horizons 2,2,5 --samples 100,100,400 --lr 0.06,0.1,0.1 --cost-last-n 2,1,1"
+  },
+  {
+   "preset": "pusht_l2",
+   "model": "pusht_hjepa_l2-seed42-f16.gguf",
+   "threads": 8,
+   "ms": 25168,
+   "iterations_top_down": [
+    42,
+    30
+   ],
+   "flags": "--horizons 2,8 --samples 50,400 --lr 0.1,0.075 --cost-last-n 2,1 --action-cost 0.2,0 --action-noise 0,0.01"
+  },
+  {
+   "preset": "pusht_l2",
+   "model": "pusht_hjepa_l2-seed42-f16.gguf",
+   "threads": 32,
+   "ms": 8141,
+   "iterations_top_down": [
+    42,
+    30
+   ],
+   "flags": "--horizons 2,8 --samples 50,400 --lr 0.1,0.075 --cost-last-n 2,1 --action-cost 0.2,0 --action-noise 0,0.01"
+  },
+  {
+   "preset": "pusht_l2",
+   "model": "pusht_hjepa_l2-seed42-f16.gguf",
+   "threads": 96,
+   "ms": 4662,
+   "iterations_top_down": [
+    42,
+    30
+   ],
+   "flags": "--horizons 2,8 --samples 50,400 --lr 0.1,0.075 --cost-last-n 2,1 --action-cost 0.2,0 --action-noise 0,0.01"
+  },
+  {
+   "preset": "droid_l2",
+   "model": "droid_hjepa_l2-seed1-f16.gguf",
+   "threads": 8,
+   "ms": 51373,
+   "iterations_top_down": [
+    58,
+    90
+   ],
+   "flags": "--horizons 36,12 --samples 16,4 --lr 0.01,0.3 --cost-last-n 999,1 --intermediate-cost 0.5,1 --subgoals 1,12 --var-scale 1.5 --clip-sigma 2"
+  },
+  {
+   "preset": "droid_l2",
+   "model": "droid_hjepa_l2-seed1-f16.gguf",
+   "threads": 32,
+   "ms": 43201,
+   "iterations_top_down": [
+    58,
+    90
+   ],
+   "flags": "--horizons 36,12 --samples 16,4 --lr 0.01,0.3 --cost-last-n 999,1 --intermediate-cost 0.5,1 --subgoals 1,12 --var-scale 1.5 --clip-sigma 2"
+  },
+  {
+   "preset": "droid_l2",
+   "model": "droid_hjepa_l2-seed1-f16.gguf",
+   "threads": 96,
+   "ms": 43188,
+   "iterations_top_down": [
+    58,
+    90
+   ],
+   "flags": "--horizons 36,12 --samples 16,4 --lr 0.01,0.3 --cost-last-n 999,1 --intermediate-cost 0.5,1 --subgoals 1,12 --var-scale 1.5 --clip-sigma 2"
+  },
+  {
+   "preset": "pusht_flat",
+   "model": "pusht_lewm-seed42-f16.gguf",
+   "threads": 8,
+   "ms": 33306,
+   "iterations_top_down": [
+    36
+   ],
+   "flags": "--horizons 15 --samples 800 --lr 0.05 --cost-last-n 2"
+  },
+  {
+   "preset": "pusht_flat",
+   "model": "pusht_lewm-seed42-f16.gguf",
+   "threads": 32,
+   "ms": 10889,
+   "iterations_top_down": [
+    36
+   ],
+   "flags": "--horizons 15 --samples 800 --lr 0.05 --cost-last-n 2"
+  },
+  {
+   "preset": "pusht_flat",
+   "model": "pusht_lewm-seed42-f16.gguf",
+   "threads": 96,
+   "ms": 7323,
+   "iterations_top_down": [
+    36
+   ],
+   "flags": "--horizons 15 --samples 800 --lr 0.05 --cost-last-n 2"
+  }
+ ]
+}

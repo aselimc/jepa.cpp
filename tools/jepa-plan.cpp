@@ -28,7 +28,12 @@ static void usage(const char * prog) {
            "  --steps N           gradient iterations per level at most (default 90)\n"
            "  --lr a,b,..         AdamW learning rate per level (default 0.1)\n"
            "  --cost-last-n a,..  predicted states scored per level (default 1)\n"
-           "  --action-cost W     weight of the cross-level action cost at level 1 (default 0)\n"
+           "  --action-cost a,..  weight of the cross-level action cost per level (default 0)\n"
+           "  --intermediate-cost a,..  weight of the scored states before the last, per level (default 1)\n"
+           "  --subgoals a,b,..   states of each level the level below must reach (default 1)\n"
+           "  --var-scale a,..    initial spread of the candidates, in prior std (default 1)\n"
+           "  --action-noise a,.. noise added after every iteration, per level (default 0)\n"
+           "  --clip-sigma a,..   clip to prior mean +- this many std (default: the prior's 2-98 %% range)\n"
            "  --budget N --step K --interval R\n"
            "                      plan as the call after K of N environment steps, replanning every R:\n"
            "                      horizons then follow the reference's decreasing schedule (default: use\n"
@@ -88,9 +93,9 @@ static bool embed_levels(jepa_context * ctx, jepa_model * model, const char * pa
 
 int main(int argc, char ** argv) {
     std::string model_path, obs_path, goal_path;
-    std::vector<float> horizons, samples, lrs, cost_last_n, proprio_raw, goal_proprio_raw;
+    std::vector<float> horizons, samples, lrs, cost_last_n, action_cost, inter_cost, subgoals, var_scale, action_noise, clip_sigma;
+    std::vector<float> proprio_raw, goal_proprio_raw;
     int steps = 90, threads = 0, device = -1, budget = 0, step = 0, interval = 1;
-    float action_cost = 0.0f;
     bool quiet = false;
     for (int i = 1; i < argc; i++) {
         const std::string a = argv[i];
@@ -103,7 +108,12 @@ int main(int argc, char ** argv) {
         else if (a == "--lr") lrs = parse_list(next());
         else if (a == "--cost-last-n") cost_last_n = parse_list(next());
         else if (a == "--steps") steps = atoi(next());
-        else if (a == "--action-cost") action_cost = strtof(next(), nullptr);
+        else if (a == "--action-cost") action_cost = parse_list(next());
+        else if (a == "--intermediate-cost") inter_cost = parse_list(next());
+        else if (a == "--subgoals") subgoals = parse_list(next());
+        else if (a == "--var-scale") var_scale = parse_list(next());
+        else if (a == "--action-noise") action_noise = parse_list(next());
+        else if (a == "--clip-sigma") clip_sigma = parse_list(next());
         else if (a == "--budget") budget = atoi(next());
         else if (a == "--step") step = atoi(next());
         else if (a == "--interval") interval = atoi(next());
@@ -158,7 +168,12 @@ int main(int argc, char ** argv) {
         p.n_steps = steps;
         p.lr = pick(lrs, k, 0.1f);
         p.cost_last_n = (int) pick(cost_last_n, k, 1.0f);
-        p.action_cost_weight = k == 0 ? action_cost : 0.0f;
+        p.action_cost_weight = pick(action_cost, k, 0.0f);
+        p.intermediate_cost_weight = pick(inter_cost, k, 1.0f);
+        p.num_subgoals = (int) pick(subgoals, k, 1.0f);
+        p.var_scale = pick(var_scale, k, 1.0f);
+        p.action_noise = pick(action_noise, k, 0.0f);
+        p.action_clip_sigma = pick(clip_sigma, k, 0.0f);
         p.horizon_one_goal_upper = k > 0;
     }
     std::vector<jepa_hjepa_level_plan> plan = cfg;

@@ -2,7 +2,8 @@
 """hjepa_batch.py — convert, verify and publish the released H-JEPA checkpoints in bulk.
 
     scripts/hjepa_batch.py run    --hjepa-src tmp/hjepa/src [--runs REGEX] [--seeds 42,1]
-    scripts/hjepa_batch.py upload [--org jepacpp] [--dry-run]
+    scripts/hjepa_batch.py upload [--org jepacpp] [--dry-run] [--fixtures-only]
+    scripts/hjepa_batch.py time   [--threads 8,32,96]      # planner wall time -> tests/results/hjepa-plan-timing.json
 
 `run`, for every selected run of huggingface.co/jepa-world-models/h-jepa:
     download <env>/<run>/seed<N>/<run>_object.ckpt  -> models/jepa-world-models/h-jepa/...
@@ -40,7 +41,8 @@ RESULTS = ROOT / "tests" / "results" / "hjepa-parity.json"
 PY = sys.executable
 DTYPES = ("f32", "f16", "q8_0")
 ROW = re.compile(r"^\s+(?P<name>.+?)\s+rows=(?P<rows>\d+)\s+cos_mean=(?P<mean>[\d.]+) cos_min=(?P<min>[\d.]+) "
-                 r"max\|d\|=(?P<mad>[\d.e+-]+) rel=(?P<rel>[\d.e+-]+).*?(?P<ok>OK|FAIL)\s*$")
+                 r"max\|d\|=(?P<mad>[\d.e+-]+) rel=(?P<rel>[\d.e+-]+).*?(?P<ok>OK|FAIL|MISS)\s*$")
+PLAN_ROW = re.compile(r"^\s+(plan|solve|hplan)\b")
 
 
 def sh(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -81,17 +83,33 @@ def download(run: dict) -> Path:
 def parity(gguf: Path, ref: Path, threads: int) -> dict:
     """Run test-predictor --hjepa and summarise its rows against the reference."""
     r = sh([ROOT / "build" / "test-predictor", "--hjepa", gguf, "--ref", ref, "--threads", threads])
-    rows = [m.groupdict() for m in map(ROW.match, r.stdout.splitlines()) if m]
+    lines = r.stdout.splitlines()
+    rows = [m.groupdict() for m in map(ROW.match, lines) if m]
+    planner = [x for x in rows if x["name"].split()[0] in ("plan", "solve", "hplan")]
+    model = [x for x in rows if x not in planner]
     # rows that compare against the PyTorch dump (the others are self-consistency checks)
-    vs_ref = [x for x in rows if "causal" not in x["name"] and "== predict" not in x["name"]]
+    vs_ref = [x for x in model if "causal" not in x["name"] and "== predict" not in x["name"]]
     chain = [x for x in vs_ref if x["name"].startswith("chain")]
+    grads = [x for x in planner if "gradient" in x["name"]]
+    plans = [x for x in planner if x["name"].startswith(("solve", "hplan"))]
+    # the solver summary lines (iterations, noise, final cost) carry OK / FAIL / MISS without the metric columns
+    summaries = [ln for ln in lines if PLAN_ROW.match(ln) and not ROW.match(ln)]
     return {
         "pass": r.returncode == 0 and r.stdout.strip().endswith("PASS"),
-        "checks": len(rows),
+        "checks": len(model),
         "failed": [x["name"] for x in rows if x["ok"] == "FAIL"],
         "cos_min": min((float(x["min"]) for x in vs_ref), default=None),
         "rel_max": max((float(x["rel"]) for x in vs_ref), default=None),
         "chain_cos_min": float(chain[0]["min"]) if chain else None,
+        "planner": {
+            "gated": next((ln.strip() for ln in lines if "not gated" in ln and "planner" in ln), "everything"),
+            "checks": len(planner) + len(summaries),
+            "missed": [x["name"] for x in planner if x["ok"] != "OK"]
+                      + [ln.strip().split(":")[0] + ": summary" for ln in summaries if not ln.rstrip().endswith("OK")],
+            "grad_cos_min": min((float(x["min"]) for x in grads), default=None),
+            "grad_rel_max": max((float(x["rel"]) for x in grads), default=None),
+            "plan_cos_min": min((float(x["min"]) for x in plans), default=None),
+        },
     }
 
 
@@ -166,11 +184,11 @@ def card(results: dict, org: str) -> str:
         "`hjepa_l{N}` is the N-level H-JEPA, `hwm_l{N}` the HWM baseline (identity upper encoders), `lewm` the flat one-level",
         "baseline. One seed of every released configuration is here (seed 42 for the simulated environments, seed 1 for DROID).", "",
         "## What runs", "",
-        "The encoder and every level's state encoder, action encoder, predictor and latent rollout (`jepa_hjepa_*` in",
-        "`include/jepa.h`). The paper's top-down gradient planner is not in the engine yet.", "",
+        "The encoder, every level's state encoder, action encoder, predictor and latent rollout, and the paper's top-down",
+        "gradient planner (`jepa_hjepa_*` in `include/jepa.h`; `jepa-plan` goes from an observation and a goal image to actions).", "",
         "```sh",
         f"hf download {org}/h-jepa-GGUF ant/ant_hjepa_l3-seed42-f16.gguf --local-dir models/gguf",
-        "jepa-info models/gguf/ant/ant_hjepa_l3-seed42-f16.gguf",
+        "jepa-plan -m models/gguf/ant/ant_hjepa_l3-seed42-f16.gguf --obs now.png --goal goal.png --horizons 2,2,5 --samples 100,100,400",
         "```", "",
         "## Parity with the authors' PyTorch", "",
         "Every file below was checked by `test-predictor --hjepa` against activations dumped from the authors' own modules",
@@ -191,6 +209,9 @@ def card(results: dict, org: str) -> str:
     lines += [
         "", f"Measured at jepa.cpp `{results.get('engine_commit', '')}`, CPU. Bars: {results.get('bars', '')}.",
         "`q4_k` and below do not clear the q8_0 bars on these small models and are not published.", "",
+        "The planner is checked against the authors' `GradientSolver` / `HierarchicalSolver` replayed on their own random",
+        "draws: at f32 every cost, autograd gradient, solve and hierarchical plan matches, and at f16 every cost and gradient.",
+        "A q8_0 file is verified as a forward model only; whether it plans as well as f32 has not been measured in closed loop.", "",
         "## Inputs", "",
         "Frames are squash-resized to the encoder's image size and ImageNet-normalised (`jepa.pre.*`). Actions and",
         "proprioception are z-scored with the training statistics stored in the file (`norm.action.*`, `norm.proprio.*`,",
@@ -231,7 +252,7 @@ def cmd_upload(a) -> int:
     api.create_repo(repo, repo_type="model", private=False, exist_ok=True)
     api.upload_file(path_or_fileobj=str(out), path_in_repo="README.md", repo_id=repo, repo_type="model",
                     commit_message="Model card")
-    for i, (p, dst) in enumerate(todo, 1):
+    for i, (p, dst) in enumerate([] if a.fixtures_only else todo, 1):
         api.upload_file(path_or_fileobj=str(p), path_in_repo=dst, repo_id=repo, repo_type="model",
                         commit_message=f"Add {dst}")
         print(f"  [{i}/{len(todo)}] {dst}", flush=True)
@@ -241,6 +262,54 @@ def cmd_upload(a) -> int:
             api.upload_folder(folder_path=str(REF_DIR / name), path_in_repo=f"ref/{name}", repo_id=ds,
                               repo_type="dataset", commit_message=f"Add ref/{name} (H-JEPA)")
     print(f"done: https://huggingface.co/{repo}")
+    return 0
+
+
+# One planner call at the settings of the authors' eval configs (h_jepa/config/eval/<name>.yaml), at
+# the horizons of an episode's first call. jepa-plan flags, level 1 first.
+PLAN_PRESETS = {
+    "ant_l3": ("ant_hjepa_l3-seed42", ["--horizons", "2,2,5", "--samples", "100,100,400", "--lr", "0.06,0.1,0.1",
+                                       "--cost-last-n", "2,1,1"]),
+    "pusht_l2": ("pusht_hjepa_l2-seed42", ["--horizons", "2,8", "--samples", "50,400", "--lr", "0.1,0.075", "--cost-last-n", "2,1",
+                                           "--action-cost", "0.2,0", "--action-noise", "0,0.01"]),
+    "droid_l2": ("droid_hjepa_l2-seed1", ["--horizons", "36,12", "--samples", "16,4", "--lr", "0.01,0.3", "--cost-last-n", "999,1",
+                                          "--intermediate-cost", "0.5,1", "--subgoals", "1,12", "--var-scale", "1.5", "--clip-sigma", "2"]),
+    "pusht_flat": ("pusht_lewm-seed42", ["--horizons", "15", "--samples", "800", "--lr", "0.05", "--cost-last-n", "2"]),
+}
+PLAN_TIMING = ROOT / "tests" / "results" / "hjepa-plan-timing.json"
+
+
+def cmd_time(a) -> int:
+    """Wall time of one planner call per preset and thread count -> tests/results/hjepa-plan-timing.json."""
+    media = ROOT / "tests" / "fixtures" / "media"
+    obs, goal = media / "coco_000000000139.jpg", media / "coco_000000000285.jpg"
+    rows = []
+    for preset, (name, flags) in PLAN_PRESETS.items():
+        gguf = GGUF_DIR / f"{name}-{a.ftype}.gguf"
+        if not gguf.exists():
+            print(f"{preset}: {gguf.name} missing, skipped")
+            continue
+        for threads in [int(t) for t in a.threads.split(",")]:
+            best, levels = None, []
+            for _ in range(a.repeats):
+                r = sh([ROOT / "build" / "jepa-plan", "-m", gguf, "--obs", obs, "--goal", goal, "--threads", threads, *flags])
+                m = re.search(r"planned in (\d+) ms", r.stdout)
+                if r.returncode != 0 or not m:
+                    raise SystemExit(f"{preset}: jepa-plan failed\n{r.stderr[-400:]}")
+                levels = [ln for ln in r.stdout.splitlines() if ln.startswith("level ") and "horizon" in ln]
+                best = int(m.group(1)) if best is None else min(best, int(m.group(1)))
+            iters = [int(re.search(r"(\d+) iterations", ln).group(1)) for ln in levels]
+            rows.append({"preset": preset, "model": gguf.name, "threads": threads, "ms": best,
+                         "iterations_top_down": iters, "flags": " ".join(flags)})
+            print(f"{preset:12s} {threads:3d} threads  {best:7d} ms  iterations (top level first) {iters}", flush=True)
+    import platform
+    cpu = next((ln.split(":", 1)[1].strip() for ln in open("/proc/cpuinfo") if ln.startswith("model name")), platform.processor())
+    PLAN_TIMING.write_text(json.dumps({
+        "what": "wall time of one jepa_hjepa_plan call (tools/jepa-plan), best of %d; settings = the authors' eval configs "
+                "at an episode's first call; fixture images as observation and goal" % a.repeats,
+        "cpu": cpu, "engine_commit": sh(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"]).stdout.strip(),
+        "rows": rows}, indent=1) + "\n")
+    print(f"wrote {PLAN_TIMING}")
     return 0
 
 
@@ -255,8 +324,13 @@ def main(argv=None) -> int:
     u = sub.add_parser("upload")
     u.add_argument("--org", default="jepacpp")
     u.add_argument("--dry-run", action="store_true")
+    u.add_argument("--fixtures-only", action="store_true", help="upload the reference dumps and the card, not the GGUFs")
+    t = sub.add_parser("time")
+    t.add_argument("--threads", default="8,32,96")
+    t.add_argument("--ftype", default="f16")
+    t.add_argument("--repeats", type=int, default=2)
     a = ap.parse_args(argv)
-    return cmd_run(a) if a.cmd == "run" else cmd_upload(a)
+    return {"run": cmd_run, "upload": cmd_upload, "time": cmd_time}[a.cmd](a)
 
 
 if __name__ == "__main__":

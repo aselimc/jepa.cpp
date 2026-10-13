@@ -513,43 +513,44 @@ actions (`_action_encode`, including the short trailing chunk), action embedding
 rollouts at history 1 and 3; and the *chain* — frames to top-level states with no reference tensor fed back in. It also
 checks that a prefix run reproduces the rows of the full run (causality) and that rollout step 0 is `predict(T = 1)`.
 
-`tests/results/hjepa-parity.json` holds every number below, written by `scripts/hjepa_batch.py run`. The cells are
-**worst row cosine / largest relative max-abs error** over all comparisons against the dump; f32 is cosine 1.000000
-throughout, so only its error is shown.
+`tests/results/hjepa-parity.json` holds every number below, written by `scripts/hjepa_batch.py run`. The dtype cells
+are **worst row cosine / largest relative max-abs error** over the model comparisons against the dump; f32 is cosine
+1.000000 throughout, so only its error is shown. `checks` is model + planner comparisons at f32, and `∇ rel max` the
+largest relative error of the planner's gradient against PyTorch autograd (next section).
 
-| run | levels | checks | f32 rel max | f16 cos min / rel max | q8_0 cos min / rel max |
-|---|---:|---:|---:|---|---|
-| `ant_hjepa_l2-seed42` | 2 | 21 | 1.3e-06 | 0.999991 / 3.1e-03 | 0.993317 / 1.1e-01 |
-| `ant_hjepa_l3-seed42` | 3 | 30 | 7.7e-07 | 0.999998 / 1.3e-03 | 0.998336 / 4.8e-02 |
-| `ant_hjepa_l4-seed42` | 4 | 39 | 3.1e-06 | 0.999997 / 2.4e-03 | ✗ L1 rollout |
-| `ant_hwm_l2-seed42` | 2 | 21 | 7.0e-07 | 1.000000 / 8.7e-04 | 0.999758 / 2.2e-02 |
-| `ant_hwm_l3-seed42` | 3 | 30 | 3.1e-06 | 0.999998 / 2.2e-03 | 0.994152 / 7.7e-02 |
-| `ant_hwm_l4-seed42` | 4 | 39 | 9.9e-07 | 0.999996 / 3.3e-03 | ✗ L1 rollout; L1 rollout |
-| `ant_lewm-seed42` | 1 | 11 | 1.8e-05 | 0.999998 / 1.3e-03 | 0.998428 / 3.4e-02 |
-| `cube_hjepa_l2-seed42` | 2 | 21 | 8.9e-07 | 1.000000 / 6.8e-04 | 0.999849 / 1.5e-02 |
-| `cube_hjepa_l3-seed42` | 3 | 30 | 7.7e-07 | 1.000000 / 7.2e-04 | 0.999790 / 2.0e-02 |
-| `cube_hjepa_l4-seed42` | 4 | 39 | 1.3e-05 | 1.000000 / 8.9e-04 | 0.999897 / 1.5e-02 |
-| `cube_hwm_l2-seed42` | 2 | 21 | 9.3e-07 | 1.000000 / 5.1e-04 | 0.999879 / 1.3e-02 |
-| `cube_hwm_l3-seed42` | 3 | 30 | 9.2e-07 | 1.000000 / 5.3e-04 | 0.999865 / 2.1e-02 |
-| `cube_hwm_l4-seed42` | 4 | 39 | 7.3e-07 | 1.000000 / 1.0e-03 | 0.999915 / 1.3e-02 |
-| `cube_lewm-seed42` | 1 | 11 | 1.5e-06 | 1.000000 / 5.9e-04 | 0.999882 / 1.2e-02 |
-| `fourroom_hjepa_l2-seed42` | 2 | 21 | 4.9e-05 | 0.999697 / 2.1e-02 | 0.988508 / 1.1e-01 |
-| `fourroom_hjepa_l3-seed42` | 3 | 30 | 3.3e-05 | 0.999984 / 4.4e-03 | ✗ encoder CLS rows; L1 state |
-| `fourroom_hjepa_l4-seed42` | 4 | 39 | 1.0e-04 | ✗ chain: frames -> L4 states | ✗ encoder tokens; encoder CLS rows |
-| `fourroom_hwm_l2-seed42` | 2 | 21 | 1.7e-05 | 0.999991 / 3.5e-03 | ✗ encoder CLS rows; L1 state |
-| `fourroom_hwm_l3-seed42` | 3 | 30 | 3.1e-05 | 0.999985 / 4.7e-03 | ✗ encoder CLS rows; L1 state |
-| `fourroom_hwm_l4-seed42` | 4 | 39 | 9.0e-05 | 0.999976 / 7.0e-03 | ✗ chain: frames -> L4 states |
-| `fourroom_lewm-seed42` | 1 | 11 | 6.1e-06 | 0.999988 / 3.9e-03 | 0.996307 / 5.8e-02 |
-| `pusht_hjepa_l2-seed42` | 2 | 21 | 1.2e-06 | 0.999999 / 7.2e-04 | 0.999440 / 2.1e-02 |
-| `pusht_hjepa_l3-seed42` | 3 | 30 | 1.5e-06 | 1.000000 / 9.0e-04 | 0.999630 / 2.3e-02 |
-| `pusht_hjepa_l4-seed42` | 4 | 39 | 1.3e-06 | 1.000000 / 7.1e-04 | 0.999747 / 2.1e-02 |
-| `pusht_hwm_l2-seed42` | 2 | 21 | 3.3e-06 | 0.999995 / 2.6e-03 | 0.998223 / 3.6e-02 |
-| `pusht_hwm_l3-seed42` | 3 | 30 | 1.7e-05 | 0.999788 / 1.6e-02 | 0.996934 / 6.5e-02 |
-| `pusht_hwm_l4-seed42` | 4 | 39 | 1.0e-06 | 1.000000 / 6.5e-04 | 0.998704 / 1.5e-02 |
-| `pusht_lewm-seed42` | 1 | 11 | 8.5e-07 | 1.000000 / 9.4e-04 | 0.999657 / 2.1e-02 |
-| `droid_hjepa_l2-seed1` | 2 | 25 | 6.6e-07 | 1.000000 / 4.2e-04 | 0.999790 / 1.4e-02 |
-| `droid_hwm_l2-seed1` | 2 | 25 | 6.4e-07 | 1.000000 / 2.1e-04 | 0.999781 / 1.1e-02 |
-| `droid_lewm-seed1` | 1 | 11 | 9.2e-07 | 1.000000 / 4.5e-04 | 0.999843 / 1.2e-02 |
+| run | levels | checks | f32 rel max | ∇ rel max | f16 cos min / rel max | q8_0 cos min / rel max |
+|---|---:|---:|---:|---:|---|---|
+| `ant_hjepa_l2-seed42` | 2 | 21 + 30 | 1.3e-06 | 3.6e-06 | 0.999991 / 3.1e-03 | 0.993317 / 1.1e-01 |
+| `ant_hjepa_l3-seed42` | 3 | 30 + 45 | 7.7e-07 | 3.9e-06 | 0.999998 / 1.3e-03 | 0.998336 / 4.8e-02 |
+| `ant_hjepa_l4-seed42` | 4 | 39 + 60 | 3.1e-06 | 4.1e-06 | 0.999997 / 2.4e-03 | ✗ L1 rollout |
+| `ant_hwm_l2-seed42` | 2 | 21 + 30 | 7.0e-07 | 5.7e-06 | 1.000000 / 8.7e-04 | 0.999758 / 2.2e-02 |
+| `ant_hwm_l3-seed42` | 3 | 30 + 45 | 3.1e-06 | 3.1e-06 | 0.999998 / 2.2e-03 | 0.994152 / 7.7e-02 |
+| `ant_hwm_l4-seed42` | 4 | 39 + 60 | 9.9e-07 | 1.6e-05 | 0.999996 / 3.3e-03 | ✗ L1 rollout; L1 rollout |
+| `ant_lewm-seed42` | 1 | 11 + 11 | 1.8e-05 | 3.3e-06 | 0.999998 / 1.3e-03 | 0.998428 / 3.4e-02 |
+| `cube_hjepa_l2-seed42` | 2 | 21 + 30 | 8.9e-07 | 1.4e-06 | 1.000000 / 6.8e-04 | 0.999849 / 1.5e-02 |
+| `cube_hjepa_l3-seed42` | 3 | 30 + 45 | 7.7e-07 | 1.9e-06 | 1.000000 / 7.2e-04 | 0.999790 / 2.0e-02 |
+| `cube_hjepa_l4-seed42` | 4 | 39 + 60 | 1.3e-05 | 2.2e-06 | 1.000000 / 8.9e-04 | 0.999897 / 1.5e-02 |
+| `cube_hwm_l2-seed42` | 2 | 21 + 30 | 9.3e-07 | 1.8e-06 | 1.000000 / 5.1e-04 | 0.999879 / 1.3e-02 |
+| `cube_hwm_l3-seed42` | 3 | 30 + 45 | 9.2e-07 | 2.0e-06 | 1.000000 / 5.3e-04 | 0.999865 / 2.1e-02 |
+| `cube_hwm_l4-seed42` | 4 | 39 + 60 | 7.3e-07 | 1.9e-06 | 1.000000 / 1.0e-03 | 0.999915 / 1.3e-02 |
+| `cube_lewm-seed42` | 1 | 11 + 11 | 1.5e-06 | 1.8e-06 | 1.000000 / 5.9e-04 | 0.999882 / 1.2e-02 |
+| `fourroom_hjepa_l2-seed42` | 2 | 21 + 30 | 4.9e-05 | 2.3e-06 | 0.999697 / 2.1e-02 | 0.988508 / 1.1e-01 |
+| `fourroom_hjepa_l3-seed42` | 3 | 30 + 45 | 3.3e-05 | 2.4e-06 | 0.999984 / 4.4e-03 | ✗ encoder CLS rows; L1 state |
+| `fourroom_hjepa_l4-seed42` | 4 | 39 + 60 | 1.0e-04 | 3.9e-06 | ✗ chain: frames -> L4 states | ✗ encoder tokens; encoder CLS rows |
+| `fourroom_hwm_l2-seed42` | 2 | 21 + 30 | 1.7e-05 | 1.5e-06 | 0.999991 / 3.5e-03 | ✗ encoder CLS rows; L1 state |
+| `fourroom_hwm_l3-seed42` | 3 | 30 + 45 | 3.1e-05 | 1.8e-06 | 0.999985 / 4.7e-03 | ✗ encoder CLS rows; L1 state |
+| `fourroom_hwm_l4-seed42` | 4 | 39 + 60 | 9.0e-05 | 2.0e-06 | 0.999976 / 7.0e-03 | ✗ chain: frames -> L4 states |
+| `fourroom_lewm-seed42` | 1 | 11 + 11 | 6.1e-06 | 2.8e-06 | 0.999988 / 3.9e-03 | 0.996307 / 5.8e-02 |
+| `pusht_hjepa_l2-seed42` | 2 | 21 + 30 | 1.2e-06 | 2.2e-06 | 0.999999 / 7.2e-04 | 0.999440 / 2.1e-02 |
+| `pusht_hjepa_l3-seed42` | 3 | 30 + 45 | 1.5e-06 | 2.5e-06 | 1.000000 / 9.0e-04 | 0.999630 / 2.3e-02 |
+| `pusht_hjepa_l4-seed42` | 4 | 39 + 60 | 1.3e-06 | 2.4e-06 | 1.000000 / 7.1e-04 | 0.999747 / 2.1e-02 |
+| `pusht_hwm_l2-seed42` | 2 | 21 + 30 | 3.3e-06 | 1.6e-06 | 0.999995 / 2.6e-03 | 0.998223 / 3.6e-02 |
+| `pusht_hwm_l3-seed42` | 3 | 30 + 45 | 1.7e-05 | 2.7e-06 | 0.999788 / 1.6e-02 | 0.996934 / 6.5e-02 |
+| `pusht_hwm_l4-seed42` | 4 | 39 + 60 | 1.0e-06 | 2.6e-06 | 1.000000 / 6.5e-04 | 0.998704 / 1.5e-02 |
+| `pusht_lewm-seed42` | 1 | 11 + 11 | 8.5e-07 | 1.9e-06 | 1.000000 / 9.4e-04 | 0.999657 / 2.1e-02 |
+| `droid_hjepa_l2-seed1` | 2 | 25 + 30 | 6.6e-07 | 3.8e-06 | 1.000000 / 4.2e-04 | 0.999790 / 1.4e-02 |
+| `droid_hwm_l2-seed1` | 2 | 25 + 30 | 6.4e-07 | 3.5e-06 | 1.000000 / 2.1e-04 | 0.999781 / 1.1e-02 |
+| `droid_lewm-seed1` | 1 | 11 + 11 | 9.2e-07 | 2.8e-06 | 1.000000 / 4.5e-04 | 0.999843 / 1.2e-02 |
 
 **31 of 31 pass at f32, 30 at f16, 24 at q8_0** against the bars of "Thresholds" below (f32: cosine ≥ 0.9999 and
 rel ≤ 1e-3; f16: mean ≥ 0.9999, worst ≥ 0.99; q8_0: mean ≥ 0.999, worst ≥ 0.98). A ✗ names the comparison that missed.
@@ -566,6 +567,40 @@ A file that misses a bar is not published. `q4_k` was tried on `ant_hjepa_l3` an
 on both (chain cosine 0.9946 and 0.9929) and is not offered for this family. On CUDA the four models ctest runs
 (`ant_hjepa_l3`, `pusht_hjepa_l2`, `ant_hwm_l2`, `droid_hjepa_l2`) pass at f32 with the GPU bars of "Parity on a GPU",
 and `ant_hjepa_l3` and `droid_hjepa_l2` also at f16 and q8_0.
+
+### The H-JEPA planner against the authors' solver
+
+The reference for `jepa_hjepa_plan` and its parts is the authors' `LevelCostModel`, `GradientSolver` and
+`HierarchicalSolver`, run by `scripts/hjepa_reference.py` on the states of the dump above with every `torch.randn` draw
+recorded. `test-predictor --hjepa` then checks, per model:
+
+- **cost and gradient** of fixed candidates (`jepa_hjepa_plan_cost`) against `get_cost` and PyTorch autograd, for every
+  level and every place a goal can live: the level's own space with two scored states and the intermediate weight; one
+  level up, at the upper level's stride, with two subgoals and the cross-level action cost; and the top level reached
+  densely (stride 1 through every level in between);
+- **whole solves** (`jepa_hjepa_solve`) replayed on the reference's own noise, three per level — plain; early-stopped
+  with per-iteration action noise; sigma-clipped with a wider initial spread — comparing the chosen actions, the states
+  they predict, the final cost, the number of iterations run and that the noise stream was consumed exactly;
+- **the hierarchy**: the horizon schedule of an episode against `_horizon_schedules` at every call
+  (`jepa_hjepa_horizons`), and the level-1 plan of the top-down solve at three calls of it — the first, one in the
+  middle, and the first at which every upper level is down to horizon 1 and is skipped, so that level 1 is scored
+  densely against the real goal in the top level's space.
+
+At f32, all 1,195 of these comparisons pass across the 31 models: gradient cosine 1.0000000 at worst with
+relative error at most 1.6e-05, and every replayed solve and plan at cosine 1.000000 or better with the
+reference's iteration count.
+
+What is gated depends on the dtype, because the reference ran on the f32 weights. Costs and gradients say whether a
+file computes the same function and derivative, and are gated at f32 and f16 (f16 gradient cosine 0.999983 at worst
+over the 31 models). A replayed solve is a test of the algorithm and is only a replay on the reference's weights: on
+any others the optimiser parts ways with it within a few steps — another candidate ends up cheapest, early stopping
+fires an iteration apart — without either being wrong. 3 of the 31 f16 files end a replayed solve on a different
+candidate, and at q8_0 the gradient cosine goes as low as 0.960; those rows are printed as `MISS` and do not fail
+the run. Whether a q8_0 file plans as well as its f32 parent is a closed-loop question (success rate in the simulator)
+that these fixtures do not answer; f32 and f16 are the dtypes to plan with until someone measures it.
+
+The planner is deterministic: `test-errors` plans on a forged hierarchy with one thread and with four and requires the
+same bytes, and checks the gradient against a central finite difference with no reference involved.
 
 ## Thresholds (per backend × model family × file-type tier)
 

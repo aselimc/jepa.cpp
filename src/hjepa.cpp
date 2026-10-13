@@ -17,7 +17,7 @@
 // inner LayerNorms and the projector MLP and embeds the action inside the predictor.
 //
 // The released hierarchies all have window_size 1: a level's state is one state of the level
-// below, re-encoded. Planning (the paper's top-down gradient solver) is not in this file yet.
+// below, re-encoded. Planning (the paper's top-down gradient solver) is src/hjepa-plan.cpp.
 #include "predictor-internal.h"
 
 #include <cinttypes>

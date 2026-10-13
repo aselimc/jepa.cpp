@@ -312,6 +312,27 @@ the actions and prints the L2 and cosine drift per step. `--actions '0.1,0.2,…
 actions; `--ref-check tests/fixtures/ref/lewm-pusht` replays the PyTorch reference and exits non-zero
 on a mismatch.
 
+### `jepa-plan` — from two images to actions (H-JEPA)
+
+```bash
+scripts/download_models.sh hjepa                       # ant_hjepa_l3-seed42-f16.gguf
+build/jepa-plan -m models/gguf/ant_hjepa_l3-seed42-f16.gguf \
+    --obs now.png --goal goal.png --horizons 2,2,5 --samples 100,100,400 -t 32
+```
+
+One call of the paper's top-down planner. The observation and the goal are encoded at every level;
+the top level optimises its macro-actions towards the goal by gradient descent through its world
+model, and each level below is asked to reach the first state the level above predicted. It prints
+what every level did (horizon, iterations, cost, the latent space the cost was measured in) and the
+level-1 plan, in the model's units and as raw environment actions. Per-level lists (`--horizons`,
+`--samples`, `--lr`, `--cost-last-n`, `--action-cost`, `--subgoals`, …) take level 1 first; the
+values in the authors' `h_jepa/config/eval/*.yaml` map onto them one to one. `--budget N --step K
+--interval R` plans as call `K / R` of an `N`-step episode, with the horizons the reference's
+schedule gives that call. A controller executes the first actions, observes, and calls again.
+
+The planner's gradient runs on the CPU threads whatever device the model is on, and its result
+does not depend on the thread count.
+
 ### `jepa-quantize` — make a file smaller
 
 ```bash

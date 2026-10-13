@@ -39,7 +39,7 @@ rollouts.**
 |---|---|---|---|---|---|---|
 | LeJEPA ViT-S/16 | [OK-AI](https://huggingface.co/OK-AI/lejepa-vits16-pretrain-in1k) | 22 M | image features, fast | 42 / 23 MB | [↓](https://huggingface.co/jepacpp/lejepa-vits16-pretrain-in1k-GGUF) | Apache-2.0 |
 | LeWorldModel Push-T | [le-wm](https://huggingface.co/quentinll/lewm-pusht) | 18 M | image features + action-conditioned world model | 38 / 23 MB | [↓](https://huggingface.co/jepacpp/lewm-pusht-GGUF) | MIT |
-| H-JEPA (31 checkpoints) | [H-JEPA](https://huggingface.co/jepa-world-models/h-jepa) | 11 – 86 M | hierarchical world models, 1 – 4 levels: AntMaze, FourRoom, Cube, Push-T, DROID | 25 – 217 / 16 – 157 MB | [↓](https://huggingface.co/jepacpp/h-jepa-GGUF) | MIT |
+| H-JEPA (31 checkpoints) | [H-JEPA](https://huggingface.co/jepa-world-models/h-jepa) | 11 – 86 M | hierarchical world models with the paper's top-down planner, 1 – 4 levels: AntMaze, FourRoom, Cube, Push-T, DROID | 25 – 217 / 16 – 157 MB | [↓](https://huggingface.co/jepacpp/h-jepa-GGUF) | MIT |
 | V-JEPA 2.1 ViT-B/16 @384 | [Meta FAIR](https://github.com/facebookresearch/vjepa2) | 110 M | image *and* video features + predictor | 210 / 113 MB | [↓](https://huggingface.co/jepacpp/vjepa2_1-vitb-384-GGUF) | MIT |
 | LeVJEPA ViT-L/16 | [galilai](https://huggingface.co/galilai-group/LeVJEPA-VideoMix-Large) | 303 M | video features, block-causal attention | 579 / 310 MB | [↓](https://huggingface.co/jepacpp/levjepa-vitl16-GGUF) | CC-BY-NC-4.0 |
 | V-JEPA 2 ViT-L/16 | [Meta FAIR](https://huggingface.co/facebook/vjepa2-vitl-fpc64-256) | 326 M | video features (16–64 frames) + masked predictor | 623 / 333 MB | [↓](https://huggingface.co/jepacpp/vjepa2-vitl-fpc64-256-GGUF) | MIT |
@@ -75,6 +75,7 @@ build/jepa-classify -m models/gguf/vjepa2-vitl-fpc16-256-ssv2-f16.gguf --video t
 
 # image -> latent world model -> 8 action steps
 build/jepa-worldmodel -m models/gguf/lewm-pusht-f16.gguf --image tests/fixtures/media/coco_000000000139.jpg --random-actions 8
+build/jepa-plan -m models/gguf/ant_hjepa_l3-seed42-f16.gguf --obs now.png --goal goal.png   # H-JEPA: two images -> actions
 
 # HTTP server: POST /v1/embeddings (OpenAI-shaped), /classify, /rollout, /metrics
 build/jepa-server -m models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf --workers 4

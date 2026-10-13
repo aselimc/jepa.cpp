@@ -83,6 +83,10 @@ static double now_ms() {
 }
 
 static int g_fail = 0;
+// Set while a block of checks is reported without being gated: a miss prints as MISS and does not
+// fail the run (the planner on a quantized file, see run_hjepa_plan).
+static bool g_advisory = false;
+static int g_advisory_miss = 0;
 static bool g_quiet = false;
 
 // thresholds mirror the image-family rows of tests/test-parity.cpp (docs/parity.md "Thresholds"):
@@ -131,12 +135,12 @@ static const thresholds exact_dtype = {0.999999, 0.999999, 1e-3};
 static void check(const char * what, const metrics & m, const thresholds & t, double ms = -1) {
     const double min_cos = t.min_min, max_rel = rel_bound(t.max_rel, m.rows);
     const bool ok = m.cos_mean >= t.min_mean && m.cos_min >= min_cos && (max_rel <= 0 || m.rel_max <= max_rel);
-    if (!ok) g_fail++;
+    if (!ok) { if (g_advisory) g_advisory_miss++; else g_fail++; }
     if (!g_quiet || !ok) {
         printf("  %-44s rows=%-6lld cos_mean=%.7f cos_min=%.7f max|d|=%.3e rel=%.3e", what,
                (long long) m.rows, m.cos_mean, m.cos_min, m.max_abs, m.rel_max);
         if (ms >= 0) printf(" %8.2f ms", ms);
-        printf("  %s\n", ok ? "OK" : "FAIL");
+        printf("  %s\n", ok ? "OK" : g_advisory ? "MISS" : "FAIL");
         if (!ok) {
             char rel[48] = "";
             if (max_rel > 0) snprintf(rel, sizeof(rel), ", rel <= %.3e (%lld rows)", max_rel, (long long) m.rows);
@@ -197,10 +201,29 @@ struct noise_replay {
 //           points of it
 // `solve_thr` is wider than `thr`: a solve is tens of AdamW steps, each dividing by sqrt(v), fed
 // back into itself.
+//
+// What is gated depends on the file's dtype, because the reference ran on the f32 weights:
+//   costs and gradients  f32 and f16. They say whether the file computes the same function and
+//                        the same derivative; a quantized file's are printed, not gated.
+//   solves and plans     f32 only. A replayed solve is a test of the algorithm, and it is only a
+//                        replay when the weights are the reference's: on any other weights the
+//                        optimiser parts ways with it within a few steps (another candidate wins,
+//                        early stopping fires an iteration apart) without either being wrong.
+//                        Measured: three of 31 f16 files end on a different candidate.
+// An ungated miss prints as MISS and does not fail the run.
 static void run_hjepa_plan(jepa_context * ctx, jepa_model * model, const std::string & ref, const thresholds & thr,
-                           const thresholds & solve_thr) {
+                           const thresholds & solve_thr, bool gate_grad, bool gate_solve) {
     const std::string p = ref + "/plan.";
     if (!exists(p + "cost.L1.own.meta.npy")) { printf("  (no planner dump in %s: skipped)\n", ref.c_str()); return; }
+    struct advisory_scope { ~advisory_scope() { g_advisory = false; } } scope;
+    bool gated = gate_grad;
+    g_advisory = !gated;
+    auto miss = [&]() { if (gated) g_fail++; else g_advisory_miss++; };
+    const char * bad = gated ? "FAIL" : "MISS";
+    if (!gate_grad || !gate_solve) {
+        printf("  planner on a %s file: %s reported, not gated\n", gate_grad ? "non-f32" : "quantized",
+               gate_grad ? "solves and plans" : "costs, gradients, solves and plans");
+    }
     const int n_levels = jepa_hjepa_n_levels(model);
     char name[96];
     std::vector<std::vector<float>> seq_state((size_t) n_levels);
@@ -230,7 +253,7 @@ static void run_hjepa_plan(jepa_context * ctx, jepa_model * model, const std::st
             std::vector<float> costs((size_t) S), grad(act.size());
             snprintf(name, sizeof(name), "plan L%d %s: costs (T=%d)", k, mode, T);
             if (jepa_hjepa_plan_cost(ctx, k, seq_state[(size_t) k - 1].data(), &goal, &plan, act.data(), S, T, costs.data(), grad.data()) != 0) {
-                printf("  %s: failed\n", name); g_fail++; continue;
+                printf("  %s: failed\n", name); miss(); continue;
             }
             check(name, compare(costs.data(), costs_ref.data(), 1, S), thr);
             snprintf(name, sizeof(name), "plan L%d %s: gradient vs autograd", k, mode);
@@ -239,6 +262,9 @@ static void run_hjepa_plan(jepa_context * ctx, jepa_model * model, const std::st
     }
 
     // ---- single-level solves on the reference's noise
+    gated = gate_solve;
+    g_advisory = !gated;
+    bad = gated ? "FAIL" : "MISS";
     for (int k = 1; k <= n_levels; k++) {
         for (const char * tag : { "a", "b", "c" }) {
             const std::string b = p + "solve.L" + std::to_string(k) + "." + tag + ".";
@@ -259,17 +285,17 @@ static void run_hjepa_plan(jepa_context * ctx, jepa_model * model, const std::st
             const double t0 = now_ms();
             snprintf(name, sizeof(name), "solve L%d.%s: actions (S=%d, T=%d)", k, tag, plan.n_samples, plan.horizon);
             if (jepa_hjepa_solve(ctx, k, seq_state[(size_t) k - 1].data(), &goal, &plan, noise_replay::fn, &nz,
-                                 act.data(), st.data(), &cost, &iters) != 0) { printf("  %s: failed\n", name); g_fail++; continue; }
+                                 act.data(), st.data(), &cost, &iters) != 0) { printf("  %s: failed\n", name); miss(); continue; }
             check(name, compare(act.data(), act_ref.data(), 1, (int64_t) act.size()), solve_thr, now_ms() - t0);
             snprintf(name, sizeof(name), "solve L%d.%s: predicted states", k, tag);
             check(name, compare(st.data(), st_ref.data(), T1, D), solve_thr);
             const bool same = iters == (int) mi[2] && nz.exact();
             const double rel = std::fabs(cost - cost_ref[0]) / (std::fabs(cost_ref[0]) + 1e-30);
             const bool cost_ok = rel <= 2e-2;
-            if (!same || !cost_ok) g_fail++;
+            if (!same || !cost_ok) miss();
             if (!g_quiet || !same || !cost_ok) {
                 printf("  solve L%d.%s: %d iterations (reference %lld), noise %s, cost %.6g vs %.6g (rel %.1e)  %s\n", k, tag, iters,
-                       (long long) mi[2], nz.exact() ? "consumed exactly" : "MISMATCH", cost, cost_ref[0], rel, same && cost_ok ? "OK" : "FAIL");
+                       (long long) mi[2], nz.exact() ? "consumed exactly" : "MISMATCH", cost, cost_ref[0], rel, same && cost_ok ? "OK" : bad);
             }
         }
     }
@@ -314,10 +340,10 @@ static void run_hjepa_plan(jepa_context * ctx, jepa_model * model, const std::st
         snprintf(name, sizeof(name), "hplan call %d (horizons %s)", c, hs.c_str());
         if ((size_t) h[0] * (size_t) jepa_hjepa_action_dim(model, 1) != act_ref.size() ||
             jepa_hjepa_plan(ctx, stp.data(), glp.data(), lp.data(), n_levels, noise_replay::fn, &nz, act.data(), &info) != 0) {
-            printf("  %s: failed\n", name); g_fail++; continue;
+            printf("  %s: failed\n", name); miss(); continue;
         }
         check(name, compare(act.data(), act_ref.data(), 1, (int64_t) act.size()), solve_thr, now_ms() - t0);
-        if (!nz.exact()) { printf("  %s: the reference's noise was not consumed exactly  FAIL\n", name); g_fail++; }
+        if (!nz.exact()) { printf("  %s: the reference's noise was not consumed exactly  %s\n", name, bad); miss(); }
     }
 }
 
@@ -1308,7 +1334,7 @@ int main(int argc, char ** argv) {
         run_hjepa(c, model, ref, thr, ftype != 0, jepa_model_is_gpu(model));
         // The planner runs on the host in f32 whatever the device, so it is judged with the CPU bars.
         const thresholds plan_thr = thresholds_for(ftype, false);
-        run_hjepa_plan(c, model, ref, plan_thr, {0.999, 0.999, -1.0});
+        run_hjepa_plan(c, model, ref, plan_thr, {0.999, 0.999, -1.0}, ftype <= 1, ftype == 0);
     }
     if (!ac_path.empty()) {
         run_ac(c, model, ref, thr, jepa_model_is_gpu(model));
@@ -1332,6 +1358,7 @@ int main(int argc, char ** argv) {
     }
     jepa_context_free(c);
     jepa_model_free(model);
+    if (g_advisory_miss) printf("%d advisory miss%s (not gated)\n", g_advisory_miss, g_advisory_miss == 1 ? "" : "es");
     printf("%s\n", g_fail == 0 ? "PASS" : "FAIL");
     return g_fail == 0 ? 0 : 1;
 }
