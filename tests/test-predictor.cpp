@@ -153,7 +153,7 @@ static bool exists(const std::string & p) { std::ifstream f(p); return (bool) f;
 // ------------------------------------------------------------------------------------------
 // H-JEPA
 // ------------------------------------------------------------------------------------------
-static void run_hjepa(jepa_context * ctx, jepa_model * model, const std::string & ref, const thresholds & thr, bool dtype_noise) {
+static void run_hjepa(jepa_context * ctx, jepa_model * model, const std::string & ref, const thresholds & thr, bool dtype_noise, bool gpu) {
     const int n_levels = jepa_hjepa_n_levels(model);
     if (n_levels < 1) { printf("  not an H-JEPA model\n"); g_fail++; return; }
     const int Dv = jepa_model_embed_dim(model);
@@ -246,12 +246,15 @@ static void run_hjepa(jepa_context * ctx, jepa_model * model, const std::string 
         snprintf(name, sizeof(name), "L%d predict (T=%lld)", k, (long long) T);
         if (jepa_hjepa_predict(ctx, k, st.data(), act.data(), (int) T, &full) != 0) { printf("  %s: failed\n", name); g_fail++; return; }
         check(name, compare(full.data, pred.data(), T, D), thr, jepa_context_last_compute_ms(ctx));
-        // causal: the run over steps 0..t ends in row t of the full run
+        // causal: the run over steps 0..t ends in row t of the full run. On the CPU that is the same
+        // arithmetic for t >= 1 and the bar is round-off. On CUDA the attention accumulates in F16 and
+        // a run of another length rounds differently (droid_hjepa_l2 measures rel 3.3e-04), so the
+        // bar there is the dtype one — still four orders below what a leaking mask does to the row.
         for (int t = 0; t + 1 < T; t++) {
             jepa_output pre = {};
             if (jepa_hjepa_predict(ctx, k, st.data(), act.data(), t + 1, &pre) != 0) { g_fail++; continue; }
             snprintf(name, sizeof(name), "L%d causal: prefix %d == row %d", k, t + 1, t);
-            check(name, compare(pre.data + (size_t) t * D, full.data + (size_t) t * D, 1, D), t == 0 && dtype_noise ? exact_dtype : exact);
+            check(name, compare(pre.data + (size_t) t * D, full.data + (size_t) t * D, 1, D), gpu || (t == 0 && dtype_noise) ? exact_dtype : exact);
             jepa_free(pre.data);
         }
 
@@ -1133,7 +1136,7 @@ int main(int argc, char ** argv) {
            thr.max_rel > 0 ? ", rel <= bound*max(1,sqrt(rows/2048))" : "");
 
     if (!lewm_path.empty()) run_lewm(c, model, ref, thr, ftype != 0);
-    if (!hjepa_path.empty()) run_hjepa(c, model, ref, thr, ftype != 0);
+    if (!hjepa_path.empty()) run_hjepa(c, model, ref, thr, ftype != 0, jepa_model_is_gpu(model));
     if (!ac_path.empty()) {
         run_ac(c, model, ref, thr, jepa_model_is_gpu(model));
         run_ac_seed2(c, model, ref, thr, jepa_model_is_gpu(model));
