@@ -6,7 +6,8 @@
 #              (git-ignored either way; --convert is what scripts/convert.py reads)
 #
 # Usage: scripts/download_models.sh [--convert] [--ftype TYPE[,TYPE...]] [all|small|NAME...]
-#   NAME    ijepa | lejepa | lewm | vjepa2 | vjepa2-ssv2 | vjepa21 | levjepa | vjepa2-vitg | vjepa2-ac
+#   NAME    ijepa | lejepa | lewm | hjepa | vjepa2 | vjepa2-ssv2 | vjepa21 | levjepa | vjepa2-vitg | vjepa2-ac
+#           (hjepa fetches one hierarchy, ant_hjepa_l3; the other 30 are in jepacpp/h-jepa-GGUF)
 #   small   lejepa, lewm, vjepa21 ("all" adds the other four)
 #   TYPE    f16 (default) | f32 | q8_0 | q4_0 | q4_k | all
 # Resumable (hf download's cache, or curl -C -).
@@ -65,6 +66,16 @@ if [ "$mode" = gguf ]; then
   has lejepa      small && { echo "== LeJEPA ViT-S/16";               gguf lejepa-vits16-pretrain-in1k; }
   has lewm        small && { echo "== LeWorldModel Push-T";           gguf lewm-pusht; }
   has vjepa21     small && { echo "== V-JEPA 2.1 ViT-B/16 384";       gguf vjepa2_1-vitb-384; }
+  has hjepa       small && { echo "== H-JEPA Visual AntMaze, 3 levels"
+    # one collection repo, <env>/<run>-seed<N>-<ftype>.gguf, published in f32 / f16 / q8_0 only
+    mkdir -p "$G"
+    for t in ${ftypes//,/ }; do
+      f="ant_hjepa_l3-seed42-$t.gguf"
+      case "$t" in f32|f16|q8_0) ;; *) echo "  n/a  $f (H-JEPA is published in f32, f16 and q8_0)"; continue;; esac
+      if [ -s "$G/$f" ]; then echo "  skip $f"; continue; fi
+      echo "  get  $ORG/h-jepa-GGUF/ant/$f"
+      curl -fsSL --retry 5 --retry-delay 3 -C - -o "$G/$f.part" "$HF/$ORG/h-jepa-GGUF/resolve/main/ant/$f" && mv "$G/$f.part" "$G/$f"
+    done; }
   has vjepa2      big   && { echo "== V-JEPA 2 ViT-L/16 256";         gguf vjepa2-vitl-fpc64-256; }
   has vjepa2-ssv2 big   && { echo "== V-JEPA 2 ViT-L SSv2 classifier"; gguf vjepa2-vitl-fpc16-256-ssv2; }
   has ijepa       big   && { echo "== I-JEPA ViT-H/14 IN1k";          gguf ijepa_vith14_1k; }
@@ -82,6 +93,8 @@ has lejepa small && { echo "== LeJEPA ViT-S/16 (OK-AI, 107 MB)"
   for f in $(curl -sL "https://huggingface.co/api/models/OK-AI/lejepa-vits16-pretrain-in1k" | python3 -c "import sys,json; print(\" \".join(s[\"rfilename\"] for s in json.load(sys.stdin)[\"siblings\"] if s[\"rfilename\"].startswith(\"hf_src/\")))"); do hfget OK-AI/lejepa-vits16-pretrain-in1k "$f"; done; }
 has lewm small && { echo "== LeWorldModel Push-T (72 MB)"
   hfget quentinll/lewm-pusht config.json weights.pt README.md; }
+has hjepa small && { echo "== H-JEPA Visual AntMaze, 3 levels (140 MB pickled module; read without executing it)"
+  hfget jepa-world-models/h-jepa ant/ant_hjepa_l3/seed42/ant_hjepa_l3_object.ckpt; }
 has vjepa21 small && { echo "== V-JEPA 2.1 ViT-B/16 384 (1.66 GB, torch.hub pickle)"
   get "$FB/vjepa2/vjepa2_1_vitb_dist_vitG_384.pt" "$M/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt"; }
 has vjepa2 big && { echo "== V-JEPA 2 ViT-L/16 256 (1.3 GB)"

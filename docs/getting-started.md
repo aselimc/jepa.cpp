@@ -129,6 +129,7 @@ jepa.cpp's own code is MIT.
 | I-JEPA ViT-H/14 | **CC BY-NC 4.0** | [model card](https://huggingface.co/facebook/ijepa_vith14_1k) + the full CC text as [LICENSE](https://github.com/facebookresearch/ijepa/blob/main/LICENSE) | permitted for **non-commercial** use, with attribution to Meta and a note that the file is modified |
 | LeJEPA ViT-S/16 | Apache-2.0 | [model card](https://huggingface.co/OK-AI/lejepa-vits16-pretrain-in1k) metadata (the repo ships no `LICENSE` file) | permitted, with attribution |
 | LeWorldModel Push-T | MIT | [model card](https://huggingface.co/quentinll/lewm-pusht) + [le-wm](https://github.com/lucas-maes/le-wm) | permitted, keep the notice |
+| H-JEPA | MIT | [model card](https://huggingface.co/jepa-world-models/h-jepa) + [H-JEPA](https://github.com/kevinghst/H-JEPA) | permitted, keep the notice |
 | V-JEPA 2 ViT-L/16 (fpc64) | MIT | [model card](https://huggingface.co/facebook/vjepa2-vitl-fpc64-256) + [LICENSE](https://github.com/facebookresearch/vjepa2/blob/main/LICENSE) | permitted, keep the notice |
 | V-JEPA 2 ViT-L SSv2 | MIT | [model card](https://huggingface.co/facebook/vjepa2-vitl-fpc16-256-ssv2) + the same LICENSE | permitted, keep the notice |
 | V-JEPA 2.1 ViT-B/16 @384 | MIT | the [checkpoint table](https://github.com/facebookresearch/vjepa2#v-jepa-21-pretrained-checkpoints) of `facebookresearch/vjepa2`; the `.pt` on `dl.fbaipublicfiles.com` carries no metadata of its own, so this is the repository-level grant | permitted, keep the notice |
@@ -163,6 +164,7 @@ position tables, tokens) as F32; `--ftype f32` stores everything as F32. Quantiz
 |---|---|---|
 | LeJEPA ViT-S/16 | `lejepa` | `python scripts/convert.py --family hfvit --src models/OK-AI/lejepa-vits16-pretrain-in1k --ftype f16` |
 | LeWorldModel Push-T | `lewm` | `python scripts/convert.py --family lewm --src models/quentinll/lewm-pusht --ftype f16` |
+| H-JEPA (any released run) | `hjepa` | `python scripts/convert.py --family hjepa --src models/jepa-world-models/h-jepa/ant/ant_hjepa_l3/seed42/ant_hjepa_l3_object.ckpt --ftype f16` |
 | V-JEPA 2.1 ViT-B/16 @384 | `vjepa21` | `python scripts/convert.py --family vjepa2_1 --src models/vjepa2_1/vjepa2_1_vitb_dist_vitG_384.pt --out models/gguf/vjepa2_1-vitb-384-f16.gguf` |
 | I-JEPA ViT-H/14 | `ijepa` | `python scripts/convert.py --family ijepa --src models/facebook/ijepa_vith14_1k --ftype f16` |
 | V-JEPA 2 ViT-L/16 (fpc64) | `vjepa2` | `python scripts/convert.py --family vjepa2 --src models/facebook/vjepa2-vitl-fpc64-256 --ftype f16` |

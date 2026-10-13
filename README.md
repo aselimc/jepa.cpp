@@ -30,15 +30,16 @@ quantization study and the fine print are on the [docs site](https://aselimc.git
 
 ## Model zoo
 
-Nine models, six families, all on Hugging Face under [**jepacpp**](https://huggingface.co/jepacpp).
-Each repo ships `f32`, `f16`, `q8_0`, `q4_0` and `q4_k` files with their sha256 and measured parity on
-the card. **f16 is the default; q8_0 halves it again and is safe for pooled features, retrieval and
+Nine models and the H-JEPA collection, seven families, all on Hugging Face under
+[**jepacpp**](https://huggingface.co/jepacpp). Each repo ships `f32`, `f16`, `q8_0`, `q4_0` and `q4_k` files
+(H-JEPA: `f32`, `f16`, `q8_0`) with their sha256 and measured parity on the card. **f16 is the default; q8_0 halves it again and is safe for pooled features, retrieval and
 rollouts.**
 
 | model | from | params | does | f16 / q8_0 | GGUF | licence |
 |---|---|---|---|---|---|---|
 | LeJEPA ViT-S/16 | [OK-AI](https://huggingface.co/OK-AI/lejepa-vits16-pretrain-in1k) | 22 M | image features, fast | 42 / 23 MB | [↓](https://huggingface.co/jepacpp/lejepa-vits16-pretrain-in1k-GGUF) | Apache-2.0 |
 | LeWorldModel Push-T | [le-wm](https://huggingface.co/quentinll/lewm-pusht) | 18 M | image features + action-conditioned world model | 38 / 23 MB | [↓](https://huggingface.co/jepacpp/lewm-pusht-GGUF) | MIT |
+| H-JEPA (31 checkpoints) | [H-JEPA](https://huggingface.co/jepa-world-models/h-jepa) | 11 – 86 M | hierarchical world models, 1 – 4 levels: AntMaze, FourRoom, Cube, Push-T, DROID | 25 – 217 / 16 – 157 MB | [↓](https://huggingface.co/jepacpp/h-jepa-GGUF) | MIT |
 | V-JEPA 2.1 ViT-B/16 @384 | [Meta FAIR](https://github.com/facebookresearch/vjepa2) | 110 M | image *and* video features + predictor | 210 / 113 MB | [↓](https://huggingface.co/jepacpp/vjepa2_1-vitb-384-GGUF) | MIT |
 | LeVJEPA ViT-L/16 | [galilai](https://huggingface.co/galilai-group/LeVJEPA-VideoMix-Large) | 303 M | video features, block-causal attention | 579 / 310 MB | [↓](https://huggingface.co/jepacpp/levjepa-vitl16-GGUF) | CC-BY-NC-4.0 |
 | V-JEPA 2 ViT-L/16 | [Meta FAIR](https://huggingface.co/facebook/vjepa2-vitl-fpc64-256) | 326 M | video features (16–64 frames) + masked predictor | 623 / 333 MB | [↓](https://huggingface.co/jepacpp/vjepa2-vitl-fpc64-256-GGUF) | MIT |
