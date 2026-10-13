@@ -496,7 +496,9 @@ def convert(src: str | Path, out: str | Path, ftype: str, *, name: str | None = 
     log(f"hjepa: encoder ViT D={hp['jepa.enc.embed_dim']} L={hp['jepa.enc.n_layer']} P={hp['jepa.enc.patch_size']} "
         f"img={img} proj={l1['proj_kind']} proprio={l1['proprio_dim']} | raw action {raw_action_dim} x frameskip {frameskip}")
 
-    # training-only modules: the inverse-dynamics head of the DROID runs, HF's unused mask token
-    idm = tuple(f"jepas.{i}.idm_loss_fn." for i in range(n_levels))
-    check_unmapped(s.st, idm, allow_unmapped)
+    # training-only modules: the inverse-dynamics head of the DROID runs and the pixel decoder some
+    # runs kept from the probing evaluation (it reads states, nothing reads it)
+    skip = tuple(f"jepas.{i}.{mod}" for i in range(n_levels)
+                 for mod in ("idm_loss_fn.", "decoder_level")) + ("decoder_level",)   # also registered on the root
+    check_unmapped(s.st, skip, allow_unmapped)
     return w.write()

@@ -8,6 +8,31 @@ across releases.
 
 ## [Unreleased]
 
+### Added
+
+- **H-JEPA** ([arXiv 2610.06805](https://arxiv.org/abs/2610.06805)) as a new `hjepa` family: hierarchies of
+  action-conditioned JEPA world models, converted from the authors' released checkpoints
+  ([jepa-world-models/h-jepa](https://huggingface.co/jepa-world-models/h-jepa)) — the 2- to 4-level
+  H-JEPA runs, the HWM baseline and the flat LeWM runs of Visual AntMaze, FourRoom, OGBench Cube
+  and Push-T, and the DROID models with their causal-transformer predictor. New entry points
+  `jepa_hjepa_embed`, `_lift`, `_action_embed`, `_action_encode`, `_predict` and `_rollout` work at
+  any level, with `jepa_hjepa_norm_stats` and `jepa_hjepa_action_prior` for the training statistics
+  the files carry. The paper's top-down gradient planner is not implemented yet.
+- **`scripts/jepa_convert/torch_object.py`**, a reader for `torch.save(module)` checkpoints that runs
+  none of the code the pickle names: it resolves a short fixed list of constructors and replaces
+  every other global with a data-only stub, so converting an H-JEPA file needs no PyTorch and no
+  checkout of the training code.
+- `scripts/hjepa_reference.py` dumps reference activations from the authors' own modules and
+  `scripts/hjepa_batch.py` converts, verifies and publishes the checkpoints in bulk;
+  `tests/results/hjepa-parity.json` records the outcome per file. `test-predictor --hjepa` is the
+  gate, and `test-errors` covers the family on a forged hierarchy with no weights.
+
+### Fixed
+
+- The weights `tests/forge-gguf.h` writes were meant to span [-1, 1] but were computed in `size_t`,
+  so most of them were about 1e18. No assertion depended on their size until one looked at whether
+  an output was finite.
+
 ### Changed
 
 - **README rewritten around the model zoo**, with the hub link, size and licence of every bundle up

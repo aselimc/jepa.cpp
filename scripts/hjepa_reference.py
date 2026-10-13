@@ -174,7 +174,8 @@ def build_model(ckpt: Path, hjepa_src: Path):
             action_queue_size=a["action_queue_size"], temporal_stride=a["temporal_stride"],
             temporal_window_size=a["temporal_window_size"], target_length=a["target_length"]))
     model = HJEPA(jepas)
-    sd = {k: torch.from_numpy(np.array(v)) for k, v in T.items() if ".idm_loss_fn." not in k}
+    # training-only attachments the rebuilt model does not have: the inverse-dynamics head, a probing decoder
+    sd = {k: torch.from_numpy(np.array(v)) for k, v in T.items() if ".idm_loss_fn." not in k and "decoder_level" not in k}
     model.load_state_dict(sd, strict=True)
     model.eval()
     return model, T, M, root_attr(obj, "normalizer_artifact") or {}

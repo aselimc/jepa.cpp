@@ -81,8 +81,21 @@ int main(int argc, char ** argv) {
             printf("             rope layout=%s interpolate=%s ref_grid=%d grid_size=%d n_hier_in=%d\n", p.rope_freq_layout.c_str(),
                    p.rope_interpolate ? "yes" : "no", p.rope_ref_grid, p.grid_size, p.n_hier_in);
         }
-    } else {
+    } else if (!hp.hjepa.present) {
         printf("predictor:   none\n");
+    }
+    if (hp.hjepa.present) {
+        const jepa_hjepa_hparams & hj = hp.hjepa;
+        printf("hjepa:       %zu level%s, pixel projector %s -> %d, proprio %d, raw action %d x frameskip %d\n",
+               hj.levels.size(), hj.levels.size() == 1 ? "" : "s", hj.proj_kind.c_str(), hj.pixel_dim, hj.proprio_dim,
+               hj.raw_action_dim, hj.frameskip);
+        for (size_t i = 0; i < hj.levels.size(); i++) {
+            const jepa_hjepa_level & lv = hj.levels[i];
+            printf("  level %zu:   state %d (%s) stride %d | action %d (%s) -> cond %d | predictor %s D=%d layers=%d "
+                   "heads=%d (head_dim %d) ffn=%d frames=%d\n", i + 1, lv.embed_dim, lv.enc_kind.c_str(), lv.stride,
+                   lv.action_dim, lv.act_enc_kind.c_str(), lv.act_embed_dim, lv.pred_kind.c_str(), lv.pred_dim,
+                   lv.pred_n_layer, lv.pred_n_head, lv.pred_head_dim, lv.pred_ffn_dim, lv.pred_n_frames);
+        }
     }
     if (hp.head.present) {
         printf("head:        kind=%s classes=%d pool_layers=%d labels=%zu\n", hp.head.kind.c_str(), hp.head.n_classes,
