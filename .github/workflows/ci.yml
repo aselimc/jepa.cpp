@@ -49,7 +49,7 @@ jobs:
         run: |
           mkdir -p dist
           cp build/jepa-embed build/jepa-classify build/jepa-quantize \
-             build/jepa-bench build/jepa-info build/jepa-worldmodel build/jepa-server dist/
+             build/jepa-bench build/jepa-info build/jepa-worldmodel build/jepa-plan build/jepa-server dist/
           cp -a build/ggml/src/libggml*.so* dist/
           dist/jepa-info --version
 
@@ -160,6 +160,32 @@ jobs:
                 -DJEPA_BUILD_TOOLS=OFF -DGGML_OPENMP=OFF
           cmake --build build-fuzz -j "$(nproc)" --target fuzz-gguf-load
           build-fuzz/fuzz-gguf-load --help
+
+  # The Python package, built the way a user builds it. tests/test_api_coverage.py needs the library
+  # but no weights, and fails when include/jepa.h gains an entry point _api.py does not bind. Tests
+  # that need models or golden dumps skip here.
+  python:
+    name: python bindings
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: build and install
+        run: pip install "./python[test]"
+
+      - name: every header entry point is bound
+        working-directory: python
+        run: python tests/test_api_coverage.py
+
+      - name: pytest
+        working-directory: python
+        run: python -m pytest tests -q
 
   # The generated artifacts have to match their sources. matplotlib and numpy are pinned because the
   # figure scripts compare committed SVGs byte for byte and another matplotlib re-emits glyph paths

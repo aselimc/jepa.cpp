@@ -14,7 +14,7 @@ from __future__ import annotations
 import ctypes
 import os
 import threading
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,9 +25,12 @@ from ._api import jepa_input, jepa_output
 
 __all__ = [
     "Classification",
+    "HJepaPlan",
+    "HJepaSolve",
     "JepaError",
     "Model",
     "devices",
+    "hjepa_level_plan",
     "system_info",
     "version",
 ]
@@ -819,6 +822,396 @@ class Model:
             if rc != 0:
                 raise JepaError(_why("jepa_lewm_rollout failed"))
         return out
+
+    # --- H-JEPA ---------------------------------------------------------------------------------
+    # Levels are 1-based, as in the paper and the header. Every input is in the units the model was
+    # trained on: frames as preprocess() returns them, actions and proprioception z-scored with
+    # hjepa_norm_stats, and a level-1 action is hjepa_frameskip raw actions stacked into one vector.
+    @property
+    def hjepa_n_levels(self) -> int:
+        """Levels in the hierarchy; 0 for any other family."""
+        return _api.jepa_hjepa_n_levels(self._mp)
+
+    def hjepa_embed_dim(self, level: int) -> int:
+        """Width of ``level``'s state."""
+        return _api.jepa_hjepa_embed_dim(self._mp, int(level))
+
+    def hjepa_action_dim(self, level: int) -> int:
+        """Width of ``level``'s action."""
+        return _api.jepa_hjepa_action_dim(self._mp, int(level))
+
+    def hjepa_action_embed_dim(self, level: int) -> int:
+        """Width of :meth:`hjepa_action_embed`'s rows at ``level``."""
+        return _api.jepa_hjepa_action_embed_dim(self._mp, int(level))
+
+    def hjepa_stride(self, level: int) -> int:
+        """Steps of the level below per step of ``level`` (1 at level 1)."""
+        return _api.jepa_hjepa_stride(self._mp, int(level))
+
+    def hjepa_n_frames(self, level: int) -> int:
+        """The context window of ``level``'s predictor."""
+        return _api.jepa_hjepa_n_frames(self._mp, int(level))
+
+    @property
+    def hjepa_proprio_dim(self) -> int:
+        """Width of the proprioception the state reads; 0 when the state is pixels only."""
+        return _api.jepa_hjepa_proprio_dim(self._mp)
+
+    @property
+    def hjepa_raw_action_dim(self) -> int:
+        """One environment action's width (0: not recorded)."""
+        return _api.jepa_hjepa_raw_action_dim(self._mp)
+
+    @property
+    def hjepa_frameskip(self) -> int:
+        """Raw actions per level-1 action (0: not recorded)."""
+        return _api.jepa_hjepa_frameskip(self._mp)
+
+    def hjepa_norm_stats(self, column: str) -> tuple[np.ndarray, np.ndarray] | None:
+        """Training ``(mean, std)`` of ``"action"`` or ``"proprio"``; ``None`` if the file has none."""
+        name = column.encode()
+        n = _api.jepa_hjepa_norm_stats(self._mp, name, None, None, 0)
+        if n <= 0:
+            return None
+        mean, std = np.empty(n, dtype=np.float32), np.empty(n, dtype=np.float32)
+        _api.jepa_hjepa_norm_stats(self._mp, name, _f32_ptr(mean), _f32_ptr(std), n)
+        return mean, std
+
+    def hjepa_action_prior(self, level: int) -> np.ndarray:
+        """Latent actions recorded in training, ``[n, action_dim]`` (``n`` may be 0)."""
+        level, dim = int(level), self.hjepa_action_dim(level)
+        n = _api.jepa_hjepa_action_prior(self._mp, level, None, 0)
+        out = np.empty((max(n, 0), dim), dtype=np.float32)
+        if n > 0:
+            _api.jepa_hjepa_action_prior(self._mp, level, _f32_ptr(out), n)
+        return out
+
+    def _output_call(self, name: str, *args) -> np.ndarray:
+        """One entry point of the ``(ctx, ..., jepa_output * out)`` shape, as a numpy array."""
+        out = jepa_output()
+        with self._lock:
+            ctx = self._handle()
+            _api.jepa_error_reset()
+            if getattr(_api, name)(ctx, *args, ctypes.byref(out)) != 0:
+                raise JepaError(_why(f"{name} failed"))
+            return _output_to_numpy(out)
+
+    def hjepa_embed(self, cls_rows, proprio=None) -> np.ndarray:
+        """Level-1 states from encoder CLS rows ``[n, dim]`` → ``[n, embed_dim(1)]``.
+
+        ``proprio`` is z-scored ``[n, proprio_dim]``, and required when the model reads it.
+        """
+        rows = _rows(cls_rows, "cls_rows")
+        p = None
+        if proprio is not None:
+            p = _rows(proprio, "proprio")
+            if p.shape[0] != rows.shape[0]:
+                raise ValueError(f"{rows.shape[0]} CLS rows but {p.shape[0]} proprio rows")
+        if p is None and self.hjepa_proprio_dim > 0:
+            raise ValueError(f"this model's state reads {self.hjepa_proprio_dim}-D proprio")
+        pp = None if p is None else _f32_ptr(p)
+        return self._output_call("jepa_hjepa_embed", _f32_ptr(rows), pp, rows.shape[0])
+
+    def hjepa_states(self, item, proprio=None) -> list[np.ndarray]:
+        """One observation at every level: ``[state_level_1, state_level_2, ...]``, each ``[dim]``.
+
+        ``item`` is what :meth:`encode` takes for one image. Without ``proprio``, a model that reads
+        it gets the training mean (zeros, in z-scored units), as ``jepa-plan`` does by default.
+        """
+        cls = self.encode(item, as_video=False)[0]
+        if proprio is None and self.hjepa_proprio_dim > 0:
+            proprio = np.zeros(self.hjepa_proprio_dim, dtype=np.float32)
+        states = [self.hjepa_embed(cls, proprio)]
+        for level in range(2, self.hjepa_n_levels + 1):
+            states.append(self.hjepa_lift(level, states[-1]))
+        return [s[0] for s in states]
+
+    def hjepa_lift(self, level: int, below) -> np.ndarray:
+        """States of ``level`` (>= 2) from consecutive states of ``level - 1``.
+
+        Rows 0, stride, 2 * stride, ... of ``below`` are re-encoded: ``[(n - 1) // stride + 1, dim]``.
+        """
+        rows = _rows(below, "below")
+        return self._output_call("jepa_hjepa_lift", int(level), _f32_ptr(rows), rows.shape[0])
+
+    def hjepa_action_embed(self, level: int, actions) -> np.ndarray:
+        """``level``'s action embedding: ``[n, action_dim]`` → ``[n, action_embed_dim]``."""
+        rows = _rows(actions, "actions")
+        return self._output_call(
+            "jepa_hjepa_action_embed", int(level), _f32_ptr(rows), rows.shape[0]
+        )
+
+    def hjepa_action_encode(self, level: int, below_act_emb) -> np.ndarray:
+        """Actions of ``level`` (>= 2) from consecutive action embeddings of ``level - 1``.
+
+        ``stride`` rows make one action, and a short last chunk is encoded as it is.
+        """
+        rows = _rows(below_act_emb, "below_act_emb")
+        return self._output_call(
+            "jepa_hjepa_action_encode", int(level), _f32_ptr(rows), rows.shape[0]
+        )
+
+    def hjepa_predict(self, level: int, states, actions) -> np.ndarray:
+        """One predictor call over up to :meth:`hjepa_n_frames` steps of ``level``.
+
+        Causal over steps: row *t* is state *t + 1* given steps 0..t, the last row the next step.
+        """
+        s, a = _rows(states, "states"), _rows(actions, "actions")
+        if a.shape[0] != s.shape[0]:
+            raise ValueError(f"{s.shape[0]} states but {a.shape[0]} actions")
+        return self._output_call(
+            "jepa_hjepa_predict", int(level), _f32_ptr(s), _f32_ptr(a), s.shape[0]
+        )
+
+    def hjepa_rollout(self, level: int, states, actions, n_steps: int, history: int = 1):
+        """Autoregressive rollout in ``level``'s latent space: ``[n_steps, embed_dim]``.
+
+        ``states`` is ``[n_seed, dim]`` and ``actions`` ``[n_seed + n_steps - 1, action_dim]``; row
+        *j* conditions step *j* of the growing sequence. ``history`` is the context window (the
+        reference planner uses 1).
+        """
+        s, a = _rows(states, "states"), _rows(actions, "actions")
+        n_steps = int(n_steps)
+        if n_steps < 1:
+            raise ValueError("n_steps must be >= 1")
+        if a.shape[0] != s.shape[0] + n_steps - 1:
+            raise ValueError(
+                f"{s.shape[0]} seed states and {n_steps} steps need "
+                f"{s.shape[0] + n_steps - 1} actions, got {a.shape[0]}"
+            )
+        out = np.empty((n_steps, s.shape[1]), dtype=np.float32)
+        with self._lock:
+            ctx = self._handle()
+            _api.jepa_error_reset()
+            rc = _api.jepa_hjepa_rollout(
+                ctx, int(level), _f32_ptr(s), s.shape[0], _f32_ptr(a), n_steps, int(history),
+                _f32_ptr(out),
+            )
+            if rc != 0:
+                raise JepaError(_why("jepa_hjepa_rollout failed"))
+        return out
+
+    def hjepa_default_levels(self) -> list[_api.jepa_hjepa_level_plan]:
+        """One plan per level, bottom first, with the configured horizons ``jepa-plan`` defaults to.
+
+        Twice the stride of the level above, 3 at the top, 4 for a 1-level model. Each level above
+        the first measures its cost against the real goal in its own space when skipped.
+        """
+        n = self.hjepa_n_levels
+        levels = []
+        for k in range(1, n + 1):
+            horizon = 4 if n == 1 else 3 if k == n else 2 * self.hjepa_stride(k + 1)
+            levels.append(hjepa_level_plan(horizon=horizon, horizon_one_goal_upper=int(k > 1)))
+        return levels
+
+    def hjepa_horizons(
+        self, levels, replanning_interval: int, eval_budget: int, steps_taken: int
+    ) -> list[int]:
+        """The per-call horizons after ``steps_taken`` environment steps of an episode.
+
+        ``levels[k].horizon`` holds the configured horizon. The top level counts down to 1 over the
+        episode; each level below holds its pre-decay horizon until the level above reaches 1.
+        """
+        plans = (_api.jepa_hjepa_level_plan * len(levels))(*levels)
+        out = (ctypes.c_int * len(levels))()
+        _api.jepa_error_reset()
+        rc = _api.jepa_hjepa_horizons(
+            self._mp, plans, len(levels), int(replanning_interval), int(eval_budget),
+            int(steps_taken), out,
+        )
+        if rc != 0:
+            raise JepaError(_why("jepa_hjepa_horizons failed"))
+        return list(out)
+
+    def hjepa_plan_cost(
+        self, level: int, state, goal, actions, *, plan=None, goal_level: int = 0,
+        dense: bool = False, goal_actions=None, want_grad: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Costs of candidate action sequences at ``level`` and their gradient.
+
+        ``actions`` is ``[n_samples, horizon, action_dim]``. Returns ``(costs [n_samples], grad)``,
+        ``grad`` shaped like ``actions`` or ``None`` when not ``want_grad``. ``goal_level`` is the
+        level ``goal`` lives at, the planned one (0) or one above it, and ``plan`` supplies only
+        ``cost_last_n``, ``intermediate_cost_weight`` and ``action_cost_weight``.
+        """
+        a = _as_f32(actions, "actions", 3)
+        st = _as_f32(state, "state", 1)
+        g = _Goal(goal, goal_level, dense, goal_actions)
+        costs = np.empty(a.shape[0], dtype=np.float32)
+        grad = np.empty(a.shape, dtype=np.float32) if want_grad else None
+        with self._lock:
+            ctx = self._handle()
+            _api.jepa_error_reset()
+            rc = _api.jepa_hjepa_plan_cost(
+                ctx, int(level), _f32_ptr(st), ctypes.byref(g.struct),
+                None if plan is None else ctypes.byref(plan),
+                _f32_ptr(a), a.shape[0], a.shape[1], _f32_ptr(costs),
+                None if grad is None else _f32_ptr(grad),
+            )
+            if rc != 0:
+                raise JepaError(_why("jepa_hjepa_plan_cost failed"))
+        return costs, grad
+
+    def hjepa_solve(
+        self, level: int, state, goal, plan, *, goal_level: int = 0, dense: bool = False,
+        goal_actions=None, randn: Callable[[int], Any] | None = None,
+    ) -> HJepaSolve:
+        """One level's solve: ``plan.horizon`` actions that take ``state`` to ``goal``.
+
+        ``randn(n)`` returns ``n`` standard-normal draws; ``None`` uses the library's fixed-seed
+        generator, so the solve is deterministic.
+        """
+        level, horizon = int(level), int(plan.horizon)
+        st = _as_f32(state, "state", 1)
+        g = _Goal(goal, goal_level, dense, goal_actions)
+        actions = np.empty((horizon, self.hjepa_action_dim(level)), dtype=np.float32)
+        states = np.empty((horizon + 1, self.hjepa_embed_dim(level)), dtype=np.float32)
+        cost, iters = ctypes.c_float(0.0), ctypes.c_int(0)
+        cb = _Randn(randn)
+        with self._lock:
+            ctx = self._handle()
+            _api.jepa_error_reset()
+            rc = _api.jepa_hjepa_solve(
+                ctx, level, _f32_ptr(st), ctypes.byref(g.struct), ctypes.byref(plan), cb.fn, None,
+                _f32_ptr(actions), _f32_ptr(states), ctypes.byref(cost), ctypes.byref(iters),
+            )
+        cb.check()
+        if rc != 0:
+            raise JepaError(_why("jepa_hjepa_solve failed"))
+        return HJepaSolve(actions, states, cost.value, iters.value)
+
+    def hjepa_plan(
+        self, states, goals, levels=None, *, randn: Callable[[int], Any] | None = None
+    ) -> HJepaPlan:
+        """The whole hierarchy, top-down, for one planner call.
+
+        ``states`` and ``goals`` hold one ``[embed_dim(level)]`` vector per level, as
+        :meth:`hjepa_states` returns them. ``levels`` is one plan per level with its ``horizon``
+        resolved for this call (default: :meth:`hjepa_default_levels`). The result's ``actions`` are
+        the level-1 plan in the model's z-scored, frameskip-stacked units.
+        """
+        levels = self.hjepa_default_levels() if levels is None else list(levels)
+        n = len(levels)
+        if n != self.hjepa_n_levels:
+            raise ValueError(f"this model has {self.hjepa_n_levels} levels, got {n} plans")
+        if len(states) != n or len(goals) != n:
+            raise ValueError(f"{n} levels need {n} states and {n} goals")
+        st = [_as_f32(s, "states[k]", 1) for s in states]
+        gl = [_as_f32(g, "goals[k]", 1) for g in goals]
+        f32_p = ctypes.POINTER(ctypes.c_float)
+        stp = (f32_p * n)(*[_f32_ptr(a) for a in st])
+        glp = (f32_p * n)(*[_f32_ptr(a) for a in gl])
+        plans = (_api.jepa_hjepa_level_plan * n)(*levels)
+        actions = np.empty((levels[0].horizon, self.hjepa_action_dim(1)), dtype=np.float32)
+        info = _api.jepa_hjepa_plan_info()
+        cb = _Randn(randn)
+        with self._lock:
+            ctx = self._handle()
+            _api.jepa_error_reset()
+            rc = _api.jepa_hjepa_plan(
+                ctx, stp, glp, plans, n, cb.fn, None, _f32_ptr(actions), ctypes.byref(info)
+            )
+        cb.check()
+        if rc != 0:
+            raise JepaError(_why("jepa_hjepa_plan failed"))
+        return HJepaPlan(
+            actions,
+            [bool(info.planned[k]) for k in range(n)],
+            [info.goal_level[k] for k in range(n)],
+            [info.iters[k] for k in range(n)],
+            [info.cost[k] for k in range(n)],
+        )
+
+
+# --- H-JEPA helpers ---------------------------------------------------------------------------
+def hjepa_level_plan(**fields) -> _api.jepa_hjepa_level_plan:
+    """The reference planner's defaults for one level, with ``fields`` overridden by name."""
+    plan = _api.jepa_hjepa_level_plan_default()
+    known = {name for name, _ in plan._fields_}
+    for name, value in fields.items():
+        if name not in known:
+            raise TypeError(f"jepa_hjepa_level_plan has no field {name!r}")
+        setattr(plan, name, value)
+    return plan
+
+
+@dataclass
+class HJepaSolve:
+    """One level's solve: the lowest-cost candidate and what it predicts."""
+
+    actions: np.ndarray  #: ``[horizon, action_dim]``
+    states: np.ndarray  #: ``[horizon + 1, embed_dim]``: the start state, then the predictions
+    cost: float
+    iters: int
+
+
+@dataclass
+class HJepaPlan:
+    """One planner call. The per-level lists run bottom-up, index 0 being level 1."""
+
+    actions: np.ndarray  #: ``[horizon, action_dim(1)]``, z-scored and frameskip-stacked
+    planned: list[bool]  #: whether the level ran a solve (a level at horizon 1 is skipped)
+    goal_level: list[int]  #: the level whose latent space its cost was measured in
+    iters: list[int]
+    cost: list[float]
+
+
+class _Goal:
+    """A ``jepa_hjepa_goal`` and the numpy blocks it points at, kept alive together."""
+
+    def __init__(self, states, level: int, dense: bool, actions):
+        self.states = _rows(states, "goal")
+        self.actions = None if actions is None else _rows(actions, "goal_actions")
+        if self.actions is not None and self.actions.shape[0] != self.states.shape[0]:
+            raise ValueError(
+                f"{self.states.shape[0]} goal states but {self.actions.shape[0]} goal actions"
+            )
+        self.struct = _api.jepa_hjepa_goal(
+            _f32_ptr(self.states),
+            self.states.shape[0],
+            int(level),
+            int(bool(dense)),
+            None if self.actions is None else _f32_ptr(self.actions),
+        )
+
+
+class _Randn:
+    """A Python ``randn(n)`` as a ``jepa_randn_fn``; ``fn`` is NULL for the library's generator.
+
+    An exception cannot cross the C frames above the callback, so it is held, the planner gets
+    zeros for the rest of its draws, and :meth:`check` raises it once the call has returned.
+    """
+
+    def __init__(self, randn: Callable[[int], Any] | None):
+        self.error: BaseException | None = None
+        self.fn = _api.jepa_randn_fn(0) if randn is None else _api.jepa_randn_fn(self._call)
+        self._randn = randn
+
+    def _call(self, _user, out, n: int) -> None:
+        if n == 0:
+            return
+        dst = np.ctypeslib.as_array(out, shape=(n,))
+        if self.error is not None:
+            dst[:] = 0.0
+            return
+        try:
+            draws = np.asarray(self._randn(n), dtype=np.float32)
+            if draws.shape != (n,):
+                raise ValueError(f"randn({n}) returned shape {draws.shape}")
+            dst[:] = draws
+        except BaseException as e:  # noqa: BLE001 - re-raised by check()
+            self.error = e
+            dst[:] = 0.0
+
+    def check(self) -> None:
+        if self.error is not None:
+            raise self.error
+
+
+def _rows(a, name: str) -> np.ndarray:
+    """A ``[dim]`` or ``[n, dim]`` array as float32 ``[n, dim]``."""
+    arr = _as_f32(a, name, (1, 2))
+    return arr[None] if arr.ndim == 1 else arr
 
 
 # --- input normalization ---------------------------------------------------------------------

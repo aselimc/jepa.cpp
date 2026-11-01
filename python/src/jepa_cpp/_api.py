@@ -31,6 +31,7 @@ from ctypes import (
 from ._lib import load_library
 
 __all__ = [
+    "JEPA_HJEPA_MAX_PLAN_LEVELS",
     "JEPA_KV_AUTO",
     "JEPA_KV_F16",
     "JEPA_KV_F32",
@@ -43,10 +44,14 @@ __all__ = [
     "JEPA_RESIZE_SQUASH",
     "FUNCTIONS",
     "jepa_context_params",
+    "jepa_hjepa_goal",
+    "jepa_hjepa_level_plan",
+    "jepa_hjepa_plan_info",
     "jepa_input",
     "jepa_model_params",
     "jepa_output",
     "jepa_preprocess_params",
+    "jepa_randn_fn",
     "lib",
 ]
 
@@ -64,6 +69,8 @@ JEPA_RESIZE_SQUASH = 1
 JEPA_MODALITY_AUTO = 0
 JEPA_MODALITY_VIDEO = 1
 JEPA_MODALITY_IMAGE = 2
+
+JEPA_HJEPA_MAX_PLAN_LEVELS = 8
 
 
 # --- opaque handles ----------------------------------------------------------------------------
@@ -151,6 +158,54 @@ class jepa_ac_cem_params(ctypes.Structure):  # noqa: N801 - the C name
         ("seed", c_uint32),
     ]
 
+
+class jepa_hjepa_level_plan(ctypes.Structure):  # noqa: N801 - the C name
+    """One H-JEPA level's solver and cost settings; field order must match include/jepa.h."""
+
+    _fields_ = [
+        ("horizon", c_int),
+        ("pre_decay_horizon", c_int),
+        ("n_samples", c_int),
+        ("n_steps", c_int),
+        ("lr", c_float),
+        ("weight_decay", c_float),
+        ("var_scale", c_float),
+        ("action_noise", c_float),
+        ("action_clip_sigma", c_float),
+        ("min_its", c_int),
+        ("early_stop_patience", c_int),
+        ("early_stop_rel_delta", c_float),
+        ("cost_last_n", c_int),
+        ("intermediate_cost_weight", c_float),
+        ("action_cost_weight", c_float),
+        ("num_subgoals", c_int),
+        ("horizon_one_goal_upper", c_int),
+    ]
+
+
+class jepa_hjepa_goal(ctypes.Structure):  # noqa: N801 - the C name
+    """What one H-JEPA level is asked to reach; the pointers are only read during the call."""
+
+    _fields_ = [
+        ("states", POINTER(c_float)),
+        ("n_states", c_int),
+        ("level", c_int),
+        ("dense", c_int),
+        ("actions", POINTER(c_float)),
+    ]
+
+
+class jepa_hjepa_plan_info(ctypes.Structure):  # noqa: N801 - the C name
+    _fields_ = [
+        ("planned", c_int * JEPA_HJEPA_MAX_PLAN_LEVELS),
+        ("goal_level", c_int * JEPA_HJEPA_MAX_PLAN_LEVELS),
+        ("iters", c_int * JEPA_HJEPA_MAX_PLAN_LEVELS),
+        ("cost", c_float * JEPA_HJEPA_MAX_PLAN_LEVELS),
+    ]
+
+
+#: ``void (*)(void * user, float * out, size_t n)``: n standard-normal draws for the planner.
+jepa_randn_fn = ctypes.CFUNCTYPE(None, c_void_p, POINTER(c_float), c_size_t)
 
 u8_p = POINTER(c_uint8)
 f32_p = POINTER(c_float)
@@ -268,6 +323,41 @@ FUNCTIONS: list[tuple[str, object, list]] = [
     ("jepa_lewm_action_dim", c_int, [jepa_model_p]),
     ("jepa_lewm_predict", c_int, [jepa_context_p, f32_p, f32_p, c_int, POINTER(jepa_output)]),
     ("jepa_lewm_rollout", c_int, [jepa_context_p, f32_p, c_int, f32_p, c_int, f32_p]),
+    # --- H-JEPA hierarchical world model (jepa.family == "hjepa")
+    ("jepa_hjepa_n_levels", c_int, [jepa_model_p]),
+    ("jepa_hjepa_embed_dim", c_int, [jepa_model_p, c_int]),
+    ("jepa_hjepa_action_dim", c_int, [jepa_model_p, c_int]),
+    ("jepa_hjepa_action_embed_dim", c_int, [jepa_model_p, c_int]),
+    ("jepa_hjepa_stride", c_int, [jepa_model_p, c_int]),
+    ("jepa_hjepa_n_frames", c_int, [jepa_model_p, c_int]),
+    ("jepa_hjepa_proprio_dim", c_int, [jepa_model_p]),
+    ("jepa_hjepa_raw_action_dim", c_int, [jepa_model_p]),
+    ("jepa_hjepa_frameskip", c_int, [jepa_model_p]),
+    ("jepa_hjepa_norm_stats", c_int, [jepa_model_p, c_char_p, f32_p, f32_p, c_int]),
+    ("jepa_hjepa_action_prior", c_int, [jepa_model_p, c_int, f32_p, c_int]),
+    ("jepa_hjepa_embed", c_int, [jepa_context_p, f32_p, f32_p, c_int, POINTER(jepa_output)]),
+    ("jepa_hjepa_lift", c_int, [jepa_context_p, c_int, f32_p, c_int, POINTER(jepa_output)]),
+    ("jepa_hjepa_action_embed", c_int,
+     [jepa_context_p, c_int, f32_p, c_int, POINTER(jepa_output)]),
+    ("jepa_hjepa_action_encode", c_int,
+     [jepa_context_p, c_int, f32_p, c_int, POINTER(jepa_output)]),
+    ("jepa_hjepa_predict", c_int,
+     [jepa_context_p, c_int, f32_p, f32_p, c_int, POINTER(jepa_output)]),
+    ("jepa_hjepa_rollout", c_int,
+     [jepa_context_p, c_int, f32_p, c_int, f32_p, c_int, c_int, f32_p]),
+    # --- H-JEPA planning
+    ("jepa_hjepa_level_plan_default", jepa_hjepa_level_plan, []),
+    ("jepa_hjepa_plan_cost", c_int,
+     [jepa_context_p, c_int, f32_p, POINTER(jepa_hjepa_goal), POINTER(jepa_hjepa_level_plan),
+      f32_p, c_int, c_int, f32_p, f32_p]),
+    ("jepa_hjepa_solve", c_int,
+     [jepa_context_p, c_int, f32_p, POINTER(jepa_hjepa_goal), POINTER(jepa_hjepa_level_plan),
+      jepa_randn_fn, c_void_p, f32_p, f32_p, f32_p, int_p]),
+    ("jepa_hjepa_horizons", c_int,
+     [jepa_model_p, POINTER(jepa_hjepa_level_plan), c_int, c_int, c_int, c_int, int_p]),
+    ("jepa_hjepa_plan", c_int,
+     [jepa_context_p, POINTER(f32_p), POINTER(f32_p), POINTER(jepa_hjepa_level_plan), c_int,
+      jepa_randn_fn, c_void_p, f32_p, POINTER(jepa_hjepa_plan_info)]),
     # --- V-JEPA 2-AC action-conditioned world model (jepa.pred.kind == "ac")
     ("jepa_ac_tokens_per_frame", c_int, [jepa_model_p]),
     ("jepa_ac_action_dim", c_int, [jepa_model_p]),

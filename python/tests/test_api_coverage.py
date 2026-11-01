@@ -32,7 +32,7 @@ pytestmark = pytest.mark.skipif(
 DECL_RE = re.compile(r"^[^/#\n].*?\bjepa_\w+\s*\([^;]*\);", re.M | re.S)
 NAME_RE = re.compile(r"\b(jepa_\w+)\s*\(")
 ENUM_RE = re.compile(r"^enum\s*\{([^}]*)\};", re.M)
-STRUCT_RE = re.compile(r"typedef struct \{(.*?)\}\s*(jepa_\w+);", re.S)
+STRUCT_RE = re.compile(r"typedef struct(?:\s+\w+)?\s*\{(.*?)\}\s*(jepa_\w+);", re.S)
 
 
 def _header_text() -> str:
@@ -66,6 +66,7 @@ def header_structs() -> dict[str, list[str]]:
             if not stmt:
                 continue
             # "int n_batch, n_chans, n_frames" / "float mean[3]" / "const float * data"
+            stmt = re.sub(r"\[[^\]]*\]", "", stmt)
             decl = re.sub(r"^(const\s+)?\w+\s+", "", stmt)
             for part in decl.split(","):
                 ident = re.sub(r"[\[\]\d\*\s]", "", part)
@@ -128,6 +129,9 @@ def test_structs_are_not_padded_by_accident():
     assert ctypes.sizeof(_api.jepa_output) == 24
     assert ctypes.sizeof(_api.jepa_preprocess_params) == 48
     assert ctypes.sizeof(_api.jepa_model_params) == 8
+    assert ctypes.sizeof(_api.jepa_hjepa_level_plan) == 68
+    assert ctypes.sizeof(_api.jepa_hjepa_goal) == 32
+    assert ctypes.sizeof(_api.jepa_hjepa_plan_info) == 128
 
 
 def test_docs_api_md_is_generated_from_the_same_header():
