@@ -417,14 +417,15 @@ jepa_pool_cls(m, &enc, &cls);     // cls.data = [embed_dim]
 
 ### Python bindings
 
-`pip install ./python` from a recursive clone puts the same engine behind numpy — a thin wrapper
-over `include/jepa.h`, with the preprocessing, the graph and every floating-point operation still on
-the C side. It builds one self-contained shared library, so it needs a compiler and CMake but no
-separate ggml. `$JEPA_CPP_LIB` points an installed package at a library built by hand, which is the
-route to a CUDA-enabled one.
+`pip install cpp_jepa` puts the same engine behind numpy — a thin wrapper over `include/jepa.h`, with
+the preprocessing, the graph and every floating-point operation still on the C side. The wheels cover
+Linux x86-64 and macOS arm64 and carry one self-contained shared library, so they need neither ggml
+nor a compiler. A source build, `pip install ./python` from a recursive clone, is the route to a
+`-march=native` or CUDA-enabled library, and `$JEPA_CPP_LIB` points an installed package at one built
+by hand.
 
-These bindings are not on PyPI yet; they will be published as `cpp_jepa`, imported as `jepa_cpp`.
-**`jepa-cpp` on PyPI is an unrelated project, so `pip install jepa-cpp` does not install this package.**
+The package is `cpp_jepa` and the import is `jepa_cpp`. **`jepa-cpp` on PyPI is an unrelated project,
+so `pip install jepa-cpp` does not install this package.**
 
 ```python
 import jepa_cpp

@@ -13,18 +13,22 @@ numpy. `python/tests/test_parity.py` gates that: on a CPU the bindings reproduce
 
 ## Install
 
-From a recursive clone, with a compiler and CMake on the machine:
+```bash
+pip install cpp_jepa
+```
+
+Wheels cover Linux x86-64 and macOS arm64. Each bundles one self-contained shared library (libjepa
+plus ggml, linked whole), so there is no ggml to install and nothing to compile.
+
+The package is `cpp_jepa` and the import is `jepa_cpp`. **`jepa-cpp` on PyPI is an unrelated project,
+so `pip install jepa-cpp` does not install this package.**
+
+To build it from a checkout instead — the only way to get a CUDA-enabled or `-march=native` library:
 
 ```bash
 git clone --recursive https://github.com/aselimc/jepa.cpp && cd jepa.cpp
 pip install ./python                 # -march=native, matching the repository's own build/
 ```
-
-The package bundles one self-contained shared library (libjepa plus ggml, linked whole), so there
-is no ggml to install.
-
-These bindings are not on PyPI yet; they will be published as `cpp_jepa`, imported as `jepa_cpp`.
-**`jepa-cpp` on PyPI is an unrelated project, so `pip install jepa-cpp` does not install this package.**
 
 An installed package can also be pointed at a library you built yourself, which is how the parity
 tests make the bindings and `build/jepa-embed` the very same code:

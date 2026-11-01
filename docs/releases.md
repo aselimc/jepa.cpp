@@ -11,6 +11,9 @@ and a prebuilt archive for Linux x86-64.
 | `jepa-<version>-linux-x86_64.tar.gz` | `bin/jepa-{info,embed,classify,worldmodel,plan,quantize,bench,server}`, `include/jepa.h`, `lib/lib{jepa,ggml,ggml-base,ggml-cpu}.a`, `LICENSE`, `README.md`, `CHANGELOG.md`, `SHA256SUMS` |
 | `SHA256SUMS` | the checksum of the archive itself |
 
+The Python wheels for Linux x86-64 and macOS arm64 go to [PyPI](https://pypi.org/project/cpp_jepa/)
+from the same tag, through Trusted Publishing.
+
 The binaries are CPU only and built for **x86-64-v3** — SSE4.2, AVX, AVX2, FMA, F16C, BMI2, i.e. any
 Haswell-or-newer CPU — against **glibc 2.35** (Ubuntu 22.04), with `libstdc++` and `libgcc` linked
 statically. The one external runtime dependency is `libgomp.so.1` (`apt install libgomp1`,
