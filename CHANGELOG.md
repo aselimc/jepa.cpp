@@ -37,6 +37,7 @@ across releases.
   `hjepa_rollout`, ...) and the planner (`hjepa_plan`, `hjepa_solve`, `hjepa_plan_cost`,
   `hjepa_horizons`), with `randn` taking any Python callable. `python/tests/test_hjepa.py` holds them
   to the authors' reference dumps and to `jepa-plan`.
+- Tagged releases publish the wheels to PyPI as `cpp_jepa`, through Trusted Publishing.
 - A `python bindings` CI job that builds the package from source and runs its tests, so an unbound
   header entry point now fails on the push that adds it rather than going unnoticed. The header check
   also covers the fields of named structs, which it used to skip.
@@ -48,8 +49,8 @@ across releases.
 
 ### Fixed
 
-- The install instructions said `pip install jepa-cpp`, but these bindings are not on PyPI and that
-  name belongs to an unrelated project. They now say `pip install ./python` and warn about the name.
+- The install instructions said `pip install jepa-cpp`, but that name on PyPI belongs to an unrelated
+  project. The distribution is now called `cpp_jepa`; the import is still `jepa_cpp`.
 - `jepa-plan` is now in the release archive and the CI tool artifact; the packaging list predated it.
 - The weights `tests/forge-gguf.h` writes were meant to span [-1, 1] but were computed in `size_t`,
   so most of them were about 1e18. No assertion depended on their size until one looked at whether

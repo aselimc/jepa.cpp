@@ -423,8 +423,8 @@ the C side. It builds one self-contained shared library, so it needs a compiler 
 separate ggml. `$JEPA_CPP_LIB` points an installed package at a library built by hand, which is the
 route to a CUDA-enabled one.
 
-The bindings are not on PyPI yet. **The `jepa-cpp` name there belongs to an unrelated project, so
-`pip install jepa-cpp` does not install this package.**
+These bindings are not on PyPI yet; they will be published as `cpp_jepa`, imported as `jepa_cpp`.
+**`jepa-cpp` on PyPI is an unrelated project, so `pip install jepa-cpp` does not install this package.**
 
 ```python
 import jepa_cpp

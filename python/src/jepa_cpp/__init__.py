@@ -1,4 +1,4 @@
-"""jepa-cpp — Python bindings for `jepa.cpp <https://github.com/aselimc/jepa.cpp>`_.
+"""cpp_jepa — Python bindings for `jepa.cpp <https://github.com/aselimc/jepa.cpp>`_.
 
 A thin wrapper over the C API in ``include/jepa.h``: one GGUF file in, numpy arrays out, with the
 engine, the preprocessing and the arithmetic all on the C side. The raw 1:1 ``ctypes`` layer is
@@ -61,7 +61,7 @@ try:
     from importlib.metadata import PackageNotFoundError
     from importlib.metadata import version as _dist_version
 
-    __version__ = _dist_version("jepa-cpp")
+    __version__ = _dist_version("cpp_jepa")
 except PackageNotFoundError:  # pragma: no cover - running from a source tree, uninstalled
     __version__ = "0+unknown"
 

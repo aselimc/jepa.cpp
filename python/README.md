@@ -1,4 +1,4 @@
-# jepa-cpp
+# cpp_jepa
 
 Python bindings for [jepa.cpp](https://github.com/aselimc/jepa.cpp) — CPU (and optional CUDA)
 inference for the JEPA family: I-JEPA, V-JEPA 2, V-JEPA 2.1, LeJEPA, LeVJEPA, LeWorldModel and
@@ -23,8 +23,8 @@ pip install ./python                 # -march=native, matching the repository's 
 The package bundles one self-contained shared library (libjepa plus ggml, linked whole), so there
 is no ggml to install.
 
-These bindings are not on PyPI yet. **The `jepa-cpp` name there belongs to an unrelated project, so
-`pip install jepa-cpp` does not install this package.**
+These bindings are not on PyPI yet; they will be published as `cpp_jepa`, imported as `jepa_cpp`.
+**`jepa-cpp` on PyPI is an unrelated project, so `pip install jepa-cpp` does not install this package.**
 
 An installed package can also be pointed at a library you built yourself, which is how the parity
 tests make the bindings and `build/jepa-embed` the very same code:
