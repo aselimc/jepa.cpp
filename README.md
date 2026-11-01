@@ -10,7 +10,7 @@
 in the loop.
 
 jepa.cpp runs the JEPA family of self-supervised vision encoders and world models — I-JEPA,
-V-JEPA 2 / 2.1 / 2-AC, LeJEPA, LeVJEPA and LeWorldModel — on [ggml](https://github.com/ggml-org/ggml),
+V-JEPA 2 / 2.1 / 2-AC, LeJEPA, LeVJEPA, LeWorldModel and H-JEPA — on [ggml](https://github.com/ggml-org/ggml),
 the engine behind llama.cpp. Every model reproduces its PyTorch reference to cosine 1.000 in f32,
 runs **1.1–1.8× faster than PyTorch on a CPU**, and comes pre-converted on
 [Hugging Face](https://huggingface.co/jepacpp).
@@ -18,7 +18,8 @@ runs **1.1–1.8× faster than PyTorch on a CPU**, and comes pre-converted on
 - **Embed** images and video clips into feature vectors — search, clustering, k-NN, your own heads
 - **Classify** video with V-JEPA 2's Something-Something-v2 head (174 actions)
 - **Predict** in latent space with the V-JEPA 2 / 2.1 masked predictors
-- **Roll out and plan** with world models — LeWorldModel, and V-JEPA 2-AC with its CEM planner
+- **Roll out and plan** with world models — LeWorldModel, V-JEPA 2-AC with its CEM planner, and
+  H-JEPA with its top-down gradient planner
 - **Serve** it over HTTP, call it from C, or from Python with numpy in and out
 
 ![Three panels: latency per image or clip on a 32-thread CPU, jepa.cpp f16 against PyTorch f32;

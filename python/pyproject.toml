@@ -3,7 +3,7 @@ requires = ["scikit-build-core>=0.10"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "jepa-cpp"
+name = "cpp_jepa"
 # The version lives in exactly one place, the root CMakeLists' project(), and everything else reads
 # it from there — jepa_version(), jepa-info --version, and this (docs/releases.md).
 dynamic = ["version"]

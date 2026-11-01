@@ -8,6 +8,8 @@ across releases.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-01
+
 ### Added
 
 - **H-JEPA** ([arXiv 2610.06805](https://arxiv.org/abs/2610.06805)) as a new `hjepa` family: hierarchies of
@@ -32,6 +34,15 @@ across releases.
   none of the code the pickle names: it resolves a short fixed list of constructors and replaces
   every other global with a data-only stub, so converting an H-JEPA file needs no PyTorch and no
   checkout of the training code.
+- **H-JEPA in the Python bindings**: the 22 `jepa_hjepa_*` entry points in `jepa_cpp._api`, and on
+  `Model` the world-model calls (`hjepa_states`, `hjepa_embed`, `hjepa_lift`, `hjepa_predict`,
+  `hjepa_rollout`, ...) and the planner (`hjepa_plan`, `hjepa_solve`, `hjepa_plan_cost`,
+  `hjepa_horizons`), with `randn` taking any Python callable. `python/tests/test_hjepa.py` holds them
+  to the authors' reference dumps and to `jepa-plan`.
+- Tagged releases publish the wheels to PyPI as `cpp_jepa`, through Trusted Publishing.
+- A `python bindings` CI job that builds the package from source and runs its tests, so an unbound
+  header entry point now fails on the push that adds it rather than going unnoticed. The header check
+  also covers the fields of named structs, which it used to skip.
 - `scripts/hjepa_reference.py` dumps reference activations from the authors' own modules, planner
   included, and `scripts/hjepa_batch.py` converts, verifies, times and publishes the checkpoints in
   bulk; `tests/results/hjepa-parity.json` records the outcome per file and
@@ -40,6 +51,9 @@ across releases.
 
 ### Fixed
 
+- The install instructions said `pip install jepa-cpp`, but that name on PyPI belongs to an unrelated
+  project. The distribution is now called `cpp_jepa`; the import is still `jepa_cpp`.
+- `jepa-plan` is now in the release archive and the CI tool artifact; the packaging list predated it.
 - The weights `tests/forge-gguf.h` writes were meant to span [-1, 1] but were computed in `size_t`,
   so most of them were about 1e18. No assertion depended on their size until one looked at whether
   an output was finite.

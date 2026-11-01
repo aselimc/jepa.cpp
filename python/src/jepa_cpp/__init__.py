@@ -1,4 +1,4 @@
-"""jepa-cpp — Python bindings for `jepa.cpp <https://github.com/aselimc/jepa.cpp>`_.
+"""cpp_jepa — Python bindings for `jepa.cpp <https://github.com/aselimc/jepa.cpp>`_.
 
 A thin wrapper over the C API in ``include/jepa.h``: one GGUF file in, numpy arrays out, with the
 engine, the preprocessing and the arithmetic all on the C side. The raw 1:1 ``ctypes`` layer is
@@ -23,9 +23,12 @@ from .model import (
     STILL_REPEAT_FAMILIES,
     VIDEO_FAMILIES,
     Classification,
+    HJepaPlan,
+    HJepaSolve,
     JepaError,
     Model,
     devices,
+    hjepa_level_plan,
     system_info,
     version,
 )
@@ -33,6 +36,8 @@ from .model import (
 __all__ = [
     "Classification",
     "Client",
+    "HJepaPlan",
+    "HJepaSolve",
     "JepaError",
     "LIB_ENV",
     "Model",
@@ -42,6 +47,7 @@ __all__ = [
     "__version__",
     "clip",
     "devices",
+    "hjepa_level_plan",
     "library_path",
     "library_version",
     "system_info",
@@ -55,7 +61,7 @@ try:
     from importlib.metadata import PackageNotFoundError
     from importlib.metadata import version as _dist_version
 
-    __version__ = _dist_version("jepa-cpp")
+    __version__ = _dist_version("cpp_jepa")
 except PackageNotFoundError:  # pragma: no cover - running from a source tree, uninstalled
     __version__ = "0+unknown"
 
