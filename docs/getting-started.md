@@ -417,11 +417,14 @@ jepa_pool_cls(m, &enc, &cls);     // cls.data = [embed_dim]
 
 ### Python bindings
 
-`pip install jepa-cpp` puts the same engine behind numpy — a thin wrapper over `include/jepa.h`,
-with the preprocessing, the graph and every floating-point operation still on the C side. The wheel
-carries one self-contained shared library, so it needs neither ggml nor a compiler. A source build,
-`pip install ./python` from a recursive clone, is the route to a `-march=native` or CUDA-enabled
-library, and `$JEPA_CPP_LIB` points an installed package at one built by hand.
+`pip install ./python` from a recursive clone puts the same engine behind numpy — a thin wrapper
+over `include/jepa.h`, with the preprocessing, the graph and every floating-point operation still on
+the C side. It builds one self-contained shared library, so it needs a compiler and CMake but no
+separate ggml. `$JEPA_CPP_LIB` points an installed package at a library built by hand, which is the
+route to a CUDA-enabled one.
+
+The bindings are not on PyPI yet. **The `jepa-cpp` name there belongs to an unrelated project, so
+`pip install jepa-cpp` does not install this package.**
 
 ```python
 import jepa_cpp
@@ -436,7 +439,8 @@ with jepa_cpp.Model("models/gguf/vjepa2-vitl-fpc16-256-ssv2-f16.gguf", device="c
 ```
 
 `Model` also carries `pool`, `predict`, `classify`, `lewm_project`, `lewm_predict` and
-`lewm_rollout`, and the file's metadata as properties; `jepa_cpp._api` is the unwrapped header, one
+`lewm_rollout`, the H-JEPA calls (`hjepa_states`, `hjepa_rollout`, `hjepa_plan` and the rest), and
+the file's metadata as properties; `jepa_cpp._api` is the unwrapped header, one
 Python name per C name. On a CPU the bindings reproduce `jepa-embed`'s output bit for bit, which
 `python/tests/test_parity.py` gates against the tools and the golden dumps alike. The package's own
 reference is [`python/README.md`](https://github.com/aselimc/jepa.cpp/blob/main/python/README.md).
@@ -477,6 +481,8 @@ LeJEPA and LeWorldModel GGUFs and their reference dumps from the Hugging Face hu
 `parity-*`, `predictor-lewm`, `batch` and `backend` suites on top; while those files are unpublished
 it says so and stops. The same workflow gates the generated documentation — `gen_api_md.py --check`,
 both figure scripts, `render_accuracy_md.py --check`, `mkdocs build --strict` and `shellcheck`.
+A `python` job builds the bindings from source and runs their tests, which is what catches a header
+entry point nobody has bound; the tests that need weights skip there.
 
 The CUDA build is not in CI, because GitHub-hosted runners have no NVIDIA device: `-DJEPA_CUDA=ON`
 and the `backend` suite on a GPU stay a developer-machine check. `docs/benchmarks.md` has no CI gate

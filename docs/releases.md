@@ -8,7 +8,7 @@ and a prebuilt archive for Linux x86-64.
 
 | asset | contents |
 |---|---|
-| `jepa-<version>-linux-x86_64.tar.gz` | `bin/jepa-{info,embed,classify,worldmodel,quantize,bench}`, `include/jepa.h`, `lib/lib{jepa,ggml,ggml-base,ggml-cpu}.a`, `LICENSE`, `README.md`, `CHANGELOG.md`, `SHA256SUMS` |
+| `jepa-<version>-linux-x86_64.tar.gz` | `bin/jepa-{info,embed,classify,worldmodel,plan,quantize,bench,server}`, `include/jepa.h`, `lib/lib{jepa,ggml,ggml-base,ggml-cpu}.a`, `LICENSE`, `README.md`, `CHANGELOG.md`, `SHA256SUMS` |
 | `SHA256SUMS` | the checksum of the archive itself |
 
 The binaries are CPU only and built for **x86-64-v3** — SSE4.2, AVX, AVX2, FMA, F16C, BMI2, i.e. any
@@ -33,12 +33,12 @@ have no NVIDIA device to test it on. Build one from source with `-DJEPA_CUDA=ON`
 ([CUDA build](getting-started.md#cuda-build)).
 
 ```bash
-V=0.1.1
+V=0.5.0
 curl -sSLO https://github.com/aselimc/jepa.cpp/releases/download/v$V/jepa-$V-linux-x86_64.tar.gz
 curl -sSLO https://github.com/aselimc/jepa.cpp/releases/download/v$V/SHA256SUMS
 sha256sum -c SHA256SUMS
 tar xzf jepa-$V-linux-x86_64.tar.gz
-jepa-$V-linux-x86_64/bin/jepa-info --version        # 0.1.1
+jepa-$V-linux-x86_64/bin/jepa-info --version        # 0.5.0
 ```
 
 `SHA256SUMS` inside the archive lists every packaged file, so `sha256sum -c SHA256SUMS` from the

@@ -104,7 +104,8 @@ A model with no head answers 400 and says so, rather than returning something sh
 
 ### `POST /rollout`
 
-The world models: V-JEPA 2-AC and LeWM. `context` is the observed frame(s), the last of which is
+The world models: V-JEPA 2-AC and LeWM. An H-JEPA file answers 400; use `jepa-plan`, the C API or
+the Python bindings for those. `context` is the observed frame(s), the last of which is
 where planning starts; `actions` is `[K][H][action_dim]` candidate sequences (or `[H][action_dim]`
 for one candidate); `goal` is the frame the energies are scored against. Without a goal the same
 number is reported against the last observed frame, which reads as how far the rollout has drifted.

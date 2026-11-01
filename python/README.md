@@ -1,7 +1,8 @@
 # jepa-cpp
 
 Python bindings for [jepa.cpp](https://github.com/aselimc/jepa.cpp) — CPU (and optional CUDA)
-inference for the JEPA family: I-JEPA, V-JEPA 2, V-JEPA 2.1, LeJEPA, LeVJEPA and LeWorldModel.
+inference for the JEPA family: I-JEPA, V-JEPA 2, V-JEPA 2.1, LeJEPA, LeVJEPA, LeWorldModel and
+H-JEPA.
 One GGUF file in, numpy arrays out.
 
 The package is a thin wrapper over the C API in `include/jepa.h`. The engine, the preprocessing —
@@ -12,20 +13,18 @@ numpy. `python/tests/test_parity.py` gates that: on a CPU the bindings reproduce
 
 ## Install
 
-```bash
-pip install jepa-cpp
-```
-
-The wheel bundles one self-contained shared library (libjepa plus ggml, linked whole), so there is
-no ggml to install and nothing to compile.
-
-To build it from a checkout instead — the only way to get a CUDA-enabled or `-march=native`
-library:
+From a recursive clone, with a compiler and CMake on the machine:
 
 ```bash
 git clone --recursive https://github.com/aselimc/jepa.cpp && cd jepa.cpp
 pip install ./python                 # -march=native, matching the repository's own build/
 ```
+
+The package bundles one self-contained shared library (libjepa plus ggml, linked whole), so there
+is no ggml to install.
+
+These bindings are not on PyPI yet. **The `jepa-cpp` name there belongs to an unrelated project, so
+`pip install jepa-cpp` does not install this package.**
 
 An installed package can also be pointed at a library you built yourself, which is how the parity
 tests make the bindings and `build/jepa-embed` the very same code:
@@ -34,7 +33,7 @@ tests make the bindings and `build/jepa-embed` the very same code:
 export JEPA_CPP_LIB=/path/to/libjepa.so
 ```
 
-## Ten lines
+## A few lines
 
 ```python
 import jepa_cpp, numpy as np
@@ -48,6 +47,10 @@ with jepa_cpp.Model("models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf", threads=
 with jepa_cpp.Model("models/gguf/vjepa2-vitl-fpc16-256-ssv2-f16.gguf", threads=32) as m:
     clip = np.load("clip.npy")                              # uint8 [T, H, W, 3]
     print(m.classify(clip).top(5))                          # [(index, label, probability), ...]
+
+with jepa_cpp.Model("models/gguf/ant_hjepa_l3-seed42-f16.gguf", threads=32) as m:
+    plan = m.hjepa_plan(m.hjepa_states("now.png"), m.hjepa_states("goal.png"))
+    print(plan.actions.shape)                               # level-1 actions, z-scored
 ```
 
 ## What is on `Model`
@@ -60,6 +63,9 @@ with jepa_cpp.Model("models/gguf/vjepa2-vitl-fpc16-256-ssv2-f16.gguf", threads=3
 | `classify(x)` | attentive-pool head → `Classification(logits, probs, pooled, labels)` with `.top(k)` |
 | `predict(tokens, target, context, mask_index=1, modality="video")` | the masked predictor → `[n_target, out_dim]` |
 | `lewm_project(tokens)`, `lewm_project_rows(rows)`, `lewm_predict(embs, actions)`, `lewm_rollout(embs, actions, n_steps)` | the LeWorldModel path |
+| `hjepa_states(image, proprio=None)`, `hjepa_embed`, `hjepa_lift`, `hjepa_action_embed`, `hjepa_action_encode`, `hjepa_predict`, `hjepa_rollout` | the H-JEPA world models; levels are 1-based |
+| `hjepa_plan(states, goals, levels=None, randn=None)`, `hjepa_solve`, `hjepa_plan_cost`, `hjepa_horizons`, `hjepa_default_levels()` | the H-JEPA planner; `jepa_cpp.hjepa_level_plan(**fields)` makes one level's settings |
+| `hjepa_n_levels`, `hjepa_embed_dim(level)`, `hjepa_action_dim(level)`, `hjepa_action_embed_dim(level)`, `hjepa_stride(level)`, `hjepa_n_frames(level)`, `hjepa_proprio_dim`, `hjepa_raw_action_dim`, `hjepa_frameskip`, `hjepa_norm_stats(column)`, `hjepa_action_prior(level)` | a hierarchy's shape and training statistics |
 | `family`, `name`, `embed_dim`, `patch_size`, `tubelet_size`, `img_size`, `n_frames`, `n_layer`, `n_head`, `has_cls`, `n_registers`, `n_prefix_tokens`, `has_predictor`, `has_head`, `has_projector`, `n_classes`, `labels`, `file_type`, `file_type_name`, `n_bytes`, `device`, `device_name`, `is_gpu`, `is_video` | the model |
 | `threads`, `max_batch`, `last_batch`, `last_compute_ms`, `mul_mat_prec_f32` | the context |
 
@@ -104,9 +110,10 @@ pip install -e ".[test]" && pytest tests
 `tests/test_parity.py` is the one that matters: it runs `build/jepa-embed` and
 `build/jepa-worldmodel` as subprocesses and requires the bindings' arrays to match theirs bit for
 bit on a CPU, then compares both to the PyTorch golden dumps in `tests/fixtures/ref/` with the same
-per-family, per-dtype bars `tests/test-parity.cpp` uses. `tests/test_api_coverage.py` parses
-`include/jepa.h` and fails when an entry point is unbound; `tests/test_model_api.py` covers
-lifetime, argument checking and error text. GGUF files and golden dumps are not in the repository,
+per-family, per-dtype bars `tests/test-parity.cpp` uses. `tests/test_hjepa.py` holds H-JEPA, planner included, to the authors' reference dumps and to
+`build/jepa-plan`; `tests/test_api_coverage.py` parses `include/jepa.h` and fails when an entry point
+is unbound, and CI runs it on every push; `tests/test_model_api.py` covers lifetime, argument
+checking and error text. GGUF files and golden dumps are not in the repository,
 so a test whose assets are missing skips.
 
 ## Licence
