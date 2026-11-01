@@ -8,6 +8,8 @@ across releases.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-01
+
 ### Added
 
 - **H-JEPA** ([arXiv 2610.06805](https://arxiv.org/abs/2610.06805)) as a new `hjepa` family: hierarchies of
