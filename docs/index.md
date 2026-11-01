@@ -10,7 +10,7 @@ converter run, because the loader builds the graph from the file's metadata. Nin
 collection, seven families, ship today — image and video embedding, video classification, latent-space prediction
 and action-conditioned world-model rollout, including Meta's V-JEPA 2-AC planner and H-JEPA's
 top-down planner — through a set of command-line tools, one C header, and a Python package
-(`pip install ./python` from a recursive clone) that wraps that header and returns numpy arrays. The
+(`pip install cpp_jepa`) that wraps that header and returns numpy arrays. The
 converted files are published on Hugging Face under [**jepacpp**](https://huggingface.co/jepacpp), so
 converting anything yourself is optional: `scripts/download_models.sh` fetches them.
 

@@ -84,7 +84,7 @@ build/jepa-server -m models/gguf/lejepa-vits16-pretrain-in1k-f16.gguf --workers 
 
 - **GPU:** `cmake -S . -B build-cuda -DJEPA_CUDA=ON`, then `--gpu` on any tool.
 - **C:** one header, [`include/jepa.h`](include/jepa.h) — load, encode, pool or predict.
-- **Python:** `pip install ./python` wraps that header behind numpy, bit-identical to the CLI on a CPU
+- **Python:** `pip install cpp_jepa` wraps that header behind numpy; a source build is bit-identical to the CLI on a CPU
   ([python/README.md](python/README.md)).
 - **Smaller files:** `build/jepa-quantize in-f16.gguf out-q8_0.gguf q8_0`.
 
